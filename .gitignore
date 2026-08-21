@@ -1,2 +1,14 @@
 .worktrees/
 .superpowers/
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+data/uploads/
+data/runs/
+data/cache/
+data/models/
+*.pt
+*.pth
+*.safetensors
