@@ -13,7 +13,9 @@ class Settings(BaseSettings):
 
     project_root: Path = Field(default_factory=Path.cwd)
     data_dir: Path = Path("data")
+    videos_dir: Path = Path("橡皮障视频/橡皮障视频")
     model_config_path: Path = Path("config/models.yaml")
+    max_upload_mb: int = Field(default=2048, gt=0)
     sam_backend: str = "sam3"
     sam_device: str = "cuda:0"
     vlm_base_url: str = "http://127.0.0.1:8001/v1"
@@ -24,6 +26,8 @@ class Settings(BaseSettings):
         self.project_root = self.project_root.resolve()
         if not self.data_dir.is_absolute():
             self.data_dir = (self.project_root / self.data_dir).resolve()
+        if not self.videos_dir.is_absolute():
+            self.videos_dir = (self.project_root / self.videos_dir).resolve()
         if not self.model_config_path.is_absolute():
             self.model_config_path = (self.project_root / self.model_config_path).resolve()
         return self

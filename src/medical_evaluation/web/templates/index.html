@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>橡皮障隔离术视频考核</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="container">
+    <p class="eyebrow">MEDICAL EVALUATION · LOCAL DEMO</p>
+    <h1>橡皮障隔离术<br>视频智能考核</h1>
+    <p class="lead">选择内置示例或上传一个视频，创建可追踪、可复核的 11 项操作考核。</p>
+    <section class="panel">
+      <h2>内置视频</h2>
+      <div class="preset-grid">
+        {% for preset_id, filename in presets.items() %}
+        <button class="preset" data-preset-id="{{ preset_id }}">
+          <span>{{ filename }}</span><small>创建分析任务 →</small>
+        </button>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>上传视频</h2>
+      <form id="upload-form">
+        <input id="video" name="video" type="file" accept="video/*" required>
+        <button type="submit">上传并分析</button>
+      </form>
+    </section>
+    <p id="message" role="status"></p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

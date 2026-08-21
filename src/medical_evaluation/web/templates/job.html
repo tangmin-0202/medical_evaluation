@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务进度</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="container compact" data-job-id="{{ job_id }}">
+    <p class="eyebrow">ANALYSIS JOB</p>
+    <h1>分析任务</h1>
+    <section class="panel">
+      <div class="status-row"><span id="status">正在读取…</span><strong id="percent">0%</strong></div>
+      <div class="progress"><div id="progress-bar"></div></div>
+      <p id="checkpoint">等待执行</p>
+      <p id="error" class="error"></p>
+    </section>
+    <a href="/">← 返回首页</a>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
