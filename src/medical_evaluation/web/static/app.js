@@ -32,6 +32,7 @@ if (jobRoot) {
     document.querySelector("#progress-bar").style.width = `${job.progress * 100}%`;
     document.querySelector("#checkpoint").textContent = job.current_checkpoint || "";
     document.querySelector("#error").textContent = job.error || "";
+    if (job.status === "complete") document.querySelector("#report-link").classList.remove("hidden");
     if (!["complete", "failed"].includes(job.status)) window.setTimeout(poll, 500);
   };
   poll();

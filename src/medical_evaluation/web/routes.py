@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile
 
 from medical_evaluation.annotations import (
@@ -17,8 +23,10 @@ from medical_evaluation.annotations import (
 )
 from medical_evaluation.domain import CheckpointStatus
 from medical_evaluation.jobs import JobManager
+from medical_evaluation.reporting import EvaluationReport, ReviewAuditEntry
 from medical_evaluation.rubric import Rubric, load_rubric
 from medical_evaluation.settings import Settings
+from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import SUPPORTED_VIDEO_EXTENSIONS
 
 PRESETS = {
@@ -26,6 +34,12 @@ PRESETS = {
     "failure": "橡皮障失败.mp4",
     "clamp_failure": "橡皮障夹子飞了.mp4",
 }
+
+
+class ReviewResolutionRequest(BaseModel):
+    actor: str = Field(min_length=1)
+    status: Literal["correct", "incorrect", "incomplete"]
+    reason: str = Field(min_length=1)
 
 
 def create_router(settings: Settings, manager: JobManager, template_dir: Path) -> APIRouter:
@@ -138,6 +152,99 @@ def create_router(settings: Settings, manager: JobManager, template_dir: Path) -
             context={"video_id": video_id, "rubric": rubric},
         )
 
+    @router.get("/api/reports/{job_id}")
+    async def get_report(job_id: str) -> dict[str, object]:
+        return _load_report(settings, job_id).model_dump(mode="json")
+
+    @router.get("/reports/{job_id}", response_class=HTMLResponse)
+    async def report_page(request: Request, job_id: str) -> HTMLResponse:
+        report = _load_report(settings, job_id)
+        checkpoint_names = {checkpoint.id: checkpoint.name for checkpoint in rubric.checkpoints}
+        return templates.TemplateResponse(
+            request=request,
+            name="report.html",
+            context={"report": report, "checkpoint_names": checkpoint_names},
+        )
+
+    @router.put("/api/reports/{job_id}/{checkpoint_id}/review")
+    async def resolve_review(
+        job_id: str,
+        checkpoint_id: str,
+        resolution: ReviewResolutionRequest,
+    ) -> dict[str, object]:
+        report = _load_report(settings, job_id)
+        index = next(
+            (
+                item_index
+                for item_index, checkpoint in enumerate(report.checkpoints)
+                if checkpoint.checkpoint_id == checkpoint_id
+            ),
+            None,
+        )
+        if index is None:
+            raise HTTPException(status_code=404, detail="checkpoint not found")
+        current = report.checkpoints[index]
+        automatic_status = (
+            current.review_history[0].automatic_status
+            if current.review_history
+            else current.status
+        )
+        resolved_status = CheckpointStatus(resolution.status)
+        audit = ReviewAuditEntry(
+            timestamp=datetime.now(UTC),
+            actor=resolution.actor,
+            automatic_status=automatic_status,
+            prior_status=current.status,
+            resolved_status=resolved_status,
+            reason=resolution.reason,
+        )
+        report.checkpoints[index] = current.model_copy(
+            update={
+                "status": resolved_status,
+                "confidence": 1.0,
+                "reason_code": "human_review_resolved",
+                "reason": resolution.reason,
+                "review_history": [*current.review_history, audit],
+            }
+        )
+        _save_report(settings, report)
+        return report.model_dump(mode="json")
+
+    @router.post(
+        "/api/jobs/{job_id}/checkpoints/{checkpoint_id}/rerun",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def rerun_checkpoint(job_id: str, checkpoint_id: str) -> dict[str, str]:
+        report = _load_report(settings, job_id)
+        if checkpoint_id not in {item.checkpoint_id for item in report.checkpoints}:
+            raise HTTPException(status_code=404, detail="checkpoint not found")
+        path = safe_child(settings.data_dir / "jobs", f"{job_id}/rerun-requests.json")
+        payload = json.loads(path.read_text("utf-8")) if path.exists() else {"requests": []}
+        payload["requests"].append(
+            {
+                "checkpoint_id": checkpoint_id,
+                "requested_at": datetime.now(UTC).isoformat(),
+                "prior_report_digest": _report_digest(report),
+            }
+        )
+        atomic_write_json(path, payload)
+        return {"job_id": job_id, "checkpoint_id": checkpoint_id, "status": "queued"}
+
+    @router.delete(
+        "/api/jobs/{job_id}/artifacts",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+    )
+    async def delete_artifacts(job_id: str) -> Response:
+        _load_report(settings, job_id)
+        try:
+            run_dir = safe_child((settings.data_dir / "runs").resolve(), job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     return router
 
 
@@ -199,3 +306,31 @@ def _load_or_default(store: AnnotationStore, rubric: Rubric, video_id: str) -> V
         return store.load_segments(video_id)
     except FileNotFoundError:
         return VideoAnnotations(video_id=video_id, steps=_default_steps(rubric))
+
+
+def _load_report(settings: Settings, job_id: str) -> EvaluationReport:
+    try:
+        path = safe_child(settings.data_dir / "jobs", f"{job_id}/report.json")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="report not found") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="report not found")
+    try:
+        return EvaluationReport.model_validate_json(path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="stored report is invalid") from exc
+
+
+def _save_report(settings: Settings, report: EvaluationReport) -> None:
+    path = safe_child(settings.data_dir / "jobs", f"{report.job_id}/report.json")
+    atomic_write_json(path, report.model_dump(mode="json"))
+
+
+def _report_digest(report: EvaluationReport) -> str:
+    payload = json.dumps(
+        report.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

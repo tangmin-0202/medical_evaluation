@@ -14,6 +14,15 @@ class EvidenceItem(BaseModel):
     rule: str = Field(min_length=1)
 
 
+class ReviewAuditEntry(BaseModel):
+    timestamp: datetime
+    actor: str = Field(min_length=1)
+    automatic_status: CheckpointStatus
+    prior_status: CheckpointStatus
+    resolved_status: CheckpointStatus
+    reason: str = Field(min_length=1)
+
+
 class CheckpointResult(BaseModel):
     checkpoint_id: str = Field(pattern=r"^cp_\d{2}$")
     status: CheckpointStatus
@@ -25,6 +34,7 @@ class CheckpointResult(BaseModel):
     reason_code: str = Field(min_length=1)
     reason: str = ""
     suggestion: str = ""
+    review_history: list[ReviewAuditEntry] = Field(default_factory=list)
 
     @computed_field
     @property

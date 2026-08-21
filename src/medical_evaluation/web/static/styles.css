@@ -22,6 +22,25 @@ a { color: #6ee7b7; }
 .progress { height: 12px; margin: 20px 0; overflow: hidden; border-radius: 99px; background: #19352e; }
 #progress-bar { width: 0; height: 100%; background: #6ee7b7; transition: width .25s ease; }
 .error { color: #fda4af; }
+.hidden { display: none; }
+.report-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
+.score-block { min-width: 180px; padding: 22px; border: 1px solid #6ee7b7; border-radius: 18px; text-align: right; }
+.score-block strong { display: block; color: #6ee7b7; font-size: 2.3rem; }
+.audit-strip { display: flex; gap: 18px; margin: 28px 0; padding: 14px 0; border-block: 1px solid #285247; color: #8ea9a0; font-size: .8rem; flex-wrap: wrap; }
+.report-list { display: grid; gap: 14px; margin-bottom: 30px; }
+.checkpoint-card { padding: 22px; border-left: 4px solid #6ee7b7; border-radius: 12px; background: #0a1c18; }
+.checkpoint-card.status-incorrect, .checkpoint-card.status-incomplete { border-left-color: #fb7185; }
+.checkpoint-card.status-needs_review { border-left-color: #fbbf24; }
+.checkpoint-heading { display: flex; gap: 14px; align-items: center; }
+.checkpoint-heading h2 { margin: 0; font-size: 1rem; }
+.checkpoint-number { color: #6ee7b7; font-size: 1.6rem; font-weight: 900; }
+.status-badge { margin-left: auto; padding: 6px 9px; border-radius: 99px; background: #19352e; font-size: .75rem; }
+.suggestion { color: #b7cbc4; }
+.checkpoint-card dl { display: grid; grid-template-columns: 80px 1fr; gap: 8px; font-size: .82rem; }
+.checkpoint-card dt { color: #8ea9a0; }
+.checkpoint-card dd { margin: 0; overflow-wrap: anywhere; }
+.review-form { display: grid; grid-template-columns: 130px 120px 1fr auto; gap: 8px; margin-top: 16px; }
+.review-form input, .review-form select { min-width: 0; padding: 9px; border: 1px solid #285247; border-radius: 7px; background: #07110f; color: #ecf7f2; }
 .video-stage { position: relative; width: 100%; overflow: hidden; border-radius: 12px; background: #000; }
 .video-stage video { display: block; width: 100%; max-height: 62vh; }
 #prompt-surface { position: absolute; inset: 0 0 42px; cursor: crosshair; touch-action: none; }
