@@ -12,7 +12,8 @@ checkpoints:
   reference_time:
     start_sec: 0.0
     end_sec: 14.0
-  thresholds: {}
+  thresholds:
+    max_mark_distance: 0.05
 - id: cp_02
   name: 选择打孔器孔盘上的位置
   criteria:
@@ -28,7 +29,8 @@ checkpoints:
   reference_time:
     start_sec: 14.0
     end_sec: 23.0
-  thresholds: {}
+  thresholds:
+    expected_hole_index: 2
 - id: cp_03
   name: 打孔
   criteria:
@@ -54,7 +56,8 @@ checkpoints:
   reference_time:
     start_sec: 41.0
     end_sec: 47.0
-  thresholds: {}
+  thresholds:
+    min_clamp_similarity: 0.8
 - id: cp_05
   name: 将橡皮障夹套入橡皮布孔洞
   criteria:
@@ -120,7 +123,8 @@ checkpoints:
   reference_time:
     start_sec: 134.0
     end_sec: 174.0
-  thresholds: {}
+  thresholds:
+    max_green_wing_hole_ratio: 0.05
 - id: cp_09
   name: 安装支架（同最后一点合并评分，或者最后再评。）
   criteria:

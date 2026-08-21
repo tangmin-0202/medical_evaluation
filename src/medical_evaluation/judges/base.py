@@ -72,3 +72,34 @@ def correct(
         reason=reason,
         suggestion="继续保持规范操作。",
     )
+
+
+def decide_boolean_rules(
+    checkpoint_id: str,
+    features: dict[str, float | bool | None],
+    rules: dict[str, str],
+) -> JudgeDecision:
+    required = {name: features.get(name) for name in rules}
+    if any(value is None for value in required.values()):
+        return needs_review(
+            checkpoint_id,
+            features,
+            reason_code="missing_required_evidence",
+            reason="判定所需的视觉证据不完整。",
+        )
+    failed = [rule for name, rule in rules.items() if required[name] is not True]
+    if failed:
+        return incorrect(
+            checkpoint_id,
+            features,
+            reason_code="criterion_failed",
+            reason="操作未满足该考核点的全部要求。",
+            matched_rules=failed,
+            suggestion="请对照考核标准重新练习未满足的操作要求。",
+        )
+    return correct(
+        checkpoint_id,
+        features,
+        matched_rules=list(rules.values()),
+        reason="操作满足该考核点的全部要求。",
+    )

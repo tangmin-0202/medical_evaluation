@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from medical_evaluation.judges.base import JudgeDecision, correct, incorrect, needs_review
+from medical_evaluation.judges.base import (
+    JudgeDecision,
+    correct,
+    decide_boolean_rules,
+    incorrect,
+    needs_review,
+)
 
 
 def judge_cp09(
@@ -73,5 +79,20 @@ def judge_cp11(
     )
 
 
+def judge_cp10(
+    features: dict[str, float | bool | None],
+    _thresholds: dict[str, float],
+) -> JudgeDecision:
+    return decide_boolean_rules(
+        "cp_10",
+        features,
+        {
+            "mesial_crossing": "mesial_contact_crossed",
+            "distal_crossing": "distal_contact_crossed",
+        },
+    )
+
+
 judge_cp09.checkpoint_id = "cp_09"  # type: ignore[attr-defined]
+judge_cp10.checkpoint_id = "cp_10"  # type: ignore[attr-defined]
 judge_cp11.checkpoint_id = "cp_11"  # type: ignore[attr-defined]

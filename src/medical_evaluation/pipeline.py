@@ -11,7 +11,10 @@ from medical_evaluation.annotations import AnnotationStore
 from medical_evaluation.domain import CheckpointStatus, TimeRange
 from medical_evaluation.jobs import JobRecord
 from medical_evaluation.judges.base import JudgeDecision
-from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp11
+from medical_evaluation.judges.cp01_cp03 import judge_cp01, judge_cp02, judge_cp03
+from medical_evaluation.judges.cp04_cp06 import judge_cp04, judge_cp05, judge_cp06
+from medical_evaluation.judges.cp07_cp08 import judge_cp07, judge_cp08
+from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp10, judge_cp11
 from medical_evaluation.reporting import (
     CheckpointResult,
     EvaluationReport,
@@ -45,6 +48,20 @@ class ConfidenceProvider(Protocol):
 
 Judge = Callable[[dict[str, float | bool | None], dict[str, float]], JudgeDecision]
 
+JUDGES: dict[str, Judge] = {
+    "cp_01": judge_cp01,
+    "cp_02": judge_cp02,
+    "cp_03": judge_cp03,
+    "cp_04": judge_cp04,
+    "cp_05": judge_cp05,
+    "cp_06": judge_cp06,
+    "cp_07": judge_cp07,
+    "cp_08": judge_cp08,
+    "cp_09": judge_cp09,
+    "cp_10": judge_cp10,
+    "cp_11": judge_cp11,
+}
+
 
 class AnalysisPipeline:
     def __init__(
@@ -71,7 +88,7 @@ class AnalysisPipeline:
         self.fallback_dense_fps = fallback_dense_fps
         self.fallback_analysis_width = fallback_analysis_width
         self.minimum_alignment_confidence = minimum_alignment_confidence
-        self.judges: dict[str, Judge] = {"cp_09": judge_cp09, "cp_11": judge_cp11}
+        self.judges = dict(JUDGES)
 
     def run(
         self,

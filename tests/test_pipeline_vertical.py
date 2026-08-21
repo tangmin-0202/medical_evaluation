@@ -88,7 +88,7 @@ def test_pipeline_retries_oom_once_with_degraded_sampling(tmp_path: Path) -> Non
     report = pipeline.run(make_job(tmp_path))
 
     assert report.audit.degradations == ["cuda_oom:dense_fps=1.0,analysis_width=960"]
-    assert extractor.calls[:2] == [("cp_09", 5, 1280), ("cp_09", 1, 960)]
+    assert extractor.calls[:2] == [("cp_01", 5, 1280), ("cp_01", 1, 960)]
 
 
 def test_low_alignment_confidence_pauses_checkpoint(tmp_path: Path) -> None:
