@@ -33,6 +33,10 @@ class Rubric(BaseModel):
             raise ValueError("checkpoint IDs must be ordered cp_01 through cp_11")
         if abs(sum(item.weight for item in self.checkpoints) - 1.0) > 1e-9:
             raise ValueError("checkpoint weights must sum to 1")
+        pairs = zip(self.checkpoints[:-1], self.checkpoints[1:], strict=True)
+        for previous, current in pairs:
+            if current.reference_time.start_sec < previous.reference_time.end_sec:
+                raise ValueError("checkpoint reference times must not overlap")
         return self
 
 

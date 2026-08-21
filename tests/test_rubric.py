@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+import yaml
+from pydantic import ValidationError
+
 
 def test_reviewed_rubric_has_11_equal_weight_checkpoints() -> None:
     from medical_evaluation.rubric import Rubric, load_rubric
@@ -45,3 +49,13 @@ def test_split_criteria_accepts_chinese_comma_between_numbered_items() -> None:
         "橡皮布不遮盖患者口鼻",
         "橡皮布撑开至支架上",
     ]
+
+
+def test_rubric_rejects_overlapping_reference_ranges() -> None:
+    from medical_evaluation.rubric import Rubric
+
+    payload = yaml.safe_load(Path("config/rubric.yaml").read_text(encoding="utf-8"))
+    payload["checkpoints"][3]["reference_time"]["start_sec"] = 23.0
+
+    with pytest.raises(ValidationError, match="reference times must not overlap"):
+        Rubric.model_validate(payload)

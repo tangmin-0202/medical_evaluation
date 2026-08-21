@@ -52,7 +52,7 @@ checkpoints:
   required_objects:
   - clamp
   reference_time:
-    start_sec: 23.0
+    start_sec: 41.0
     end_sec: 47.0
   thresholds: {}
 - id: cp_05
@@ -119,7 +119,7 @@ checkpoints:
   - wing_hole
   reference_time:
     start_sec: 134.0
-    end_sec: 176.0
+    end_sec: 174.0
   thresholds: {}
 - id: cp_09
   name: 安装支架（同最后一点合并评分，或者最后再评。）
@@ -131,8 +131,8 @@ checkpoints:
   - rubber_dam_frame
   - rubber_dam
   reference_time:
-    start_sec: 176.0
-    end_sec: 185.0
+    start_sec: 175.0
+    end_sec: 195.0
   thresholds: {}
 - id: cp_10
   name: 牙线协助橡皮布就位
