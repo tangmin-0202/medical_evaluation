@@ -1,0 +1,1 @@
+"""Deterministic checkpoint decision functions."""

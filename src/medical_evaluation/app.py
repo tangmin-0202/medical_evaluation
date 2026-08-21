@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -9,14 +10,19 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from medical_evaluation.domain import CheckpointStatus
-from medical_evaluation.jobs import JobManager, JobRecord, ProgressCallback
+from medical_evaluation.jobs import JobManager, JobRecord, Pipeline, ProgressCallback
+from medical_evaluation.pipeline import AnalysisPipeline
 from medical_evaluation.reporting import CheckpointResult, EvaluationReport, RunAudit
 from medical_evaluation.settings import Settings
 from medical_evaluation.storage import atomic_write_json
 from medical_evaluation.web.routes import create_router
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    analysis_pipeline: AnalysisPipeline | None = None,
+) -> FastAPI:
     resolved = settings or Settings()
 
     async def fake_pipeline(job: JobRecord, update: ProgressCallback) -> None:
@@ -53,7 +59,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             report.model_dump(mode="json"),
         )
 
-    manager = JobManager(resolved.data_dir / "jobs", fake_pipeline)
+    selected_pipeline: Pipeline = fake_pipeline
+    if resolved.pipeline_mode == "real":
+        if analysis_pipeline is None:
+            raise ValueError("real pipeline mode requires an AnalysisPipeline instance")
+
+        async def run_analysis(job: JobRecord, _update: ProgressCallback) -> None:
+            await asyncio.to_thread(analysis_pipeline.run, job)
+
+        selected_pipeline = run_analysis
+
+    manager = JobManager(resolved.data_dir / "jobs", selected_pipeline)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

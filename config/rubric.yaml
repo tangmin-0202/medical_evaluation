@@ -133,7 +133,8 @@ checkpoints:
   reference_time:
     start_sec: 175.0
     end_sec: 195.0
-  thresholds: {}
+  thresholds:
+    max_center_offset: 0.08
 - id: cp_10
   name: 牙线协助橡皮布就位
   criteria:
@@ -162,4 +163,6 @@ checkpoints:
   reference_time:
     start_sec: 217.0
     end_sec: 258.0
-  thresholds: {}
+  thresholds:
+    max_face_overlap: 0.02
+    min_frame_coverage: 0.85

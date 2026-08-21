@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
     rubric_path: Path = Path("config/rubric.yaml")
     model_config_path: Path = Path("config/models.yaml")
     max_upload_mb: int = Field(default=2048, gt=0)
+    pipeline_mode: Literal["fake", "real"] = "fake"
     sam_backend: str = "sam3"
     sam_device: str = "cuda:0"
     vlm_base_url: str = "http://127.0.0.1:8001/v1"
