@@ -1,0 +1,165 @@
+version: '2026-08-21'
+checkpoints:
+- id: cp_01
+  name: 在橡皮布上确定隔离牙位 (目标牙位：36牙）
+  criteria:
+  - 选择正确的打孔点位并做标记
+  weight: 0.09090909090909091
+  judge_type: geometry
+  required_objects:
+  - rubber_dam
+  - mark
+  reference_time:
+    start_sec: 0.0
+    end_sec: 14.0
+  thresholds: {}
+- id: cp_02
+  name: 选择打孔器孔盘上的位置
+  criteria:
+  - 检查孔洞内有无橡皮布，若有残留绿色橡皮布，应使用探针清理孔洞内的残留橡皮布
+  - 正确选择孔盘上的洞，应为视频中孔盘上从左向右数第二个孔洞。
+  weight: 0.09090909090909091
+  judge_type: hybrid
+  required_objects:
+  - punch_disk
+  - punch_hole
+  - probe
+  - green_residue
+  reference_time:
+    start_sec: 14.0
+    end_sec: 23.0
+  thresholds: {}
+- id: cp_03
+  name: 打孔
+  criteria:
+  - 打孔后应上下提拉橡皮布，让橡皮布上的洞顺利通过打孔器的尖端。
+  weight: 0.09090909090909091
+  judge_type: state_machine
+  required_objects:
+  - punch_tip
+  - rubber_dam
+  - punched_hole
+  reference_time:
+    start_sec: 23.0
+    end_sec: 40.0
+  thresholds: {}
+- id: cp_04
+  name: 选择正确的障夹
+  criteria:
+  - 应选择下颌磨牙橡皮障夹
+  weight: 0.09090909090909091
+  judge_type: reference_vlm
+  required_objects:
+  - clamp
+  reference_time:
+    start_sec: 23.0
+    end_sec: 47.0
+  thresholds: {}
+- id: cp_05
+  name: 将橡皮障夹套入橡皮布孔洞
+  criteria:
+  - 橡皮障夹的翼在橡皮布下方，夹喙、臂和弓均在橡皮布上方
+  weight: 0.09090909090909091
+  judge_type: hybrid
+  required_objects:
+  - rubber_dam
+  - clamp_wing
+  - clamp_jaw
+  - clamp_arm
+  - clamp_bow
+  reference_time:
+    start_sec: 48.0
+    end_sec: 62.0
+  thresholds: {}
+- id: cp_06
+  name: 将橡皮障夹钳撑开橡皮障夹
+  criteria:
+  - 将橡皮障夹钳撑开橡皮障夹，并推动夹钳的弹簧向后方，以固定夹钳的开口度
+  weight: 0.09090909090909091
+  judge_type: state_machine
+  required_objects:
+  - clamp_forceps
+  - clamp
+  - forceps_spring
+  reference_time:
+    start_sec: 63.0
+    end_sec: 72.0
+  thresholds: {}
+- id: cp_07
+  name: 将橡皮障夹与橡皮布一同安放在隔离牙的颈部
+  criteria:
+  - 正确牙位
+  - 障夹的喙部与牙齿四点接触
+  - 障夹的弓部位位于隔离牙的远中）
+  weight: 0.09090909090909091
+  judge_type: hybrid
+  required_objects:
+  - target_tooth
+  - adjacent_tooth
+  - clamp_jaw
+  - clamp_bow
+  - rubber_dam
+  reference_time:
+    start_sec: 104.0
+    end_sec: 126.0
+  thresholds: {}
+- id: cp_08
+  name: 橡皮布就位
+  criteria:
+  - 用钝头器械（不可用探针）翻转橡皮布至障夹翼部以下
+  - 翼部完全露出无遮挡
+  - 橡皮布孔缘包裹住隔离牙颈部，翼部的小洞下方看到的是绿色的橡皮布而非深色口腔区域。
+  weight: 0.09090909090909091
+  judge_type: hybrid
+  required_objects:
+  - instrument
+  - clamp_wing
+  - target_tooth
+  - rubber_dam
+  - wing_hole
+  reference_time:
+    start_sec: 134.0
+    end_sec: 176.0
+  thresholds: {}
+- id: cp_09
+  name: 安装支架（同最后一点合并评分，或者最后再评。）
+  criteria:
+  - 支架居中
+  weight: 0.09090909090909091
+  judge_type: geometry
+  required_objects:
+  - rubber_dam_frame
+  - rubber_dam
+  reference_time:
+    start_sec: 176.0
+    end_sec: 185.0
+  thresholds: {}
+- id: cp_10
+  name: 牙线协助橡皮布就位
+  criteria:
+  - 用牙线通过隔离牙与邻牙的近、远中接触区
+  weight: 0.09090909090909091
+  judge_type: hybrid
+  required_objects:
+  - target_tooth
+  - adjacent_tooth
+  - dental_floss
+  reference_time:
+    start_sec: 200.0
+    end_sec: 211.0
+  thresholds: {}
+- id: cp_11
+  name: 调整橡皮布至完全就位。
+  criteria:
+  - 橡皮布不遮盖患者口鼻
+  - 橡皮布游离部分撑开至支架上
+  weight: 0.09090909090909091
+  judge_type: geometry
+  required_objects:
+  - rubber_dam
+  - rubber_dam_frame
+  - nose_mouth_region
+  reference_time:
+    start_sec: 217.0
+    end_sec: 258.0
+  thresholds: {}
