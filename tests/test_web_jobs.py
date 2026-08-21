@@ -16,7 +16,13 @@ def test_settings(tmp_path: Path) -> Settings:
     videos_dir.mkdir()
     for name in ("橡皮障完整.mp4", "橡皮障失败.mp4", "橡皮障夹子飞了.mp4"):
         (videos_dir / name).write_bytes(b"video")
-    return Settings(project_root=tmp_path, data_dir="data", videos_dir=videos_dir)
+    rubric_path = Path(__file__).parents[1] / "config" / "rubric.yaml"
+    return Settings(
+        project_root=tmp_path,
+        data_dir="data",
+        videos_dir=videos_dir,
+        rubric_path=rubric_path,
+    )
 
 
 def test_home_lists_three_presets(test_settings: Settings) -> None:

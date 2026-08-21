@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     project_root: Path = Field(default_factory=Path.cwd)
     data_dir: Path = Path("data")
     videos_dir: Path = Path("橡皮障视频/橡皮障视频")
+    rubric_path: Path = Path("config/rubric.yaml")
     model_config_path: Path = Path("config/models.yaml")
     max_upload_mb: int = Field(default=2048, gt=0)
     sam_backend: str = "sam3"
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
             self.data_dir = (self.project_root / self.data_dir).resolve()
         if not self.videos_dir.is_absolute():
             self.videos_dir = (self.project_root / self.videos_dir).resolve()
+        if not self.rubric_path.is_absolute():
+            self.rubric_path = (self.project_root / self.rubric_path).resolve()
         if not self.model_config_path.is_absolute():
             self.model_config_path = (self.project_root / self.model_config_path).resolve()
         return self

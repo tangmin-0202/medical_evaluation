@@ -87,6 +87,24 @@ class VideoAnnotations(BaseModel):
         return self
 
 
+class SegmentUpdateRequest(BaseModel):
+    actor: str = Field(min_length=1)
+    steps: list[SegmentAnnotation] = Field(min_length=11, max_length=11)
+
+    @model_validator(mode="after")
+    def validate_complete_sequence(self) -> SegmentUpdateRequest:
+        expected = [f"cp_{number:02d}" for number in range(1, 12)]
+        if [step.checkpoint_id for step in self.steps] != expected:
+            raise ValueError("segments must contain cp_01 through cp_11 in order")
+        VideoAnnotations(video_id="validation", steps=self.steps)
+        return self
+
+
+class PromptUpdateRequest(BaseModel):
+    actor: str = Field(min_length=1)
+    prompts: list[PromptAnnotation]
+
+
 class AnnotationStore:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -104,27 +122,63 @@ class AnnotationStore:
     ) -> VideoAnnotations:
         path = self._video_path(video_id)
         current = self.load_segments(video_id) if path.exists() else None
-        prompts = current.prompts if current else []
-        history = list(current.audit_history) if current else []
-        candidate = VideoAnnotations(video_id=video_id, steps=steps, prompts=prompts)
-        prior_digest = _content_digest(current) if current else None
-        new_digest = _content_digest(candidate)
-        history.append(
-            AuditEntry(
-                timestamp=datetime.now(UTC),
-                actor=actor,
-                prior_digest=prior_digest,
-                new_digest=new_digest,
-            )
+        return self._save(
+            path,
+            VideoAnnotations(
+                video_id=video_id,
+                steps=steps,
+                prompts=current.prompts if current else [],
+            ),
+            actor=actor,
+            current=current,
         )
-        saved = candidate.model_copy(update={"audit_history": history})
-        atomic_write_json(path, saved.model_dump(mode="json"))
-        return saved
+
+    def save_prompts(
+        self,
+        video_id: str,
+        prompts: list[PromptAnnotation],
+        *,
+        actor: str,
+        default_steps: list[SegmentAnnotation] | None = None,
+    ) -> VideoAnnotations:
+        path = self._video_path(video_id)
+        current = self.load_segments(video_id) if path.exists() else None
+        return self._save(
+            path,
+            VideoAnnotations(
+                video_id=video_id,
+                steps=current.steps if current else (default_steps or []),
+                prompts=prompts,
+            ),
+            actor=actor,
+            current=current,
+        )
 
     def _video_path(self, video_id: str) -> Path:
         if re.fullmatch(r"[A-Za-z0-9_-]+", video_id) is None:
             raise ValueError("video_id contains unsupported characters")
         return safe_child(self.root, f"{video_id}.json")
+
+    def _save(
+        self,
+        path: Path,
+        candidate: VideoAnnotations,
+        *,
+        actor: str,
+        current: VideoAnnotations | None,
+    ) -> VideoAnnotations:
+        history = list(current.audit_history) if current else []
+        history.append(
+            AuditEntry(
+                timestamp=datetime.now(UTC),
+                actor=actor,
+                prior_digest=_content_digest(current) if current else None,
+                new_digest=_content_digest(candidate),
+            )
+        )
+        saved = candidate.model_copy(update={"audit_history": history})
+        atomic_write_json(path, saved.model_dump(mode="json"))
+        return saved
 
 
 def _content_digest(annotations: VideoAnnotations) -> str:

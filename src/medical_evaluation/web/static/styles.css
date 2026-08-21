@@ -12,6 +12,7 @@ h1 { margin: 16px 0; font-size: clamp(2.8rem, 7vw, 6.4rem); line-height: .95; le
 .preset-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 button, input { font: inherit; }
 button, .preset { border: 0; border-radius: 12px; cursor: pointer; background: #6ee7b7; color: #06251c; font-weight: 800; padding: 14px 18px; }
+button.secondary { background: #285247; color: #ecf7f2; }
 .preset { display: flex; min-height: 116px; flex-direction: column; justify-content: space-between; text-align: left; }
 .preset small { opacity: .7; }
 #upload-form { display: flex; gap: 12px; align-items: center; }
@@ -21,4 +22,23 @@ a { color: #6ee7b7; }
 .progress { height: 12px; margin: 20px 0; overflow: hidden; border-radius: 99px; background: #19352e; }
 #progress-bar { width: 0; height: 100%; background: #6ee7b7; transition: width .25s ease; }
 .error { color: #fda4af; }
+.video-stage { position: relative; width: 100%; overflow: hidden; border-radius: 12px; background: #000; }
+.video-stage video { display: block; width: 100%; max-height: 62vh; }
+#prompt-surface { position: absolute; inset: 0 0 42px; cursor: crosshair; touch-action: none; }
+.prompt-marker { position: absolute; pointer-events: none; transform: translate(-50%, -50%); }
+.prompt-marker.point { width: 14px; height: 14px; border: 3px solid #fff; border-radius: 50%; background: #f43f5e; box-shadow: 0 0 0 2px #f43f5e; }
+.prompt-marker.box { transform: none; border: 3px solid #f43f5e; background: #f43f5e1f; }
+.prompt-tools { display: flex; gap: 12px; align-items: end; margin-top: 16px; flex-wrap: wrap; }
+.prompt-tools label { display: grid; gap: 6px; color: #b7cbc4; font-size: .8rem; }
+.prompt-tools input, .prompt-tools select { padding: 9px; border: 1px solid #285247; border-radius: 7px; background: #07110f; color: #ecf7f2; }
+.hint { margin-bottom: 0; color: #8ea9a0; font-size: .85rem; }
+.timeline { position: relative; height: 64px; border-radius: 12px; background: #19352e; overflow: hidden; }
+.timeline-step { position: absolute; display: grid; place-items: center; height: 100%; border-right: 1px solid #07110f; background: hsl(calc(145 + var(--index, 0) * 8) 55% 45%); color: #04130f; font-weight: 900; }
+.boundary { position: absolute; right: -7px; top: 0; z-index: 2; width: 14px; height: 100%; padding: 0; border-radius: 0; cursor: ew-resize; background: #fff9; }
+.annotation-actions, .step-card { display: flex; gap: 14px; align-items: end; }
+.annotation-actions { margin-top: 18px; justify-content: space-between; }
+.step-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 28px; }
+.step-card { margin-top: 14px; flex-wrap: wrap; }
+.step-card label { display: grid; gap: 6px; color: #b7cbc4; font-size: .8rem; }
+.step-card input, .step-card select, .annotation-actions input { padding: 8px; border: 1px solid #285247; border-radius: 7px; background: #07110f; color: #ecf7f2; }
 @media (max-width: 720px) { .preset-grid { grid-template-columns: 1fr; } #upload-form { align-items: stretch; flex-direction: column; } }
