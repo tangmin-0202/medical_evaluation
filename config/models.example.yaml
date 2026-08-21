@@ -1,0 +1,11 @@
+segmentation:
+  backend: sam3
+  checkpoint: /opt/models/sam3.1_multiplex.pt
+  device: cuda:0
+  analysis_width: 960
+  sparse_fps: 1.0
+  dense_fps: 5.0
+
+vlm:
+  base_url: http://127.0.0.1:8001/v1
+  model: Qwen/Qwen3-VL-4B-Instruct
