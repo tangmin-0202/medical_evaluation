@@ -13,9 +13,11 @@ from medical_evaluation.features.appearance import (
 )
 from medical_evaluation.features.geometry import (
     area_ratio,
+    bounding_box_center,
     boundary_contact_ratio,
     centroid_normalized,
     centroid_xy,
+    frame_center_offset,
     intersection_ratio,
     mask_iou,
     write_overlay,
@@ -38,6 +40,20 @@ def test_centroid_and_intersection_ratio() -> None:
     assert intersection_ratio(first, second) == 4 / 16
     assert mask_iou(first, second) == 4 / 28
     assert area_ratio(first) == 0.16
+
+
+def test_bounding_box_center_and_frame_offset() -> None:
+    centered = np.zeros((100, 200), bool)
+    centered[25:75, 50:150] = True
+    shifted = np.zeros((100, 200), bool)
+    shifted[25:75, 100:200] = True
+    empty = np.zeros((100, 200), bool)
+
+    assert bounding_box_center(centered) == (99.5, 49.5)
+    assert frame_center_offset(centered) == pytest.approx(0.0, abs=0.004)
+    assert frame_center_offset(shifted) == pytest.approx(0.25, abs=0.004)
+    assert bounding_box_center(empty) is None
+    assert frame_center_offset(empty) is None
 
 
 def test_empty_geometry_returns_none_instead_of_false_zero() -> None:

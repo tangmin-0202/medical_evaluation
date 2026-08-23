@@ -29,6 +29,25 @@ def centroid_normalized(mask: np.ndarray) -> tuple[float, float] | None:
     return centroid[0] / x_scale, centroid[1] / y_scale
 
 
+def bounding_box_center(mask: np.ndarray) -> tuple[float, float] | None:
+    binary = _mask(mask)
+    ys, xs = np.nonzero(binary)
+    if len(xs) == 0:
+        return None
+    return float(xs.min() + xs.max()) / 2, float(ys.min() + ys.max()) / 2
+
+
+def frame_center_offset(mask: np.ndarray) -> float | None:
+    binary = _mask(mask)
+    center = bounding_box_center(binary)
+    if center is None:
+        return None
+    height, width = binary.shape
+    frame_x = (width - 1) / 2
+    frame_y = (height - 1) / 2
+    return float(np.hypot((center[0] - frame_x) / width, (center[1] - frame_y) / height))
+
+
 def area_ratio(mask: np.ndarray) -> float | None:
     binary = _mask(mask)
     if binary.size == 0:
