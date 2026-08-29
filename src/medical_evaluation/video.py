@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
+
+from medical_evaluation.domain import TimeRange
 
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
 
@@ -25,6 +28,21 @@ class SampledFrame(BaseModel):
     time_sec: float = Field(ge=0)
     frame_index: int = Field(ge=0)
     image_bgr: np.ndarray
+
+
+@dataclass(frozen=True)
+class FrameTimelineEntry:
+    local_frame_index: int
+    source_frame_index: int
+    source_time_sec: float
+
+
+@dataclass(frozen=True)
+class SampledFrameSequence:
+    directory: Path
+    metadata: VideoMetadata
+    entries: tuple[FrameTimelineEntry, ...]
+    source_to_local: dict[int, int]
 
 
 def probe_video(path: Path) -> VideoMetadata:
@@ -100,6 +118,70 @@ def read_frame(path: Path, frame_index: int) -> np.ndarray:
         return image.copy()
     finally:
         capture.release()
+
+
+def write_sampled_frame_sequence(
+    path: Path,
+    output_dir: Path,
+    *,
+    time_range: TimeRange,
+    sample_fps: float,
+    required_times_sec: list[float],
+) -> SampledFrameSequence:
+    metadata = probe_video(path)
+    if sample_fps <= 0:
+        raise ValueError("sample_fps must be greater than zero")
+    if time_range.end_sec > metadata.duration_sec + 1e-6:
+        raise ValueError("sample range is outside video duration")
+    if any(
+        time_sec < time_range.start_sec or time_sec > time_range.end_sec
+        for time_sec in required_times_sec
+    ):
+        raise ValueError("prompt time is outside the requested stage interval")
+
+    source_indices: set[int] = set()
+    time_sec = time_range.start_sec
+    while time_sec < time_range.end_sec - 1e-9:
+        source_indices.add(
+            min(round(time_sec * metadata.fps), metadata.frame_count - 1)
+        )
+        time_sec += 1.0 / sample_fps
+    source_indices.update(
+        min(round(time_sec * metadata.fps), metadata.frame_count - 1)
+        for time_sec in required_times_sec
+    )
+    ordered_indices = sorted(source_indices)
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    capture = cv2.VideoCapture(str(path))
+    entries: list[FrameTimelineEntry] = []
+    try:
+        for local_index, source_index in enumerate(ordered_indices):
+            capture.set(cv2.CAP_PROP_POS_FRAMES, source_index)
+            success, image = capture.read()
+            if not success or image is None:
+                raise ValueError(f"failed to decode frame {source_index}")
+            destination = output_dir / f"{local_index:05d}.jpg"
+            if not cv2.imwrite(str(destination), image):
+                raise ValueError(f"failed to write sampled frame {destination}")
+            entries.append(
+                FrameTimelineEntry(
+                    local_frame_index=local_index,
+                    source_frame_index=source_index,
+                    source_time_sec=source_index / metadata.fps,
+                )
+            )
+    finally:
+        capture.release()
+
+    return SampledFrameSequence(
+        directory=output_dir,
+        metadata=metadata,
+        entries=tuple(entries),
+        source_to_local={
+            item.source_frame_index: item.local_frame_index for item in entries
+        },
+    )
 
 
 def _validate_video_path(path: Path) -> None:
