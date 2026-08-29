@@ -9,17 +9,21 @@ from pydantic import ValidationError
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import SegmentationPrompt, normalize_masks
 from medical_evaluation.segmentation.sam2_backend import Sam2Backend
-from medical_evaluation.video import VideoMetadata
+from tests.fixtures.make_test_video import make_test_video
 
 
 class FakeVideoPredictor:
     def __init__(self, *, fail_on_add: bool = False) -> None:
         self.add_calls: list[dict[str, object]] = []
         self.propagate_calls: list[tuple[int, bool, int]] = []
+        self.init_video_path: Path | None = None
+        self.frame_count = 0
         self.reset = False
         self.fail_on_add = fail_on_add
 
     def init_state(self, *, video_path: str) -> dict[str, object]:
+        self.init_video_path = Path(video_path)
+        self.frame_count = len(list(self.init_video_path.glob("*.jpg")))
         return {"video_path": video_path}
 
     def add_new_points_or_box(self, **kwargs: object) -> None:
@@ -36,7 +40,16 @@ class FakeVideoPredictor:
         max_frame_num_to_track: int,
     ) -> list[tuple[int, list[int], np.ndarray]]:
         self.propagate_calls.append((start_frame_idx, reverse, max_frame_num_to_track))
-        indexes = [190, 180, 170] if reverse else [190, 200]
+        stop = (
+            max(-1, start_frame_idx - max_frame_num_to_track)
+            if reverse
+            else min(self.frame_count, start_frame_idx + max_frame_num_to_track)
+        )
+        indexes = (
+            range(start_frame_idx, stop, -1)
+            if reverse
+            else range(start_frame_idx, stop)
+        )
         return [
             (index, [1], np.ones((1, 1, 4, 4), dtype=np.float32))
             for index in indexes
@@ -89,75 +102,71 @@ def test_sam2_rejects_text_only_prompts_before_inference(tmp_path: Path) -> None
 
 
 def test_sam2_batches_same_frame_points_and_tracks_both_directions(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     predictor = FakeVideoPredictor()
-    monkeypatch.setattr(
-        "medical_evaluation.segmentation.sam2_backend.probe_video",
-        lambda _path: VideoMetadata(
-            path=tmp_path / "video.mp4",
-            duration_sec=30,
-            fps=10,
-            frame_count=300,
-            width=100,
-            height=50,
-        ),
+    video = make_test_video(
+        tmp_path / "video.mp4",
+        fps=10,
+        seconds=3,
+        size=(100, 50),
     )
     backend = Sam2Backend("cfg", tmp_path / "weights.pt", predictor=predictor)
     prompts = [
         SegmentationPrompt(
             object_id="rubber_dam_frame",
             kind="point",
-            frame_time_sec=19,
+            frame_time_sec=1.3,
             coordinates=[0.2, 0.3],
         ),
         SegmentationPrompt(
             object_id="rubber_dam_frame",
             kind="point",
-            frame_time_sec=19,
+            frame_time_sec=1.3,
             coordinates=[0.8, 0.7],
         ),
     ]
 
     frames = list(
         backend.track(
-            tmp_path / "video.mp4",
-            TimeRange(start_sec=17, end_sec=20),
+            video,
+            TimeRange(start_sec=1.0, end_sec=2.5),
             prompts,
-            sample_fps=1,
+            sample_fps=2,
         )
     )
 
+    assert predictor.init_video_path is not None
+    sampled_directory = predictor.init_video_path
+    assert sampled_directory.is_dir() is False
+    assert sampled_directory.suffix != ".mp4"
     assert len(predictor.add_calls) == 1
     assert np.asarray(predictor.add_calls[0]["points"]).shape == (2, 2)
-    assert predictor.propagate_calls == [(190, False, 11), (190, True, 21)]
-    assert [frame.frame_index for frame in frames] == [170, 180, 190, 200]
+    assert predictor.add_calls[0]["frame_idx"] == 1
+    assert predictor.propagate_calls == [(1, False, 3), (1, True, 2)]
+    assert [frame.frame_index for frame in frames] == [10, 13, 15, 20]
+    assert [frame.frame_time_sec for frame in frames] == pytest.approx(
+        [1.0, 1.3, 1.5, 2.0]
+    )
     assert predictor.reset is True
 
 
 def test_sam2_resets_state_when_prompt_submission_fails(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     predictor = FakeVideoPredictor(fail_on_add=True)
-    monkeypatch.setattr(
-        "medical_evaluation.segmentation.sam2_backend.probe_video",
-        lambda _path: VideoMetadata(
-            path=tmp_path / "video.mp4",
-            duration_sec=1,
-            fps=10,
-            frame_count=10,
-            width=100,
-            height=50,
-        ),
+    video = make_test_video(
+        tmp_path / "video.mp4",
+        fps=10,
+        seconds=1,
+        size=(100, 50),
     )
     backend = Sam2Backend("cfg", tmp_path / "weights.pt", predictor=predictor)
 
     with pytest.raises(RuntimeError, match="prompt add failed"):
         list(
             backend.track(
-                tmp_path / "video.mp4",
+                video,
                 TimeRange(start_sec=0, end_sec=1),
                 [
                     SegmentationPrompt(
@@ -171,6 +180,8 @@ def test_sam2_resets_state_when_prompt_submission_fails(
             )
         )
 
+    assert predictor.init_video_path is not None
+    assert predictor.init_video_path.exists() is False
     assert predictor.reset is True
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
@@ -15,7 +16,10 @@ from medical_evaluation.segmentation.base import (
     normalize_masks,
     normalized_to_pixels,
 )
-from medical_evaluation.video import VideoMetadata, probe_video
+from medical_evaluation.video import (
+    SampledFrameSequence,
+    write_sampled_frame_sequence,
+)
 
 
 @dataclass
@@ -70,28 +74,29 @@ class Sam2Backend:
             raise ValueError("SAM2 requires at least one point, box, or mask prompt")
         if sample_fps <= 0:
             raise ValueError("sample_fps must be positive")
-        metadata = probe_video(video_path)
-        state = self.predictor.init_state(video_path=str(video_path))
-        try:
-            yield from self._track_initialized(
-                state,
-                metadata,
-                time_range,
-                prompts,
-                sample_fps,
+        required_times = [prompt.frame_time_sec for prompt in prompts]
+        with TemporaryDirectory(prefix="medical-evaluation-sam2-") as temporary_root:
+            sequence = write_sampled_frame_sequence(
+                video_path,
+                Path(temporary_root) / "frames",
+                time_range=time_range,
+                sample_fps=sample_fps,
+                required_times_sec=required_times,
             )
-        finally:
-            if hasattr(self.predictor, "reset_state"):
-                self.predictor.reset_state(state)
+            state = self.predictor.init_state(video_path=str(sequence.directory))
+            try:
+                yield from self._track_initialized(state, sequence, prompts)
+            finally:
+                if hasattr(self.predictor, "reset_state"):
+                    self.predictor.reset_state(state)
 
     def _track_initialized(
         self,
         state: Any,
-        metadata: VideoMetadata,
-        time_range: TimeRange,
+        sequence: SampledFrameSequence,
         prompts: list[SegmentationPrompt],
-        sample_fps: float,
     ) -> Iterator[FrameMasks]:
+        metadata = sequence.metadata
         object_numbers = {
             object_id: number
             for number, object_id in enumerate(dict.fromkeys(p.object_id for p in prompts), start=1)
@@ -99,15 +104,16 @@ class Sam2Backend:
         reverse_ids = {number: object_id for object_id, number in object_numbers.items()}
         conditioning_frames: list[int] = []
         for prompt in (item for item in prompts if item.kind == "mask"):
-            frame_index = round(prompt.frame_time_sec * metadata.fps)
-            conditioning_frames.append(frame_index)
+            source_index = round(prompt.frame_time_sec * metadata.fps)
+            local_index = sequence.source_to_local[source_index]
+            conditioning_frames.append(local_index)
             self.predictor.add_new_mask(
                 inference_state=state,
-                frame_idx=frame_index,
+                frame_idx=local_index,
                 obj_id=object_numbers[prompt.object_id],
                 mask=prompt.mask,
             )
-        for group in _group_prompts(prompts, metadata):
+        for group in _group_prompts(prompts, sequence):
             conditioning_frames.append(group.frame_index)
             points = np.asarray(group.points, dtype=np.float32).reshape(-1, 2)
             labels = np.asarray(group.labels, dtype=np.int32)
@@ -122,10 +128,9 @@ class Sam2Backend:
                 normalize_coords=False,
             )
 
-        stride = max(1, round(metadata.fps / sample_fps))
         results: dict[int, FrameMasks] = {}
-        first_frame = round(time_range.start_sec * metadata.fps)
-        last_frame = round(time_range.end_sec * metadata.fps)
+        first_frame = 0
+        last_frame = len(sequence.entries) - 1
         forward_start = min(conditioning_frames)
         reverse_start = max(conditioning_frames)
         directions: list[tuple[int, bool, int]] = []
@@ -140,23 +145,19 @@ class Sam2Backend:
                 reverse=reverse,
                 max_frame_num_to_track=maximum_frames,
             )
-            for frame_index, object_ids, logits in propagation:
-                frame_time = frame_index / metadata.fps
-                if not time_range.start_sec <= frame_time <= time_range.end_sec:
-                    continue
-                if frame_index % stride:
-                    continue
+            for local_index, object_ids, logits in propagation:
+                timeline = sequence.entries[local_index]
                 raw = {
-                    "frame": frame_index,
+                    "frame": timeline.source_frame_index,
                     "objects": {
                         reverse_ids[int(object_id)]: mask
                         for object_id, mask in zip(object_ids, logits, strict=True)
                     },
                 }
-                results[frame_index] = normalize_masks(
+                results[timeline.source_frame_index] = normalize_masks(
                     raw,
                     threshold=0,
-                    frame_time_sec=frame_time,
+                    frame_time_sec=timeline.source_time_sec,
                 )
         for frame_index in sorted(results):
             yield results[frame_index]
@@ -164,17 +165,19 @@ class Sam2Backend:
 
 def _group_prompts(
     prompts: list[SegmentationPrompt],
-    metadata: VideoMetadata,
+    sequence: SampledFrameSequence,
 ) -> list[_PromptGroup]:
+    metadata = sequence.metadata
     grouped: dict[tuple[str, int], _PromptGroup] = {}
     for prompt in prompts:
         if prompt.kind in {"mask", "text"}:
             continue
-        frame_index = round(prompt.frame_time_sec * metadata.fps)
-        key = prompt.object_id, frame_index
+        source_index = round(prompt.frame_time_sec * metadata.fps)
+        local_index = sequence.source_to_local[source_index]
+        key = prompt.object_id, local_index
         group = grouped.setdefault(
             key,
-            _PromptGroup(prompt.object_id, frame_index, [], []),
+            _PromptGroup(prompt.object_id, local_index, [], []),
         )
         assert prompt.coordinates is not None
         pixels = normalized_to_pixels(prompt.coordinates, metadata.width, metadata.height)
@@ -182,7 +185,7 @@ def _group_prompts(
             group.points.append(pixels)
             group.labels.append(int(prompt.positive))
         elif group.box is not None:
-            raise ValueError(f"multiple boxes for {prompt.object_id} on frame {frame_index}")
+            raise ValueError(f"multiple boxes for {prompt.object_id} on frame {local_index}")
         else:
             group.box = pixels
     return [grouped[key] for key in sorted(grouped, key=lambda item: (item[1], item[0]))]
