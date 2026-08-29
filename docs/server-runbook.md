@@ -166,9 +166,16 @@ git switch -C codex/sam2-cp09-vertical-slice \
 ```bash
 mkdir -p external models
 test -d external/sam2/.git || git clone https://github.com/facebookresearch/sam2.git external/sam2
-pip install -e external/sam2
+SAM2_BUILD_CUDA=0 python -m pip install --no-build-isolation -e external/sam2 \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple eva-decord
+python -c "import decord; print(decord.__version__)"
 git -C external/sam2 rev-parse HEAD | tee models/sam2-code-commit.txt
 ```
+
+当前服务器的 NVIDIA 驱动支持 CUDA 12.8，但系统 `nvcc` 是 10.1，因此用
+`SAM2_BUILD_CUDA=0` 跳过可选的小区域后处理扩展。该扩展不影响本切片的视频
+分割主流程。`eva-decord` 提供 SAM2 读取 MP4 所需的 `decord` 模块。
 
 下载官方 SAM2.1 checkpoints。本切片使用 large 权重：
 
@@ -180,7 +187,7 @@ sha256sum external/sam2/checkpoints/sam2.1_hiera_large.pt \
   | tee models/sam2.1_hiera_large.pt.sha256
 ```
 
-重新查看当前 GPU 占用。下面示例选择物理 GPU 1；如果该卡已有任务，必须换成空闲卡，不能终止其他用户进程：
+重新查看当前 GPU 占用。本次验证选择物理 GPU 7；如果该卡已有任务，必须换成空闲卡，不能终止其他用户进程：
 
 ```bash
 nvidia-smi
@@ -189,7 +196,7 @@ nvidia-smi
 运行成功视频 CP09：
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp09.py \
+CUDA_VISIBLE_DEVICES=7 python scripts/smoke_sam2_cp09.py \
   --checkpoint-path external/sam2/checkpoints/sam2.1_hiera_large.pt \
   --model-config configs/sam2.1/sam2.1_hiera_l.yaml \
   --device cuda:0 \
@@ -198,7 +205,12 @@ CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp09.py \
   --data-dir "$HOME/medical_evaluation/data"
 ```
 
-`CUDA_VISIBLE_DEVICES=1` 会让物理 GPU 1 在该进程内显示为 `cuda:0`，因此命令中的 `--device cuda:0` 是正确的。脚本会打印 `summary.json` 和叠加图目录。
+`CUDA_VISIBLE_DEVICES=7` 会让物理 GPU 7 在该进程内显示为 `cuda:0`，因此命令中的 `--device cuda:0` 是正确的。脚本会打印 `summary.json` 和叠加图目录。
+
+SAM2 后端不会再把完整 MP4 搬入显存。每次调用只导出当前考核阶段在
+`--sample-fps` 下的 JPEG 帧，并强制保留人工提示所在帧；本地 SAM2 帧号在输出时
+恢复为原视频帧号和时间。若首次发生 CUDA OOM，脚本只自动重试一次，并以最多
+1 FPS 重新生成更小的阶段窗口，因此该降级会真实减少输入帧和显存占用。
 
 至少检查 CP09 前、中、后三张叠加图，确认彩色掩膜覆盖的是橡皮障支架，而不是手、面部、橡皮布或背景。同时记录：
 
