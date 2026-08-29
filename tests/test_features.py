@@ -13,8 +13,8 @@ from medical_evaluation.features.appearance import (
 )
 from medical_evaluation.features.geometry import (
     area_ratio,
-    bounding_box_center,
     boundary_contact_ratio,
+    bounding_box_center,
     centroid_normalized,
     centroid_xy,
     frame_center_offset,

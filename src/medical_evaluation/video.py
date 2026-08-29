@@ -87,6 +87,21 @@ def sample_frames(
         capture.release()
 
 
+def read_frame(path: Path, frame_index: int) -> np.ndarray:
+    metadata = probe_video(path)
+    if frame_index < 0 or frame_index >= metadata.frame_count:
+        raise ValueError(f"frame index {frame_index} is outside video")
+    capture = cv2.VideoCapture(str(path))
+    try:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        success, image = capture.read()
+        if not success or image is None:
+            raise ValueError(f"failed to decode frame {frame_index}")
+        return image.copy()
+    finally:
+        capture.release()
+
+
 def _validate_video_path(path: Path) -> None:
     if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
         raise ValueError(f"unsupported video extension: {path.suffix}")

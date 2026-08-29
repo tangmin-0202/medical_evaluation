@@ -9,6 +9,41 @@ from pydantic import ValidationError
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import SegmentationPrompt, normalize_masks
 from medical_evaluation.segmentation.sam2_backend import Sam2Backend
+from medical_evaluation.video import VideoMetadata
+
+
+class FakeVideoPredictor:
+    def __init__(self, *, fail_on_add: bool = False) -> None:
+        self.add_calls: list[dict[str, object]] = []
+        self.propagate_calls: list[tuple[int, bool, int]] = []
+        self.reset = False
+        self.fail_on_add = fail_on_add
+
+    def init_state(self, *, video_path: str) -> dict[str, object]:
+        return {"video_path": video_path}
+
+    def add_new_points_or_box(self, **kwargs: object) -> None:
+        self.add_calls.append(kwargs)
+        if self.fail_on_add:
+            raise RuntimeError("prompt add failed")
+
+    def propagate_in_video(
+        self,
+        _state: object,
+        *,
+        start_frame_idx: int,
+        reverse: bool,
+        max_frame_num_to_track: int,
+    ) -> list[tuple[int, list[int], np.ndarray]]:
+        self.propagate_calls.append((start_frame_idx, reverse, max_frame_num_to_track))
+        indexes = [190, 180, 170] if reverse else [190, 200]
+        return [
+            (index, [1], np.ones((1, 1, 4, 4), dtype=np.float32))
+            for index in indexes
+        ]
+
+    def reset_state(self, _state: object) -> None:
+        self.reset = True
 
 
 def test_masks_are_boolean_and_keyed_by_object() -> None:
@@ -51,6 +86,92 @@ def test_sam2_rejects_text_only_prompts_before_inference(tmp_path: Path) -> None
                 sample_fps=1,
             )
         )
+
+
+def test_sam2_batches_same_frame_points_and_tracks_both_directions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    predictor = FakeVideoPredictor()
+    monkeypatch.setattr(
+        "medical_evaluation.segmentation.sam2_backend.probe_video",
+        lambda _path: VideoMetadata(
+            path=tmp_path / "video.mp4",
+            duration_sec=30,
+            fps=10,
+            frame_count=300,
+            width=100,
+            height=50,
+        ),
+    )
+    backend = Sam2Backend("cfg", tmp_path / "weights.pt", predictor=predictor)
+    prompts = [
+        SegmentationPrompt(
+            object_id="rubber_dam_frame",
+            kind="point",
+            frame_time_sec=19,
+            coordinates=[0.2, 0.3],
+        ),
+        SegmentationPrompt(
+            object_id="rubber_dam_frame",
+            kind="point",
+            frame_time_sec=19,
+            coordinates=[0.8, 0.7],
+        ),
+    ]
+
+    frames = list(
+        backend.track(
+            tmp_path / "video.mp4",
+            TimeRange(start_sec=17, end_sec=20),
+            prompts,
+            sample_fps=1,
+        )
+    )
+
+    assert len(predictor.add_calls) == 1
+    assert np.asarray(predictor.add_calls[0]["points"]).shape == (2, 2)
+    assert predictor.propagate_calls == [(190, False, 11), (190, True, 21)]
+    assert [frame.frame_index for frame in frames] == [170, 180, 190, 200]
+    assert predictor.reset is True
+
+
+def test_sam2_resets_state_when_prompt_submission_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    predictor = FakeVideoPredictor(fail_on_add=True)
+    monkeypatch.setattr(
+        "medical_evaluation.segmentation.sam2_backend.probe_video",
+        lambda _path: VideoMetadata(
+            path=tmp_path / "video.mp4",
+            duration_sec=1,
+            fps=10,
+            frame_count=10,
+            width=100,
+            height=50,
+        ),
+    )
+    backend = Sam2Backend("cfg", tmp_path / "weights.pt", predictor=predictor)
+
+    with pytest.raises(RuntimeError, match="prompt add failed"):
+        list(
+            backend.track(
+                tmp_path / "video.mp4",
+                TimeRange(start_sec=0, end_sec=1),
+                [
+                    SegmentationPrompt(
+                        object_id="frame",
+                        kind="point",
+                        frame_time_sec=0.5,
+                        coordinates=[0.5, 0.5],
+                    )
+                ],
+                sample_fps=1,
+            )
+        )
+
+    assert predictor.reset is True
 
 
 def test_backend_import_does_not_require_sam_packages() -> None:

@@ -146,3 +146,70 @@ ps -fp <PID>
 - 保留报告 `audit.degradations`，不要隐藏降级或修改人工真值。
 
 管线只自动降级重试一次；第二次 OOM 会使任务失败，以避免在证据不足时继续给分。
+
+## 8. SAM2 CP09 支架纵向切片
+
+该烟雾测试只验证成功视频的 CP09 支架分割、证据图和居中规则，不会把网页切换到真实模式，也不会覆盖 `data/annotations/`。
+
+另开一个服务器终端，保留当前网页服务继续运行。获取尚未合并的实现分支：
+
+```bash
+conda activate video_medical
+cd ~/medical_evaluation
+git fetch origin
+git switch -C codex/sam2-cp09-vertical-slice \
+  --track origin/codex/sam2-cp09-vertical-slice
+```
+
+安装 Meta 官方 SAM2，并记录实际代码提交：
+
+```bash
+mkdir -p external models
+test -d external/sam2/.git || git clone https://github.com/facebookresearch/sam2.git external/sam2
+pip install -e external/sam2
+git -C external/sam2 rev-parse HEAD | tee models/sam2-code-commit.txt
+```
+
+下载官方 SAM2.1 checkpoints。本切片使用 large 权重：
+
+```bash
+cd ~/medical_evaluation/external/sam2/checkpoints
+./download_ckpts.sh
+cd ~/medical_evaluation
+sha256sum external/sam2/checkpoints/sam2.1_hiera_large.pt \
+  | tee models/sam2.1_hiera_large.pt.sha256
+```
+
+重新查看当前 GPU 占用。下面示例选择物理 GPU 1；如果该卡已有任务，必须换成空闲卡，不能终止其他用户进程：
+
+```bash
+nvidia-smi
+```
+
+运行成功视频 CP09：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp09.py \
+  --checkpoint-path external/sam2/checkpoints/sam2.1_hiera_large.pt \
+  --model-config configs/sam2.1/sam2.1_hiera_l.yaml \
+  --device cuda:0 \
+  --sample-fps 2 \
+  --videos-dir "$HOME/medical_evaluation/videos" \
+  --data-dir "$HOME/medical_evaluation/data"
+```
+
+`CUDA_VISIBLE_DEVICES=1` 会让物理 GPU 1 在该进程内显示为 `cuda:0`，因此命令中的 `--device cuda:0` 是正确的。脚本会打印 `summary.json` 和叠加图目录。
+
+至少检查 CP09 前、中、后三张叠加图，确认彩色掩膜覆盖的是橡皮障支架，而不是手、面部、橡皮布或背景。同时记录：
+
+- SAM2 代码提交和 checkpoint SHA-256；
+- 实际使用 GPU、运行时间和有效掩膜帧数；
+- `frame_center_offset`、Judge 状态和任何 OOM 降级记录。
+
+在叠加图人工验收前，网页服务继续保持：
+
+```bash
+export MED_EVAL_PIPELINE_MODE=fake
+```
+
+不能把这一次烟雾测试描述为 11 项自动评分完成，也不能把成功视频单样本结果描述为准确率。
