@@ -138,7 +138,7 @@ checkpoints:
     start_sec: 175.0
     end_sec: 195.0
   thresholds:
-    max_center_offset: 0.08
+    max_oral_center_offset: 0.08
 - id: cp_10
   name: 牙线协助橡皮布就位
   criteria:

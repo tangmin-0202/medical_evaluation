@@ -27,7 +27,7 @@ class FakeExtractor:
             self.fail_once_with_oom = False
             raise RuntimeError("CUDA out of memory")
         if checkpoint_id == "cp_09":
-            return ExtractedEvidence(features={"frame_center_offset": 0.03})
+            return ExtractedEvidence(features={"frame_oral_center_offset": 0.03})
         return ExtractedEvidence(
             features={
                 "mouth_nose_visible": True,

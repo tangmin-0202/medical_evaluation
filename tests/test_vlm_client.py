@@ -14,8 +14,8 @@ def make_review_request() -> VlmReviewRequest:
         checkpoint_name="安装支架",
         criteria=["支架居中"],
         deterministic_status="incorrect",
-        reason_code="frame_not_centered",
-        features={"frame_center_offset": 0.2},
+        reason_code="frame_not_centered_on_oral_region",
+        features={"frame_oral_center_offset": 0.2},
     )
 
 

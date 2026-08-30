@@ -65,7 +65,7 @@ CASES = [
             "green_wing_hole_ratio": 0.01,
         },
     ),
-    (judge_cp09, {"frame_center_offset": 0.03}, {"frame_center_offset": 0.2}),
+    (judge_cp09, {"frame_oral_center_offset": 0.03}, {"frame_oral_center_offset": 0.2}),
     (
         judge_cp10,
         {"mesial_crossing": True, "distal_crossing": True},

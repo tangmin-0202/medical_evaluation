@@ -13,27 +13,27 @@ def judge_cp09(
     features: dict[str, float | bool | None],
     thresholds: dict[str, float],
 ) -> JudgeDecision:
-    offset = features.get("frame_center_offset")
+    offset = features.get("frame_oral_center_offset")
     if offset is None:
         return needs_review(
             "cp_09",
             features,
-            reason_code="missing_frame_center_evidence",
-            reason="未能稳定识别支架与画面中心。",
+            reason_code="missing_frame_oral_evidence",
+            reason="未能稳定识别支架与口腔区域的相对位置。",
         )
-    if float(offset) > thresholds["max_center_offset"]:
+    if float(offset) > thresholds["max_oral_center_offset"]:
         return incorrect(
             "cp_09",
             features,
-            reason_code="frame_not_centered",
-            reason="支架中心偏离允许范围。",
-            suggestion="安装支架后检查四周张力，并将支架调整至画面中央。",
+            reason_code="frame_not_centered_on_oral_region",
+            reason="支架中心相对口腔区域偏离允许范围。",
+            suggestion="安装支架后，以整个口腔区域为参照调整支架位置。",
         )
     return correct(
         "cp_09",
         features,
-        matched_rules=["frame_centered"],
-        reason="支架位置居中。",
+        matched_rules=["frame_centered_on_oral_region"],
+        reason="支架中心相对口腔区域居中。",
     )
 
 

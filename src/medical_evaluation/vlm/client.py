@@ -119,7 +119,7 @@ def _image_data_url(path: Path) -> str:
 
 def _template_fallback(reason_code: str) -> VlmReview:
     templates = {
-        "frame_not_centered": (
+        "frame_not_centered_on_oral_region": (
             "支架位置未达到居中要求。",
             "检查支架四周张力后重新调整至中央。",
         ),
