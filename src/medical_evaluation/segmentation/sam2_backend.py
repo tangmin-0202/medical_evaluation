@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -75,7 +76,10 @@ class Sam2Backend:
         if sample_fps <= 0:
             raise ValueError("sample_fps must be positive")
         required_times = [prompt.frame_time_sec for prompt in prompts]
-        with TemporaryDirectory(prefix="medical-evaluation-sam2-") as temporary_root:
+        with (
+            TemporaryDirectory(prefix="medical-evaluation-sam2-") as temporary_root,
+            self._autocast_context(),
+        ):
             sequence = write_sampled_frame_sequence(
                 video_path,
                 Path(temporary_root) / "frames",
@@ -89,6 +93,15 @@ class Sam2Backend:
             finally:
                 if hasattr(self.predictor, "reset_state"):
                     self.predictor.reset_state(state)
+
+    def _autocast_context(self) -> Any:
+        if self.device.split(":", maxsplit=1)[0] != "cuda":
+            return nullcontext()
+        try:
+            import torch
+        except ImportError:
+            return nullcontext()
+        return torch.autocast("cuda", dtype=torch.bfloat16)
 
     def _track_initialized(
         self,

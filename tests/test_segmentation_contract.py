@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -183,6 +185,94 @@ def test_sam2_resets_state_when_prompt_submission_fails(
     assert predictor.init_video_path is not None
     assert predictor.init_video_path.exists() is False
     assert predictor.reset is True
+
+
+def test_sam2_keeps_cuda_autocast_active_through_propagation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = False
+    context_checks: list[bool] = []
+    autocast_calls: list[tuple[str, object]] = []
+    fake_dtype = object()
+
+    class FakeAutocast:
+        def __enter__(self) -> None:
+            nonlocal active
+            active = True
+
+        def __exit__(self, *_args: object) -> None:
+            nonlocal active
+            active = False
+
+    def autocast(device_type: str, *, dtype: object) -> FakeAutocast:
+        autocast_calls.append((device_type, dtype))
+        return FakeAutocast()
+
+    class AutocastCheckingPredictor(FakeVideoPredictor):
+        def init_state(self, *, video_path: str) -> dict[str, object]:
+            context_checks.append(active)
+            return super().init_state(video_path=video_path)
+
+        def add_new_points_or_box(self, **kwargs: object) -> None:
+            context_checks.append(active)
+            super().add_new_points_or_box(**kwargs)
+
+        def propagate_in_video(
+            self,
+            state: object,
+            *,
+            start_frame_idx: int,
+            reverse: bool,
+            max_frame_num_to_track: int,
+        ):
+            context_checks.append(active)
+            yield from super().propagate_in_video(
+                state,
+                start_frame_idx=start_frame_idx,
+                reverse=reverse,
+                max_frame_num_to_track=max_frame_num_to_track,
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(bfloat16=fake_dtype, autocast=autocast),
+    )
+    predictor = AutocastCheckingPredictor()
+    backend = Sam2Backend(
+        "cfg",
+        tmp_path / "weights.pt",
+        device="cuda:0",
+        predictor=predictor,
+    )
+    video = make_test_video(
+        tmp_path / "video.mp4",
+        fps=10,
+        seconds=1,
+        size=(100, 50),
+    )
+
+    list(
+        backend.track(
+            video,
+            TimeRange(start_sec=0, end_sec=1),
+            [
+                SegmentationPrompt(
+                    object_id="rubber_dam_frame",
+                    kind="point",
+                    frame_time_sec=0.5,
+                    coordinates=[0.5, 0.5],
+                )
+            ],
+            sample_fps=1,
+        )
+    )
+
+    assert autocast_calls == [("cuda", fake_dtype)]
+    assert context_checks
+    assert all(context_checks)
+    assert active is False
 
 
 def test_backend_import_does_not_require_sam_packages() -> None:
