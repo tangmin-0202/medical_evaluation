@@ -1,3 +1,5 @@
+import math
+
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import SegmentationPrompt
@@ -11,8 +13,8 @@ def prompts_for_object(
     checkpoint_id: str = "cp_09",
     boundary_tolerance_sec: float = 0.0,
 ) -> list[SegmentationPrompt]:
-    if boundary_tolerance_sec < 0:
-        raise ValueError("boundary_tolerance_sec must be non-negative")
+    if not math.isfinite(boundary_tolerance_sec) or boundary_tolerance_sec < 0:
+        raise ValueError("boundary_tolerance_sec must be finite and non-negative")
     allowed_start = time_range.start_sec - boundary_tolerance_sec
     allowed_end = time_range.end_sec + boundary_tolerance_sec
 
