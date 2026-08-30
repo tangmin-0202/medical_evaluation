@@ -147,11 +147,26 @@ ps -fp <PID>
 
 管线只自动降级重试一次；第二次 OOM 会使任务失败，以避免在证据不足时继续给分。
 
-## 8. SAM2 CP09 支架纵向切片
+## 8. SAM2 CP09 双目标纵向切片
 
-该烟雾测试只验证成功视频的 CP09 支架分割、证据图和居中规则，不会把网页切换到真实模式，也不会覆盖 `data/annotations/`。
+该烟雾测试只验证成功视频 CP09 的两个目标：`rubber_dam_frame`（白色支架）和
+`oral_region`（整个口腔区域）。系统在一次 SAM2 视频推理中同时跟踪这两个对象，
+按同一帧配对掩膜，并计算支架中心相对口腔区域中心的偏移。它不会把网页切换到真实
+模式，也不会覆盖 `data/annotations/`。
 
-另开一个服务器终端，保留当前网页服务继续运行。获取尚未合并的实现分支：
+### 8.1 标注要求
+
+`data/annotations/success.json` 的 CP09 时间段目前为 `175.0-195.0s`，必须同时包含：
+
+- `rubber_dam_frame` 的点或框提示；
+- `oral_region` 的点或框提示。
+
+CP09 对阶段边界使用 `±0.5s` 的提示容差，因此当前
+`oral_region@174.686926s` 可以作为条件帧。SAM2 的实际跟踪窗口会向前扩展以包含
+该提示，但特征、有效帧计数和证据图只统计原始 `175.0-195.0s` 阶段内的帧。
+其他考核点仍保持默认的严格时间过滤。
+
+另开一个服务器终端，保留当前网页服务继续运行。获取实现分支：
 
 ```bash
 conda activate video_medical
@@ -187,7 +202,8 @@ sha256sum external/sam2/checkpoints/sam2.1_hiera_large.pt \
   | tee models/sam2.1_hiera_large.pt.sha256
 ```
 
-重新查看当前 GPU 占用。本次验证选择物理 GPU 7；如果该卡已有任务，必须换成空闲卡，不能终止其他用户进程：
+重新查看当前 GPU 占用。本次验证选择物理 GPU 7；如果该卡已有任务，必须换成空闲卡，
+不能终止其他用户进程：
 
 ```bash
 nvidia-smi
@@ -205,20 +221,42 @@ CUDA_VISIBLE_DEVICES=7 python scripts/smoke_sam2_cp09.py \
   --data-dir "$HOME/medical_evaluation/data"
 ```
 
-`CUDA_VISIBLE_DEVICES=7` 会让物理 GPU 7 在该进程内显示为 `cuda:0`，因此命令中的 `--device cuda:0` 是正确的。脚本会打印 `summary.json` 和叠加图目录。
+`CUDA_VISIBLE_DEVICES=7` 会让物理 GPU 7 在该进程内显示为 `cuda:0`，因此
+`--device cuda:0` 是正确的。SAM2 后端不会把完整 MP4 搬入显存；它只导出当前
+考核阶段在 `--sample-fps` 下的 JPEG 帧，并强制保留人工提示所在帧。若首次发生
+CUDA OOM，脚本只自动重试一次，并降到最多 1 FPS。
 
-SAM2 后端不会再把完整 MP4 搬入显存。每次调用只导出当前考核阶段在
-`--sample-fps` 下的 JPEG 帧，并强制保留人工提示所在帧；本地 SAM2 帧号在输出时
-恢复为原视频帧号和时间。若首次发生 CUDA OOM，脚本只自动重试一次，并以最多
-1 FPS 重新生成更小的阶段窗口，因此该降级会真实减少输入帧和显存占用。
+### 8.2 预期输出
 
-至少检查 CP09 前、中、后三张叠加图，确认彩色掩膜覆盖的是橡皮障支架，而不是手、面部、橡皮布或背景。同时记录：
+脚本会生成：
 
-- SAM2 代码提交和 checkpoint SHA-256；
-- 实际使用 GPU、运行时间和有效掩膜帧数；
-- `frame_center_offset`、Judge 状态和任何 OOM 降级记录。
+- `summary.json`：包含两个对象各自的 `prompt_counts`；
+- `decision.json`：使用 `frame_oral_center_offset` 判定；
+- `cp_09/masks/rubber_dam_frame/*.png`：支架二值掩膜；
+- `cp_09/masks/oral_region/*.png`：口腔区域二值掩膜；
+- `cp_09/overlays/*.jpg`：最多三张同时叠加两个目标的代表帧。
 
-在叠加图人工验收前，网页服务继续保持：
+`summary.json` 应包含以下特征：
+
+- `frame_oral_center_offset`：至少 3 个成对有效帧的相对偏移中位数；
+- `frame_valid_count`：支架非空掩膜帧数；
+- `oral_region_valid_count`：口腔区域非空掩膜帧数；
+- `paired_valid_count`：同一帧两个掩膜都有效的帧数。
+
+若 `paired_valid_count < 3`，偏移特征必须为 `null`，Judge 必须返回
+`needs_review`，不能因单个目标分割成功而给出“正确”。
+
+### 8.3 人工验收
+
+检查前、中、后三张组合叠加图，以及两套二值掩膜。只有同时满足以下条件才接受：
+
+- `rubber_dam_frame` 覆盖白色支架，而不是橡皮布、手或背景；
+- `oral_region` 覆盖预期的整个口腔区域，而不是固定的图像窗口；
+- 三张代表帧中的两个目标语义保持稳定；
+- `decision.json` 使用 `frame_oral_center_offset`，且至少有 3 个成对有效帧。
+
+同时记录 SAM2 代码提交、checkpoint SHA-256、实际 GPU、运行时间、三类有效帧计数、
+相对偏移和任何 OOM 降级记录。在人工验收前，网页服务继续保持：
 
 ```bash
 export MED_EVAL_PIPELINE_MODE=fake
