@@ -62,17 +62,25 @@ def run_cp09_smoke(
     )
     decision = judge_cp09(result.features, rule.thresholds)
     completed = datetime.now(UTC)
-    prompt_count = sum(
-        prompt.object_id == "rubber_dam_frame"
-        and segment.time_range.start_sec <= prompt.frame_time_sec <= segment.time_range.end_sec
-        for prompt in annotations.prompts
-    )
+    boundary_tolerance_sec = Cp09FeatureExtractor.prompt_boundary_tolerance_sec
+    allowed_start = segment.time_range.start_sec - boundary_tolerance_sec
+    allowed_end = segment.time_range.end_sec + boundary_tolerance_sec
+    prompt_counts = {
+        object_id: sum(
+            prompt.object_id == object_id
+            and allowed_start <= prompt.frame_time_sec <= allowed_end
+            for prompt in annotations.prompts
+        )
+        for object_id in ("rubber_dam_frame", "oral_region")
+    }
     summary: dict[str, object] = {
         "video_id": video_id,
         "checkpoint_id": checkpoint_id,
         "time_range": segment.time_range.model_dump(mode="json"),
-        "prompt_count": prompt_count,
+        "prompt_counts": prompt_counts,
         "valid_frame_count": result.features.get("frame_valid_count", 0.0),
+        "oral_region_valid_count": result.features.get("oral_region_valid_count", 0.0),
+        "paired_valid_count": result.features.get("paired_valid_count", 0.0),
         "evidence_count": len(result.evidence),
         "features": result.features,
         "model_version": extractor.model_version,

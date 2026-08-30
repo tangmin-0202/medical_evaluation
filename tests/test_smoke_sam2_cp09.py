@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from medical_evaluation.annotations import PointPrompt, SegmentAnnotation, VideoAnnotations
+from medical_evaluation.annotations import (
+    BoxPrompt,
+    PointPrompt,
+    SegmentAnnotation,
+    VideoAnnotations,
+)
 from medical_evaluation.domain import CheckpointStatus
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.rubric import load_rubric
@@ -18,7 +23,14 @@ class FakeExtractor:
         return "fake-sam2:test"
 
     def extract(self, *_args: object, **_kwargs: object) -> ExtractedEvidence:
-        return ExtractedEvidence(features={"frame_center_offset": 0.03})
+        return ExtractedEvidence(
+            features={
+                "frame_oral_center_offset": 0.03,
+                "frame_valid_count": 3.0,
+                "oral_region_valid_count": 3.0,
+                "paired_valid_count": 3.0,
+            }
+        )
 
 
 def _annotations() -> VideoAnnotations:
@@ -41,7 +53,16 @@ def _annotations() -> VideoAnnotations:
                 object_id="rubber_dam_frame",
                 x=0.5,
                 y=0.5,
-            )
+            ),
+            BoxPrompt(
+                video_id="success",
+                frame_time_sec=174.75,
+                object_id="oral_region",
+                x1=0.25,
+                y1=0.2,
+                x2=0.75,
+                y2=0.8,
+            ),
         ],
     )
 
@@ -58,7 +79,14 @@ def test_smoke_core_writes_summary_and_correct_decision(tmp_path: Path) -> None:
     stored_summary = json.loads((tmp_path / "run" / "summary.json").read_text("utf-8"))
     decision = json.loads((tmp_path / "run" / "decision.json").read_text("utf-8"))
     assert summary == stored_summary
-    assert summary["prompt_count"] == 1
+    assert summary["prompt_counts"] == {
+        "rubber_dam_frame": 1,
+        "oral_region": 1,
+    }
+    assert "prompt_count" not in summary
+    assert summary["valid_frame_count"] == 3.0
+    assert summary["oral_region_valid_count"] == 3.0
+    assert summary["paired_valid_count"] == 3.0
     assert summary["model_version"] == "fake-sam2:test"
     assert decision["status"] == "correct"
 
