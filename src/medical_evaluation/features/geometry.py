@@ -30,11 +30,35 @@ def centroid_normalized(mask: np.ndarray) -> tuple[float, float] | None:
 
 
 def bounding_box_center(mask: np.ndarray) -> tuple[float, float] | None:
-    binary = _mask(mask)
-    ys, xs = np.nonzero(binary)
+    box = _bounding_box(_mask(mask))
+    if box is None:
+        return None
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+
+def _bounding_box(mask: np.ndarray) -> tuple[float, float, float, float] | None:
+    ys, xs = np.nonzero(mask)
     if len(xs) == 0:
         return None
-    return float(xs.min() + xs.max()) / 2, float(ys.min() + ys.max()) / 2
+    return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+
+
+def relative_bbox_center_offset(
+    subject: np.ndarray,
+    reference: np.ndarray,
+) -> float | None:
+    subject_mask, reference_mask = _matching_masks(subject, reference)
+    subject_box = _bounding_box(subject_mask)
+    reference_box = _bounding_box(reference_mask)
+    if subject_box is None or reference_box is None:
+        return None
+    sx = (subject_box[0] + subject_box[2]) / 2
+    sy = (subject_box[1] + subject_box[3]) / 2
+    rx = (reference_box[0] + reference_box[2]) / 2
+    ry = (reference_box[1] + reference_box[3]) / 2
+    reference_width = reference_box[2] - reference_box[0] + 1
+    reference_height = reference_box[3] - reference_box[1] + 1
+    return float(np.hypot((sx - rx) / reference_width, (sy - ry) / reference_height))
 
 
 def frame_center_offset(mask: np.ndarray) -> float | None:

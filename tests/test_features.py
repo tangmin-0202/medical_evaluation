@@ -20,6 +20,7 @@ from medical_evaluation.features.geometry import (
     frame_center_offset,
     intersection_ratio,
     mask_iou,
+    relative_bbox_center_offset,
     write_overlay,
 )
 from medical_evaluation.features.motion import (
@@ -54,6 +55,28 @@ def test_bounding_box_center_and_frame_offset() -> None:
     assert frame_center_offset(shifted) == pytest.approx(0.25, abs=0.004)
     assert bounding_box_center(empty) is None
     assert frame_center_offset(empty) is None
+
+
+def test_relative_bbox_center_offset_uses_reference_scale() -> None:
+    oral = np.zeros((100, 200), bool)
+    oral[20:80, 50:150] = True
+    centered_frame = np.zeros((100, 200), bool)
+    centered_frame[40:60, 90:110] = True
+    shifted_frame = np.zeros((100, 200), bool)
+    shifted_frame[40:60, 140:160] = True
+
+    assert relative_bbox_center_offset(centered_frame, oral) == pytest.approx(0.0)
+    assert relative_bbox_center_offset(shifted_frame, oral) == pytest.approx(0.5)
+
+
+def test_relative_bbox_center_offset_handles_missing_and_mismatched_masks() -> None:
+    empty = np.zeros((10, 10), bool)
+    present = np.ones((10, 10), bool)
+
+    assert relative_bbox_center_offset(empty, present) is None
+    assert relative_bbox_center_offset(present, empty) is None
+    with pytest.raises(ValueError, match="dimensions"):
+        relative_bbox_center_offset(present, np.ones((8, 8), bool))
 
 
 def test_empty_geometry_returns_none_instead_of_false_zero() -> None:
