@@ -19,21 +19,21 @@ def judge_cp09(
             "cp_09",
             features,
             reason_code="missing_frame_oral_evidence",
-            reason="未能稳定识别支架与口腔区域的相对位置。",
+            reason="未能稳定获得支架相对口腔参考区域的位置。",
         )
     if float(offset) > thresholds["max_oral_center_offset"]:
         return incorrect(
             "cp_09",
             features,
             reason_code="frame_not_centered_on_oral_region",
-            reason="支架中心相对口腔区域偏离允许范围。",
-            suggestion="安装支架后，以整个口腔区域为参照调整支架位置。",
+            reason="支架中心相对口腔参考区域偏离允许范围。",
+            suggestion="安装支架后，以整个口腔参考区域为参照调整支架位置。",
         )
     return correct(
         "cp_09",
         features,
         matched_rules=["frame_centered_on_oral_region"],
-        reason="支架中心相对口腔区域居中。",
+        reason="支架中心相对口腔参考区域居中。",
     )
 
 

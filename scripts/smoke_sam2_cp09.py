@@ -79,8 +79,11 @@ def run_cp09_smoke(
         "time_range": segment.time_range.model_dump(mode="json"),
         "prompt_counts": prompt_counts,
         "valid_frame_count": result.features.get("frame_valid_count", 0.0),
-        "oral_region_valid_count": result.features.get("oral_region_valid_count", 0.0),
-        "paired_valid_count": result.features.get("paired_valid_count", 0.0),
+        "oral_reference_count": result.features.get("oral_reference_count", 0.0),
+        "relative_offset_valid_count": result.features.get(
+            "relative_offset_valid_count",
+            0.0,
+        ),
         "evidence_count": len(result.evidence),
         "features": result.features,
         "model_version": extractor.model_version,

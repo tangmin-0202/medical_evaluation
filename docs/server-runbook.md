@@ -147,24 +147,26 @@ ps -fp <PID>
 
 管线只自动降级重试一次；第二次 OOM 会使任务失败，以避免在证据不足时继续给分。
 
-## 8. SAM2 CP09 双目标纵向切片
+## 8. SAM2 CP09 固定口腔参考框纵向切片
 
-该烟雾测试只验证成功视频 CP09 的两个目标：`rubber_dam_frame`（白色支架）和
-`oral_region`（整个口腔区域）。系统在一次 SAM2 视频推理中同时跟踪这两个对象，
-按同一帧配对掩膜，并计算支架中心相对口腔区域中心的偏移。它不会把网页切换到真实
-模式，也不会覆盖 `data/annotations/`。
+该烟雾测试只让 SAM2 分割和跟踪 `rubber_dam_frame`（白色支架）。
+`oral_region` 必须是一个人工框出的口腔参考区域；该框不送入 SAM2，而是在整个
+CP09 阶段保持固定。系统计算每帧支架掩膜中心相对口腔参考框中心的归一化偏移，
+再取阶段中位数。它不会把网页切换到真实模式，也不会覆盖
+`data/annotations/`。
 
 ### 8.1 标注要求
 
-`data/annotations/success.json` 的 CP09 时间段目前为 `175.0-195.0s`，必须同时包含：
+`data/annotations/success.json` 的 CP09 时间段目前为 `175.0-195.0s`，必须包含：
 
 - `rubber_dam_frame` 的点或框提示；
-- `oral_region` 的点或框提示。
+- 恰好一个 `oral_region` 框。
 
 CP09 对阶段边界使用 `±0.5s` 的提示容差，因此当前
-`oral_region@174.686926s` 可以作为条件帧。SAM2 的实际跟踪窗口会向前扩展以包含
-该提示，但特征、有效帧计数和证据图只统计原始 `175.0-195.0s` 阶段内的帧。
-其他考核点仍保持默认的严格时间过滤。
+`oral_region@174.686926s` 可以作为固定参考框。该框的时间不会扩大 SAM2
+跟踪窗口；跟踪窗口只根据原始阶段和支架提示时间确定。特征、有效帧计数和证据图
+只统计原始 `175.0-195.0s` 阶段内的帧。没有口腔框、使用口腔点提示或存在多个
+口腔框时，脚本会在 SAM2 推理前要求重新标注。
 
 另开一个服务器终端，保留当前网页服务继续运行。获取实现分支：
 
@@ -230,33 +232,37 @@ CUDA OOM，脚本只自动重试一次，并降到最多 1 FPS。
 
 脚本会生成：
 
-- `summary.json`：包含两个对象各自的 `prompt_counts`；
+- `summary.json`：包含支架提示和口腔参考框各自的 `prompt_counts`；
 - `decision.json`：使用 `frame_oral_center_offset` 判定；
 - `cp_09/masks/rubber_dam_frame/*.png`：支架二值掩膜；
-- `cp_09/masks/oral_region/*.png`：口腔区域二值掩膜；
-- `cp_09/overlays/*.jpg`：最多三张同时叠加两个目标的代表帧。
+- 不生成 `cp_09/masks/oral_region/`；
+- `cp_09/overlays/*.jpg`：最多三张显示支架掩膜、口腔参考框、两个中心及连线的
+  代表帧。
 
 `summary.json` 应包含以下特征：
 
-- `frame_oral_center_offset`：至少 3 个成对有效帧的相对偏移中位数；
+- `frame_oral_center_offset`：至少 3 个有效支架帧的相对偏移中位数；
 - `frame_valid_count`：支架非空掩膜帧数；
-- `oral_region_valid_count`：口腔区域非空掩膜帧数；
-- `paired_valid_count`：同一帧两个掩膜都有效的帧数。
+- `oral_reference_count`：已验证的口腔参考框数，当前必须为 `1.0`；
+- `relative_offset_valid_count`：成功计算相对参考框偏移的支架帧数。
 
-若 `paired_valid_count < 3`，偏移特征必须为 `null`，Judge 必须返回
-`needs_review`，不能因单个目标分割成功而给出“正确”。
+若 `relative_offset_valid_count < 3`，偏移特征必须为 `null`，Judge 必须返回
+`needs_review`，不能在证据不足时给出“正确”或“错误”。
 
 ### 8.3 人工验收
 
-检查前、中、后三张组合叠加图，以及两套二值掩膜。只有同时满足以下条件才接受：
+检查前、中、后三张组合叠加图和支架二值掩膜。只有同时满足以下条件才接受：
 
 - `rubber_dam_frame` 覆盖白色支架，而不是橡皮布、手或背景；
-- `oral_region` 覆盖预期的整个口腔区域，而不是固定的图像窗口；
-- 三张代表帧中的两个目标语义保持稳定；
-- `decision.json` 使用 `frame_oral_center_offset`，且至少有 3 个成对有效帧。
+- 叠加图中的 `oral_region` 框、口腔中心、支架中心和连线位置正确；
+- 三张代表帧中的支架语义保持稳定；
+- 没有生成 `oral_region` 掩膜目录；
+- `decision.json` 使用 `frame_oral_center_offset`，且至少有 3 个有效偏移帧。
 
 同时记录 SAM2 代码提交、checkpoint SHA-256、实际 GPU、运行时间、三类有效帧计数、
-相对偏移和任何 OOM 降级记录。在人工验收前，网页服务继续保持：
+相对偏移和任何 OOM 降级记录。当前 `0.08` 只是临时工程阈值；必须分别运行一个
+成功视频和两个失败视频，再根据三组新偏移校准，不能只调到成功视频通过。在人工
+验收前，网页服务继续保持：
 
 ```bash
 export MED_EVAL_PIPELINE_MODE=fake

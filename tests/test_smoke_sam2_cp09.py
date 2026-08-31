@@ -27,8 +27,8 @@ class FakeExtractor:
             features={
                 "frame_oral_center_offset": 0.03,
                 "frame_valid_count": 3.0,
-                "oral_region_valid_count": 3.0,
-                "paired_valid_count": 3.0,
+                "oral_reference_count": 1.0,
+                "relative_offset_valid_count": 3.0,
             }
         )
 
@@ -85,8 +85,10 @@ def test_smoke_core_writes_summary_and_correct_decision(tmp_path: Path) -> None:
     }
     assert "prompt_count" not in summary
     assert summary["valid_frame_count"] == 3.0
-    assert summary["oral_region_valid_count"] == 3.0
-    assert summary["paired_valid_count"] == 3.0
+    assert summary["oral_reference_count"] == 1.0
+    assert summary["relative_offset_valid_count"] == 3.0
+    assert "oral_region_valid_count" not in summary
+    assert "paired_valid_count" not in summary
     assert summary["model_version"] == "fake-sam2:test"
     assert decision["status"] == "correct"
 

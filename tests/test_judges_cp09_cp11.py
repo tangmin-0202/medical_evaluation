@@ -23,12 +23,13 @@ def test_cp09_marks_large_oral_relative_offset_incorrect() -> None:
 
 def test_cp09_requests_review_without_paired_evidence() -> None:
     result = judge_cp09(
-        {"frame_oral_center_offset": None, "paired_valid_count": 2.0},
+        {"frame_oral_center_offset": None, "relative_offset_valid_count": 2.0},
         {"max_oral_center_offset": 0.08},
     )
 
     assert result.status.value == "needs_review"
     assert result.reason_code == "missing_frame_oral_evidence"
+    assert "口腔参考区域" in result.reason
 
 
 def test_cp11_requests_review_when_face_region_is_missing() -> None:
