@@ -47,7 +47,7 @@ def _video(path: Path) -> Path:
     return path
 
 
-def _annotations(*, include_oral_region: bool = True) -> VideoAnnotations:
+def _annotations(*, oral_region: str = "box") -> VideoAnnotations:
     prompts: list[PointPrompt | BoxPrompt] = [
         PointPrompt(
             video_id="success",
@@ -57,7 +57,7 @@ def _annotations(*, include_oral_region: bool = True) -> VideoAnnotations:
             y=0.5,
         )
     ]
-    if include_oral_region:
+    if oral_region in {"box", "duplicate"}:
         prompts.append(
             BoxPrompt(
                 video_id="success",
@@ -67,6 +67,28 @@ def _annotations(*, include_oral_region: bool = True) -> VideoAnnotations:
                 y1=0.2,
                 x2=0.75,
                 y2=0.8,
+            )
+        )
+    if oral_region == "duplicate":
+        prompts.append(
+            BoxPrompt(
+                video_id="success",
+                frame_time_sec=0.45,
+                object_id="oral_region",
+                x1=0.2,
+                y1=0.15,
+                x2=0.8,
+                y2=0.85,
+            )
+        )
+    if oral_region == "point":
+        prompts.append(
+            PointPrompt(
+                video_id="success",
+                frame_time_sec=0.4,
+                object_id="oral_region",
+                x=0.5,
+                y=0.5,
             )
         )
     return VideoAnnotations(video_id="success", prompts=prompts)
@@ -97,14 +119,14 @@ def _frame(
     )
 
 
-def test_extracts_paired_relative_feature_and_three_evidence_overlays(tmp_path: Path) -> None:
-    frame_mask, oral_mask = _masks()
+def test_extracts_fixed_reference_feature_and_three_evidence_overlays(tmp_path: Path) -> None:
+    frame_mask, _oral_mask = _masks()
     segmenter = FakeSegmenter(
         [
-            _frame(4, frame_mask, oral_mask),
-            _frame(5, frame_mask, oral_mask),
-            _frame(10, frame_mask, oral_mask),
-            _frame(15, frame_mask, oral_mask),
+            _frame(4, frame_mask, None),
+            _frame(5, frame_mask, None),
+            _frame(10, frame_mask, None),
+            _frame(15, frame_mask, None),
         ]
     )
     evidence_root = tmp_path / "evidence"
@@ -122,35 +144,34 @@ def test_extracts_paired_relative_feature_and_three_evidence_overlays(tmp_path: 
         analysis_width=1280,
     )
 
-    assert {prompt.object_id for prompt in segmenter.prompts} == {
-        "rubber_dam_frame",
-        "oral_region",
-    }
+    assert {prompt.object_id for prompt in segmenter.prompts} == {"rubber_dam_frame"}
     assert segmenter.time_range is not None
-    assert segmenter.time_range.start_sec == pytest.approx(0.4)
+    assert segmenter.time_range.start_sec == pytest.approx(0.5)
     assert segmenter.time_range.end_sec == pytest.approx(1.6)
     assert result.features == {
         "frame_oral_center_offset": pytest.approx(0.0),
         "frame_valid_count": 3.0,
-        "oral_region_valid_count": 3.0,
-        "paired_valid_count": 3.0,
+        "oral_reference_count": 1.0,
+        "relative_offset_valid_count": 3.0,
     }
     assert len(result.evidence) == 3
-    assert all(item.rule == "rubber_dam_frame_relative_to_oral_region" for item in result.evidence)
+    assert all(
+        item.rule == "rubber_dam_frame_relative_to_oral_reference"
+        for item in result.evidence
+    )
     assert all(item.time_sec >= 0.5 for item in result.evidence)
     assert all((evidence_root / item.overlay_path).is_file() for item in result.evidence)
     assert len(list((evidence_root / "cp_09/masks/rubber_dam_frame").glob("*.png"))) == 3
-    assert len(list((evidence_root / "cp_09/masks/oral_region").glob("*.png"))) == 3
+    assert not (evidence_root / "cp_09/masks/oral_region").exists()
 
 
-def test_missing_oral_masks_keep_independent_frame_count(tmp_path: Path) -> None:
-    frame_mask, _oral_mask = _masks()
+def test_missing_frame_masks_produce_review_features(tmp_path: Path) -> None:
     extractor = Cp09FeatureExtractor(
         segmenter=FakeSegmenter(
             [
-                _frame(5, frame_mask, None),
-                _frame(10, frame_mask, None),
-                _frame(15, frame_mask, None),
+                _frame(5, None, None),
+                _frame(10, None, None),
+                _frame(15, None, None),
             ]
         ),
         annotations=_annotations(),
@@ -167,18 +188,18 @@ def test_missing_oral_masks_keep_independent_frame_count(tmp_path: Path) -> None
 
     assert result.features == {
         "frame_oral_center_offset": None,
-        "frame_valid_count": 3.0,
-        "oral_region_valid_count": 0.0,
-        "paired_valid_count": 0.0,
+        "frame_valid_count": 0.0,
+        "oral_reference_count": 1.0,
+        "relative_offset_valid_count": 0.0,
     }
     assert result.evidence == []
 
 
-def test_two_paired_masks_keep_evidence_but_require_review(tmp_path: Path) -> None:
-    frame_mask, oral_mask = _masks()
+def test_two_frame_masks_keep_evidence_but_require_review(tmp_path: Path) -> None:
+    frame_mask, _oral_mask = _masks()
     extractor = Cp09FeatureExtractor(
         segmenter=FakeSegmenter(
-            [_frame(5, frame_mask, oral_mask), _frame(10, frame_mask, oral_mask)]
+            [_frame(5, frame_mask, None), _frame(10, frame_mask, None)]
         ),
         annotations=_annotations(),
         evidence_root=tmp_path / "evidence",
@@ -195,21 +216,33 @@ def test_two_paired_masks_keep_evidence_but_require_review(tmp_path: Path) -> No
     assert result.features == {
         "frame_oral_center_offset": None,
         "frame_valid_count": 2.0,
-        "oral_region_valid_count": 2.0,
-        "paired_valid_count": 2.0,
+        "oral_reference_count": 1.0,
+        "relative_offset_valid_count": 2.0,
     }
     assert len(result.evidence) == 2
 
 
-def test_missing_oral_prompt_fails_before_tracking(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("oral_region", "message"),
+    [
+        ("missing", "exactly one oral_region box"),
+        ("point", "oral_region must be a box"),
+        ("duplicate", "exactly one oral_region box"),
+    ],
+)
+def test_invalid_oral_reference_fails_before_tracking(
+    tmp_path: Path,
+    oral_region: str,
+    message: str,
+) -> None:
     segmenter = FakeSegmenter([])
     extractor = Cp09FeatureExtractor(
         segmenter=segmenter,
-        annotations=_annotations(include_oral_region=False),
+        annotations=_annotations(oral_region=oral_region),
         evidence_root=tmp_path / "evidence",
     )
 
-    with pytest.raises(ValueError, match=r"cp_09 has no oral_region prompt"):
+    with pytest.raises(ValueError, match=message):
         extractor.extract(
             tmp_path / "video.avi",
             "cp_09",
