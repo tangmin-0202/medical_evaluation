@@ -15,6 +15,12 @@ from medical_evaluation.rubric import Rubric, load_rubric
 from medical_evaluation.segmentation.sam2_backend import Sam2Backend
 from medical_evaluation.storage import atomic_write_json, safe_child
 
+VIDEO_FILENAMES = {
+    "success": "橡皮障完整.mp4",
+    "failure": "橡皮障失败.mp4",
+    "clamp_failure": "橡皮障夹子飞了.mp4",
+}
+
 
 class Cp09Extractor(Protocol):
     @property
@@ -43,8 +49,8 @@ def run_cp09_smoke(
     sample_fps: float = 2.0,
     degradations: list[str] | None = None,
 ) -> dict[str, object]:
-    if video_id != "success":
-        raise ValueError("CP09 smoke only accepts video_id=success")
+    if video_id not in VIDEO_FILENAMES:
+        raise ValueError(f"unsupported CP09 smoke video_id: {video_id}")
     if checkpoint_id != "cp_09":
         raise ValueError("CP09 smoke only accepts checkpoint_id=cp_09")
     if sample_fps <= 0:
@@ -100,6 +106,7 @@ def run_cp09_smoke(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the real SAM2 CP09 smoke slice")
+    parser.add_argument("--video-id", choices=tuple(VIDEO_FILENAMES), default="success")
     parser.add_argument("--checkpoint-path", required=True, type=Path)
     parser.add_argument("--model-config", required=True)
     parser.add_argument("--device", default="cuda:0")
@@ -114,10 +121,12 @@ def main() -> None:
     args = parse_args()
     data_dir = args.data_dir.resolve()
     runs_root = (data_dir / "runs").resolve()
-    run_name = args.output_dir or datetime.now(UTC).strftime("smoke-cp09-%Y%m%dT%H%M%SZ")
+    run_name = args.output_dir or datetime.now(UTC).strftime(
+        f"smoke-cp09-{args.video_id}-%Y%m%dT%H%M%SZ"
+    )
     run_root = safe_child(runs_root, run_name)
     run_root.mkdir(parents=True, exist_ok=True)
-    annotations = AnnotationStore(data_dir / "annotations").load_segments("success")
+    annotations = AnnotationStore(data_dir / "annotations").load_segments(args.video_id)
     rubric = load_rubric(Path("config/rubric.yaml"))
     backend = Sam2Backend(
         args.model_config,
@@ -129,7 +138,7 @@ def main() -> None:
         annotations=annotations,
         evidence_root=run_root,
     )
-    video_path = args.videos_dir.resolve() / "橡皮障完整.mp4"
+    video_path = args.videos_dir.resolve() / VIDEO_FILENAMES[args.video_id]
     degradations: list[str] = []
     try:
         summary = run_cp09_smoke(
@@ -138,6 +147,7 @@ def main() -> None:
             annotations=annotations,
             rubric=rubric,
             run_root=run_root,
+            video_id=args.video_id,
             sample_fps=args.sample_fps,
         )
     except RuntimeError as exc:
@@ -152,6 +162,7 @@ def main() -> None:
             annotations=annotations,
             rubric=rubric,
             run_root=run_root,
+            video_id=args.video_id,
             sample_fps=fallback_fps,
             degradations=degradations,
         )

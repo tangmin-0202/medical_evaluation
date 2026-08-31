@@ -95,7 +95,7 @@ def test_smoke_core_writes_summary_and_correct_decision(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("video_id", "checkpoint_id", "message"),
-    [("failure", "cp_09", "success"), ("success", "cp_10", "cp_09")],
+    [("unsupported", "cp_09", "video_id"), ("success", "cp_10", "cp_09")],
 )
 def test_smoke_core_rejects_unsupported_scope(
     tmp_path: Path,
