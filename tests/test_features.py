@@ -21,7 +21,9 @@ from medical_evaluation.features.geometry import (
     intersection_ratio,
     mask_iou,
     relative_bbox_center_offset,
+    relative_bbox_center_offset_to_box,
     write_overlay,
+    write_reference_overlay,
 )
 from medical_evaluation.features.motion import (
     direction_change_count,
@@ -79,6 +81,26 @@ def test_relative_bbox_center_offset_handles_missing_and_mismatched_masks() -> N
         relative_bbox_center_offset(present, np.ones((8, 8), bool))
 
 
+def test_relative_bbox_center_offset_to_box_uses_normalized_reference_scale() -> None:
+    centered = np.zeros((101, 201), bool)
+    centered[41:60, 91:110] = True
+    shifted = np.zeros((101, 201), bool)
+    shifted[41:60, 141:160] = True
+    reference_box = (0.25, 0.2, 0.75, 0.8)
+
+    assert relative_bbox_center_offset_to_box(centered, reference_box) == pytest.approx(0.0)
+    assert relative_bbox_center_offset_to_box(shifted, reference_box) == pytest.approx(0.5)
+
+
+def test_relative_bbox_center_offset_to_box_handles_empty_mask_and_bad_box() -> None:
+    empty = np.zeros((10, 10), bool)
+    present = np.ones((10, 10), bool)
+
+    assert relative_bbox_center_offset_to_box(empty, (0.2, 0.2, 0.8, 0.8)) is None
+    with pytest.raises(ValueError, match="reference box"):
+        relative_bbox_center_offset_to_box(present, (0.8, 0.2, 0.2, 0.8))
+
+
 def test_empty_geometry_returns_none_instead_of_false_zero() -> None:
     empty = np.zeros((5, 5), bool)
 
@@ -129,3 +151,28 @@ def test_overlay_is_written_only_beneath_evidence_root(tmp_path: Path) -> None:
     assert cv2.imread(str(output)).sum() > 0
     with pytest.raises(ValueError, match="outside"):
         write_overlay(frame, {"rubber_dam": mask}, tmp_path, "../escape.jpg")
+
+
+def test_reference_overlay_draws_mask_box_centers_and_line(tmp_path: Path) -> None:
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    mask = np.zeros((100, 200), bool)
+    mask[40:60, 90:110] = True
+
+    output = write_reference_overlay(
+        frame,
+        mask,
+        (0.25, 0.2, 0.75, 0.8),
+        tmp_path,
+        "cp_09/overlay.jpg",
+    )
+
+    assert output.is_file()
+    assert cv2.imread(str(output)).sum() > 0
+    with pytest.raises(ValueError, match="outside"):
+        write_reference_overlay(
+            frame,
+            mask,
+            (0.25, 0.2, 0.75, 0.8),
+            tmp_path,
+            "../escape.jpg",
+        )

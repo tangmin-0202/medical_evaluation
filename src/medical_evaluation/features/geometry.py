@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 import cv2
@@ -59,6 +60,28 @@ def relative_bbox_center_offset(
     reference_width = reference_box[2] - reference_box[0] + 1
     reference_height = reference_box[3] - reference_box[1] + 1
     return float(np.hypot((sx - rx) / reference_width, (sy - ry) / reference_height))
+
+
+def relative_bbox_center_offset_to_box(
+    subject: np.ndarray,
+    reference_box: tuple[float, float, float, float],
+) -> float | None:
+    subject_mask = _mask(subject)
+    subject_box = _bounding_box(subject_mask)
+    if subject_box is None:
+        return None
+    x1, y1, x2, y2 = _normalized_box(reference_box)
+    height, width = subject_mask.shape
+    subject_x = ((subject_box[0] + subject_box[2]) / 2) / max(width - 1, 1)
+    subject_y = ((subject_box[1] + subject_box[3]) / 2) / max(height - 1, 1)
+    reference_x = (x1 + x2) / 2
+    reference_y = (y1 + y2) / 2
+    return float(
+        np.hypot(
+            (subject_x - reference_x) / (x2 - x1),
+            (subject_y - reference_y) / (y2 - y1),
+        )
+    )
 
 
 def frame_center_offset(mask: np.ndarray) -> float | None:
@@ -170,6 +193,74 @@ def write_overlay(
     return output_path
 
 
+def write_reference_overlay(
+    frame_bgr: np.ndarray,
+    subject_mask: np.ndarray,
+    reference_box: tuple[float, float, float, float],
+    evidence_root: Path,
+    relative_output: str,
+    *,
+    subject_id: str = "rubber_dam_frame",
+    reference_id: str = "oral_region",
+    opacity: float = 0.42,
+) -> Path:
+    if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
+        raise ValueError("frame must be a BGR image")
+    if not 0 <= opacity <= 1:
+        raise ValueError("opacity must be between zero and one")
+    mask = _mask(subject_mask)
+    if mask.shape != frame_bgr.shape[:2]:
+        raise ValueError("mask and frame dimensions must match")
+    x1, y1, x2, y2 = _normalized_box(reference_box)
+    output_path = safe_child(evidence_root, relative_output)
+    canvas = frame_bgr.copy()
+    subject_color = _stable_color(subject_id)
+    reference_color = _stable_color(reference_id)
+    if mask.any():
+        layer = np.empty_like(canvas)
+        layer[:] = subject_color
+        canvas[mask] = cv2.addWeighted(canvas, 1 - opacity, layer, opacity, 0)[mask]
+
+    height, width = mask.shape
+    reference_top_left = (round(x1 * (width - 1)), round(y1 * (height - 1)))
+    reference_bottom_right = (round(x2 * (width - 1)), round(y2 * (height - 1)))
+    reference_center = (
+        round(((x1 + x2) / 2) * (width - 1)),
+        round(((y1 + y2) / 2) * (height - 1)),
+    )
+    cv2.rectangle(canvas, reference_top_left, reference_bottom_right, reference_color, 2)
+    cv2.circle(canvas, reference_center, 5, reference_color, -1)
+    cv2.putText(
+        canvas,
+        reference_id,
+        reference_top_left,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        reference_color,
+        1,
+        cv2.LINE_AA,
+    )
+    subject_center = bounding_box_center(mask)
+    if subject_center is not None:
+        subject_point = (round(subject_center[0]), round(subject_center[1]))
+        cv2.circle(canvas, subject_point, 5, subject_color, -1)
+        cv2.line(canvas, subject_point, reference_center, reference_color, 2)
+        cv2.putText(
+            canvas,
+            subject_id,
+            subject_point,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            subject_color,
+            1,
+            cv2.LINE_AA,
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output_path), canvas):
+        raise OSError(f"could not write evidence overlay: {output_path}")
+    return output_path
+
+
 def _mask(value: np.ndarray) -> np.ndarray:
     array = np.asarray(value)
     if array.ndim != 2:
@@ -183,6 +274,19 @@ def _matching_masks(first: np.ndarray, second: np.ndarray) -> tuple[np.ndarray, 
     if first_mask.shape != second_mask.shape:
         raise ValueError("mask dimensions must match")
     return first_mask, second_mask
+
+
+def _normalized_box(
+    value: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    if len(value) != 4:
+        raise ValueError("reference box must contain four coordinates")
+    x1, y1, x2, y2 = value
+    if not all(math.isfinite(item) and 0 <= item <= 1 for item in value):
+        raise ValueError("reference box coordinates must be finite and normalized")
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("reference box bottom-right must follow top-left")
+    return x1, y1, x2, y2
 
 
 def _stable_color(object_id: str) -> tuple[int, int, int]:
