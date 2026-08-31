@@ -133,7 +133,7 @@ checkpoints:
   judge_type: geometry
   required_objects:
   - rubber_dam_frame
-  - rubber_dam
+  - oral_region
   reference_time:
     start_sec: 175.0
     end_sec: 195.0
