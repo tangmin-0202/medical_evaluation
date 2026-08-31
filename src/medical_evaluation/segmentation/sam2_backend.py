@@ -138,7 +138,7 @@ class Sam2Backend:
                 labels=labels if len(labels) else None,
                 box=group.box,
                 clear_old_points=True,
-                normalize_coords=False,
+                normalize_coords=True,
             )
 
         results: dict[int, FrameMasks] = {}

@@ -143,8 +143,11 @@ def test_sam2_batches_same_frame_points_and_tracks_both_directions(
     assert sampled_directory.is_dir() is False
     assert sampled_directory.suffix != ".mp4"
     assert len(predictor.add_calls) == 1
-    assert np.asarray(predictor.add_calls[0]["points"]).shape == (2, 2)
-    assert predictor.add_calls[0]["frame_idx"] == 1
+    prompt_call = predictor.add_calls[0]
+    assert np.asarray(prompt_call["points"]).shape == (2, 2)
+    np.testing.assert_allclose(prompt_call["points"], [[20.0, 15.0], [80.0, 35.0]])
+    assert prompt_call["normalize_coords"] is True
+    assert prompt_call["frame_idx"] == 1
     assert predictor.propagate_calls == [(1, False, 3), (1, True, 2)]
     assert [frame.frame_index for frame in frames] == [10, 13, 15, 20]
     assert [frame.frame_time_sec for frame in frames] == pytest.approx(
