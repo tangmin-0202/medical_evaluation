@@ -31,7 +31,7 @@ mark_reference_distance = sqrt((mark_u - reference_u)^2 + (mark_v - reference_v)
 
 ## CP11：撑开覆盖支架且鼻部无遮挡
 
-正确完成后，绿色橡皮布被撑开并覆盖支架，所以末尾可能检测不到支架。只分析 CP11 最后约 3 秒，默认 2 FPS，并至少需要 3 个有效帧。
+正确完成后，绿色橡皮布被撑开并覆盖支架，所以末尾可能检测不到支架。CP11 先扫描整个阶段判断操作是否发生，再分析最后约 3 秒判断最终状态是否正确。全阶段默认按 1 FPS 检查橡皮布是否出现；末尾窗口默认按 2 FPS 分析，并至少需要 3 个有效帧。
 
 在 CP11 末尾清晰帧标注：
 
@@ -40,7 +40,16 @@ mark_reference_distance = sqrt((mark_u - reference_u)^2 + (mark_v - reference_v)
 
 CP11 不要求在末尾给被覆盖的支架打点。支架候选区域复用 CP09 的 `rubber_dam_frame` 提示和外观参考。末尾只统计候选区域内仍与 CP09 可见支架外观匹配的像素；已经变成绿色橡皮布的区域不计为可见支架。这样可以避免把 SAM2 在遮挡后的持续预测误当作裸露支架。
 
-每个有效末尾帧计算：
+人工标注为未执行的样例不要求伪造 `rubber_dam` 提示。全阶段橡皮布存在性由确定性的绿色橡皮布外观检查产生；清晰画面中橡皮布面积为零是“未出现”的有效证据，不是分割失败。
+
+全阶段先计算：
+
+```text
+dam_stage_presence_ratio =
+    confidently_visible_rubber_dam_frames / readable_stage_frames
+```
+
+末尾每个有效帧再计算：
 
 ```text
 dam_area_ratio = rubber_dam_mask_area / frame_area
@@ -50,7 +59,16 @@ visible_frame_area_ratio = visible_rubber_dam_frame_area / frame_area
 
 阶段特征取有效末尾帧的中位数。小于 `max_visible_frame_area_ratio` 在规则含义上等同于“检测不到明显支架”，小的非零上限用于容忍分割噪声。
 
-以下条件全部满足时为 `correct`：
+“有效帧”是能够正常读取且画面足以判断对象存在性的帧，不等同于正确帧。清晰看到没有橡皮布或没有支架仍是有效证据，相应面积记为零。只有画面损坏、严重无关遮挡或存在性检测不可信时才排除该帧。
+
+首先根据全阶段证据判断是否执行：
+
+```text
+dam_stage_presence_ratio < min_stage_dam_presence_ratio
+→ incomplete
+```
+
+只在确认阶段内出现过橡皮布后，以下条件全部满足时为 `correct`：
 
 ```text
 dam_area_ratio >= min_dam_area_ratio
@@ -58,13 +76,13 @@ nose_overlap <= max_nose_overlap
 visible_frame_area_ratio <= max_visible_frame_area_ratio
 ```
 
-任一可靠特征违反阈值时为 `incorrect`。橡皮布分割失败、鼻部框缺失或有效帧不足时为 `needs_review`。
+阶段内出现过橡皮布，但任一可靠末尾特征违反阈值时为 `incorrect`。只有确认阶段内出现过橡皮布后才要求鼻部框；画面损坏、存在性检测不可信、鼻部框缺失或有效末尾帧不足时为 `needs_review`。
 
-最多保存 3 张代表性末尾帧，显示橡皮布掩膜、鼻部框、实际可见支架和三个比例。
+证据记录全阶段橡皮布存在比例；另最多保存 3 张代表性末尾帧，显示橡皮布掩膜、鼻部框、实际可见支架和三个末尾比例。
 
 ## 校准、并行边界和验证
 
-CP01 标准相对位置由专家确认的标准样例标定一次。所有阈值写入 `config/rubric.yaml`。实现后先输出三个视频的原始特征和证据图，再依据各 CP 的人工真值选择 Demo 阈值；缺少负例的阈值须明确标记为工程初值。
+CP01 标准相对位置由专家确认的标准样例标定一次。`min_stage_dam_presence_ratio`、`min_dam_area_ratio`、`max_nose_overlap`、`max_visible_frame_area_ratio` 和其他阈值全部写入 `config/rubric.yaml`。实现后先输出三个视频的原始特征和证据图，再依据各 CP 的人工真值选择 Demo 阈值；缺少负例的阈值须明确标记为工程初值。
 
 CP01 与 CP11 使用独立提取器、测试和 smoke 参数。公共代码只承载无 CP 语义的采样、掩膜统计和证据写出。用户标注 JSON 不加入 Git，覆盖或批量修改前必须备份并保留审计。
 
