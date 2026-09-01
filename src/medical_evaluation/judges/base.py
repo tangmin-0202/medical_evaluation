@@ -55,6 +55,25 @@ def incorrect(
     )
 
 
+def incomplete(
+    checkpoint_id: str,
+    features: dict[str, float | bool | None],
+    *,
+    reason_code: str,
+    reason: str,
+    suggestion: str,
+) -> JudgeDecision:
+    return JudgeDecision(
+        checkpoint_id=checkpoint_id,
+        status=CheckpointStatus.INCOMPLETE,
+        confidence=1,
+        features=features,
+        reason_code=reason_code,
+        reason=reason,
+        suggestion=suggestion,
+    )
+
+
 def correct(
     checkpoint_id: str,
     features: dict[str, float | bool | None],

@@ -8,7 +8,6 @@ checkpoints:
   judge_type: geometry
   required_objects:
   - rubber_dam
-  - mark
   reference_time:
     start_sec: 0.0
     end_sec: 14.0

@@ -4,6 +4,7 @@ from medical_evaluation.judges.base import (
     JudgeDecision,
     correct,
     decide_boolean_rules,
+    incomplete,
     incorrect,
     needs_review,
 )
@@ -13,6 +14,28 @@ def judge_cp01(
     features: dict[str, float | bool | None],
     thresholds: dict[str, float],
 ) -> JudgeDecision:
+    if features.get("mark_selection_ambiguous") is True:
+        return needs_review(
+            "cp_01",
+            features,
+            reason_code="ambiguous_punch_candidates",
+            reason="完整阶段内检测到的稳定标记无法唯一确定打孔点。",
+        )
+    if features.get("mark_missing") is True:
+        if float(features.get("dam_valid_frame_count") or 0) < 3:
+            return needs_review(
+                "cp_01",
+                features,
+                reason_code="missing_required_evidence",
+                reason="橡皮布有效画面不足，无法确认是否完成牙位标记。",
+            )
+        return incomplete(
+            "cp_01",
+            features,
+            reason_code="punch_mark_not_observed",
+            reason="完整阶段内未观察到稳定的打孔位置标记。",
+            suggestion="请在橡皮布上标出36牙对应的打孔位置。",
+        )
     distance = features.get("mark_reference_distance")
     if distance is None:
         return needs_review(

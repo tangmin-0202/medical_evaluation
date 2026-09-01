@@ -33,6 +33,15 @@ def test_cp09_requires_frame_and_fixed_oral_reference() -> None:
     assert cp09.required_objects == ["rubber_dam_frame", "oral_region"]
 
 
+def test_cp01_requires_only_manually_segmented_rubber_dam() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp01 = next(cp for cp in rubric.checkpoints if cp.id == "cp_01")
+
+    assert cp01.required_objects == ["rubber_dam"]
+
+
 def test_parse_time_range_converts_excel_text_to_seconds() -> None:
     from medical_evaluation.rubric import parse_time_range
 
