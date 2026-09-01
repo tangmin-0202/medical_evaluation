@@ -42,6 +42,21 @@ def test_cp01_requires_only_manually_segmented_rubber_dam() -> None:
     assert cp01.required_objects == ["rubber_dam"]
 
 
+def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp11 = next(cp for cp in rubric.checkpoints if cp.id == "cp_11")
+
+    assert cp11.required_objects == ["rubber_dam", "nose_region", "rubber_dam_frame"]
+    assert cp11.thresholds == {
+        "min_stage_dam_presence_ratio": 0.05,
+        "min_dam_area_ratio": 0.20,
+        "max_nose_overlap": 0.02,
+        "max_visible_frame_area_ratio": 0.005,
+    }
+
+
 def test_parse_time_range_converts_excel_text_to_seconds() -> None:
     from medical_evaluation.rubric import parse_time_range
 

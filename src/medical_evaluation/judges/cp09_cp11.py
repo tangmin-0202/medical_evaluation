@@ -4,6 +4,7 @@ from medical_evaluation.judges.base import (
     JudgeDecision,
     correct,
     decide_boolean_rules,
+    incomplete,
     incorrect,
     needs_review,
 )
@@ -41,27 +42,39 @@ def judge_cp11(
     features: dict[str, float | bool | None],
     thresholds: dict[str, float],
 ) -> JudgeDecision:
-    if features.get("mouth_nose_visible") is not True:
+    presence = features.get("dam_stage_presence_ratio")
+    if presence is None:
         return needs_review(
             "cp_11",
             features,
-            reason_code="face_region_not_visible",
-            reason="口鼻区域不可见，无法确认橡皮布是否遮挡。",
+            reason_code="unreliable_stage_presence",
+            reason="无法可靠判断本阶段是否出现过橡皮布。",
         )
-    face_overlap = features.get("face_overlap")
-    frame_coverage = features.get("frame_coverage")
-    if face_overlap is None or frame_coverage is None:
+    if float(presence) < thresholds["min_stage_dam_presence_ratio"]:
+        return incomplete(
+            "cp_11",
+            features,
+            reason_code="rubber_dam_not_observed",
+            reason="本阶段未观察到橡皮布，操作未完成。",
+            suggestion="请完成橡皮布调整并将其充分撑开至支架。",
+        )
+    dam_area = features.get("dam_area_ratio")
+    nose_overlap = features.get("nose_overlap")
+    visible_frame = features.get("visible_frame_area_ratio")
+    if dam_area is None or nose_overlap is None or visible_frame is None:
         return needs_review(
             "cp_11",
             features,
             reason_code="missing_required_evidence",
-            reason="橡皮布覆盖或撑开证据缺失。",
+            reason="末尾橡皮布、鼻部或支架可见性证据不足。",
         )
     failed_rules: list[str] = []
-    if float(face_overlap) > thresholds["max_face_overlap"]:
-        failed_rules.append("face_clear")
-    if float(frame_coverage) < thresholds["min_frame_coverage"]:
-        failed_rules.append("dam_spread_on_frame")
+    if float(dam_area) < thresholds["min_dam_area_ratio"]:
+        failed_rules.append("dam_area_sufficient")
+    if float(nose_overlap) > thresholds["max_nose_overlap"]:
+        failed_rules.append("nose_clear")
+    if float(visible_frame) > thresholds["max_visible_frame_area_ratio"]:
+        failed_rules.append("frame_covered")
     if failed_rules:
         return incorrect(
             "cp_11",
@@ -74,7 +87,7 @@ def judge_cp11(
     return correct(
         "cp_11",
         features,
-        matched_rules=["face_clear", "dam_spread_on_frame"],
+        matched_rules=["dam_area_sufficient", "nose_clear", "frame_covered"],
         reason="橡皮布未遮挡口鼻，且已充分撑开至支架。",
     )
 

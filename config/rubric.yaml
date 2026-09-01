@@ -161,11 +161,13 @@ checkpoints:
   judge_type: geometry
   required_objects:
   - rubber_dam
+  - nose_region
   - rubber_dam_frame
-  - nose_mouth_region
   reference_time:
     start_sec: 217.0
     end_sec: 258.0
   thresholds:
-    max_face_overlap: 0.02
-    min_frame_coverage: 0.85
+    min_stage_dam_presence_ratio: 0.05
+    min_dam_area_ratio: 0.20
+    max_nose_overlap: 0.02
+    max_visible_frame_area_ratio: 0.005

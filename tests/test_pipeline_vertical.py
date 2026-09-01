@@ -30,9 +30,10 @@ class FakeExtractor:
             return ExtractedEvidence(features={"frame_oral_center_offset": 0.03})
         return ExtractedEvidence(
             features={
-                "mouth_nose_visible": True,
-                "face_overlap": 0.01,
-                "frame_coverage": 0.9,
+                "dam_stage_presence_ratio": 0.5,
+                "dam_area_ratio": 0.4,
+                "nose_overlap": 0.01,
+                "visible_frame_area_ratio": 0.0,
             }
         )
 

@@ -73,8 +73,18 @@ CASES = [
     ),
     (
         judge_cp11,
-        {"mouth_nose_visible": True, "face_overlap": 0.01, "frame_coverage": 0.9},
-        {"mouth_nose_visible": True, "face_overlap": 0.2, "frame_coverage": 0.9},
+        {
+            "dam_stage_presence_ratio": 0.5,
+            "dam_area_ratio": 0.4,
+            "nose_overlap": 0.0,
+            "visible_frame_area_ratio": 0.0,
+        },
+        {
+            "dam_stage_presence_ratio": 0.5,
+            "dam_area_ratio": 0.1,
+            "nose_overlap": 0.0,
+            "visible_frame_area_ratio": 0.0,
+        },
     ),
 ]
 

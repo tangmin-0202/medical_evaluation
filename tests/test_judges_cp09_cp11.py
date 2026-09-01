@@ -32,28 +32,57 @@ def test_cp09_requests_review_without_paired_evidence() -> None:
     assert "口腔参考区域" in result.reason
 
 
-def test_cp11_requests_review_when_face_region_is_missing() -> None:
+def test_cp11_requests_review_when_final_nose_evidence_is_missing() -> None:
     result = judge_cp11(
-        {"mouth_nose_visible": False, "face_overlap": None, "frame_coverage": 0.9},
-        {"max_face_overlap": 0.02, "min_frame_coverage": 0.85},
+        {
+            "dam_stage_presence_ratio": 0.5,
+            "dam_area_ratio": 0.4,
+            "nose_overlap": None,
+            "visible_frame_area_ratio": 0.0,
+        },
+        {
+            "min_stage_dam_presence_ratio": 0.05,
+            "min_dam_area_ratio": 0.20,
+            "max_nose_overlap": 0.02,
+            "max_visible_frame_area_ratio": 0.005,
+        },
     )
 
     assert result.status.value == "needs_review"
-    assert result.reason_code == "face_region_not_visible"
+    assert result.reason_code == "missing_required_evidence"
 
 
-def test_cp11_passes_only_when_both_criteria_pass() -> None:
-    thresholds = {"max_face_overlap": 0.02, "min_frame_coverage": 0.85}
+def test_cp11_passes_only_when_all_final_criteria_pass() -> None:
+    thresholds = {
+        "min_stage_dam_presence_ratio": 0.05,
+        "min_dam_area_ratio": 0.20,
+        "max_nose_overlap": 0.02,
+        "max_visible_frame_area_ratio": 0.005,
+    }
 
     passing = judge_cp11(
-        {"mouth_nose_visible": True, "face_overlap": 0.01, "frame_coverage": 0.9},
+        {
+            "dam_stage_presence_ratio": 0.5,
+            "dam_area_ratio": 0.4,
+            "nose_overlap": 0.01,
+            "visible_frame_area_ratio": 0.0,
+        },
         thresholds,
     )
     failing = judge_cp11(
-        {"mouth_nose_visible": True, "face_overlap": 0.08, "frame_coverage": 0.9},
+        {
+            "dam_stage_presence_ratio": 0.5,
+            "dam_area_ratio": 0.4,
+            "nose_overlap": 0.08,
+            "visible_frame_area_ratio": 0.0,
+        },
         thresholds,
     )
 
     assert passing.status.value == "correct"
-    assert passing.matched_rules == ["face_clear", "dam_spread_on_frame"]
+    assert passing.matched_rules == [
+        "dam_area_sufficient",
+        "nose_clear",
+        "frame_covered",
+    ]
     assert failing.status.value == "incorrect"
