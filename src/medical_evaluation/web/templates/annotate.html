@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main class="container" id="annotation-app" data-video-id="{{ video_id }}">
+  <main class="container" id="annotation-app" data-video-id="{{ video_id }}" data-default-checkpoint="cp_01">
     <p class="eyebrow">HUMAN-IN-THE-LOOP ANNOTATION</p>
     <h1>校准每个视频<br>自己的时间段</h1>
     <p class="lead">Excel 时间只作为初始模板。拖动相邻考核点边界，并填写该视频的判断与原因。</p>
@@ -17,11 +17,15 @@
         <div id="prompt-surface" aria-label="SAM 提示标注层"></div>
       </div>
       <div class="prompt-tools">
-        <label>目标名称 <input id="object-id" value="rubber_dam"></label>
+        <label>目标名称 <input id="object-id" value="rubber_dam" list="object-options"></label>
+        <datalist id="object-options">
+          {% for object_id in annotation_guides.cp_01.objects %}<option value="{{ object_id }}"></option>{% endfor %}
+        </datalist>
         <label>提示类型 <select id="prompt-mode"><option value="point">点</option><option value="box">框</option></select></label>
         <button id="save-prompts">保存 SAM 提示</button>
         <button id="clear-prompts" class="secondary">清空提示</button>
       </div>
+      <p class="hint" id="prompt-guide">{{ annotation_guides.cp_01.hint }}</p>
       <p class="hint">暂停视频后，在画面上单击添加点；切换为“框”后拖动框选目标。坐标会归一化到 0–1。</p>
     </section>
     <section class="panel">
@@ -35,6 +39,7 @@
     <section id="step-list" class="step-list"></section>
     <a href="/">← 返回首页</a>
   </main>
+  <script id="annotation-guides" type="application/json">{{ annotation_guides | tojson }}</script>
   <script src="/static/annotate.js"></script>
 </body>
 </html>

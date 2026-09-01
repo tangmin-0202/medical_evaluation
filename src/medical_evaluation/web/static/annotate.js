@@ -1,7 +1,17 @@
 const root = document.querySelector("#annotation-app");
 const videoId = root.dataset.videoId;
+const annotationGuides = JSON.parse(document.querySelector("#annotation-guides").textContent);
 let annotations;
 let dragStart = null;
+
+function applyPromptGuide(checkpointId) {
+  const guide = annotationGuides[checkpointId];
+  if (!guide) return;
+  const options = document.querySelector("#object-options");
+  options.innerHTML = guide.objects.map((objectId) => `<option value="${objectId}"></option>`).join("");
+  document.querySelector("#object-id").value = guide.objects[0];
+  document.querySelector("#prompt-guide").textContent = guide.hint;
+}
 
 function clampBoundary(value, previousEnd, nextStart) {
   const epsilon = 0.05;
@@ -14,10 +24,13 @@ function render() {
   timeline.innerHTML = annotations.steps.map((step, index) => {
     const width = (step.time_range.end_sec - step.time_range.start_sec) / duration * 100;
     const left = step.time_range.start_sec / duration * 100;
-    return `<div class="timeline-step" style="--index:${index};left:${left}%;width:${width}%" title="${step.checkpoint_id}">
+    return `<div class="timeline-step" data-checkpoint-id="${step.checkpoint_id}" style="--index:${index};left:${left}%;width:${width}%" title="${step.checkpoint_id}">
       ${index + 1}${index < 10 ? `<button class="boundary" data-boundary="${index}" aria-label="调整边界"></button>` : ""}
     </div>`;
   }).join("");
+  timeline.querySelectorAll(".timeline-step").forEach((item) => item.addEventListener("click", () => {
+    applyPromptGuide(item.dataset.checkpointId);
+  }));
 
   document.querySelector("#step-list").innerHTML = annotations.steps.map((step, index) => `
     <article class="panel step-card">
@@ -149,4 +162,5 @@ document.querySelector("#save-prompts").addEventListener("click", async () => {
 fetch(`/api/videos/${videoId}/segments`).then((response) => response.json()).then((payload) => {
   annotations = payload;
   render();
+  applyPromptGuide(root.dataset.defaultCheckpoint);
 });

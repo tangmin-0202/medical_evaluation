@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,29 @@ def test_known_video_content_is_available_to_annotation_page(client: TestClient)
 
     assert response.status_code == 200
     assert response.content == b"video"
+
+
+def test_annotation_page_exposes_cp01_and_cp11_prompt_guidance(
+    client: TestClient,
+) -> None:
+    response = client.get("/annotate/success")
+
+    assert response.status_code == 200
+    guide_payload = response.text.split(
+        '<script id="annotation-guides" type="application/json">',
+        maxsplit=1,
+    )[1].split("</script>", maxsplit=1)[0]
+    guides = json.loads(guide_payload)
+    assert guides == {
+        "cp_01": {
+            "objects": ["rubber_dam", "mark"],
+            "hint": "同一清晰帧：框选展开的橡皮布，再点学员实际标记中心。",
+        },
+        "cp_11": {
+            "objects": ["rubber_dam", "nose_region"],
+            "hint": "末尾清晰帧：在绿色橡皮布内分散打3–5个正点，并紧框鼻部。",
+        },
+    }
 
 
 def test_prompt_update_round_trips_normalized_point(client: TestClient) -> None:

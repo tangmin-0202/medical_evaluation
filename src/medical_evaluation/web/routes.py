@@ -35,6 +35,17 @@ PRESETS = {
     "clamp_failure": "橡皮障夹子飞了.mp4",
 }
 
+ANNOTATION_GUIDES = {
+    "cp_01": {
+        "objects": ["rubber_dam", "mark"],
+        "hint": "同一清晰帧：框选展开的橡皮布，再点学员实际标记中心。",
+    },
+    "cp_11": {
+        "objects": ["rubber_dam", "nose_region"],
+        "hint": "末尾清晰帧：在绿色橡皮布内分散打3–5个正点，并紧框鼻部。",
+    },
+}
+
 
 class ReviewResolutionRequest(BaseModel):
     actor: str = Field(min_length=1)
@@ -149,7 +160,11 @@ def create_router(settings: Settings, manager: JobManager, template_dir: Path) -
         return templates.TemplateResponse(
             request=request,
             name="annotate.html",
-            context={"video_id": video_id, "rubric": rubric},
+            context={
+                "video_id": video_id,
+                "rubric": rubric,
+                "annotation_guides": ANNOTATION_GUIDES,
+            },
         )
 
     @router.get("/api/reports/{job_id}")
