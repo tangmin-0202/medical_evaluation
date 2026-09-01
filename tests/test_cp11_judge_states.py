@@ -2,6 +2,7 @@ from medical_evaluation.judges.cp09_cp11 import judge_cp11
 
 THRESHOLDS = {
     "min_stage_dam_presence_ratio": 0.05,
+    "min_final_dam_presence_ratio": 0.5,
     "min_dam_area_ratio": 0.20,
     "max_nose_overlap": 0.02,
     "max_visible_frame_area_ratio": 0.005,
@@ -11,6 +12,7 @@ THRESHOLDS = {
 def _features(**updates: float | bool | None) -> dict[str, float | bool | None]:
     values: dict[str, float | bool | None] = {
         "dam_stage_presence_ratio": 0.5,
+        "dam_final_presence_ratio": 0.8,
         "dam_area_ratio": 0.4,
         "nose_overlap": 0.0,
         "visible_frame_area_ratio": 0.0,
@@ -30,6 +32,13 @@ def test_no_dam_during_stage_is_incomplete() -> None:
 
     assert result.status.value == "incomplete"
     assert result.reason_code == "rubber_dam_not_observed"
+
+
+def test_dam_seen_during_stage_but_missing_at_end_is_incorrect() -> None:
+    result = judge_cp11(_features(dam_final_presence_ratio=0.0), THRESHOLDS)
+
+    assert result.status.value == "incorrect"
+    assert result.reason_code == "rubber_dam_missing_at_end"
 
 
 def test_attempted_stage_with_good_final_state_is_correct() -> None:

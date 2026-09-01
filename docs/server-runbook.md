@@ -139,7 +139,7 @@ http://127.0.0.1:8000/annotate/failure
 http://127.0.0.1:8000/annotate/clamp_failure
 ```
 
-`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别。CP11 已执行的视频在末尾用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`；未执行的视频不伪造提示。
+`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别。CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。
 
 保存基准点后执行一次校准：
 

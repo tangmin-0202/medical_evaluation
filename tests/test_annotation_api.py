@@ -113,7 +113,7 @@ def test_reference_video_exposes_one_time_cp01_reference_guidance(
         },
         "cp_11": {
             "objects": ["rubber_dam", "nose_region"],
-            "hint": "末尾清晰帧：在绿色橡皮布内分散打3–5个正点，并紧框鼻部。",
+            "hint": "仅当末尾仍有橡皮布：分散打3–5个正点并紧框鼻部；中途出现但末尾消失时不要伪造提示。",
         },
     }
 

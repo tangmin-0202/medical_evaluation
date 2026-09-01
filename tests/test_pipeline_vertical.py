@@ -31,6 +31,7 @@ class FakeExtractor:
         return ExtractedEvidence(
             features={
                 "dam_stage_presence_ratio": 0.5,
+                "dam_final_presence_ratio": 0.8,
                 "dam_area_ratio": 0.4,
                 "nose_overlap": 0.01,
                 "visible_frame_area_ratio": 0.0,

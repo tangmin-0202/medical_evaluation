@@ -31,7 +31,7 @@ def test_combined_smoke_writes_both_decisions_in_one_run(tmp_path: Path) -> None
         ],
     )
     cp01 = FakeExtractor({"mark_reference_distance": 0.01})
-    cp11 = FakeExtractor({"dam_stage_presence_ratio": 0.5, "dam_area_ratio": 0.4, "nose_overlap": 0.0, "visible_frame_area_ratio": 0.0})
+    cp11 = FakeExtractor({"dam_stage_presence_ratio": 0.5, "dam_final_presence_ratio": 0.8, "dam_area_ratio": 0.4, "nose_overlap": 0.0, "visible_frame_area_ratio": 0.0})
     run_root = tmp_path / "run"
 
     summary = run_cp01_cp11_smoke(

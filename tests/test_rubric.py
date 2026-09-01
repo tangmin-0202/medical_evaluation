@@ -51,6 +51,7 @@ def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
     assert cp11.required_objects == ["rubber_dam", "nose_region", "rubber_dam_frame"]
     assert cp11.thresholds == {
         "min_stage_dam_presence_ratio": 0.05,
+        "min_final_dam_presence_ratio": 0.5,
         "min_dam_area_ratio": 0.20,
         "max_nose_overlap": 0.02,
         "max_visible_frame_area_ratio": 0.005,

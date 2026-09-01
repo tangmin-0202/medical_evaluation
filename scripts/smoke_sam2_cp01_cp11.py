@@ -147,6 +147,9 @@ def main() -> None:
         min_stage_dam_presence_ratio=cp11_rule.thresholds[
             "min_stage_dam_presence_ratio"
         ],
+        min_final_dam_presence_ratio=cp11_rule.thresholds[
+            "min_final_dam_presence_ratio"
+        ],
     )
     summary = run_cp01_cp11_smoke(
         cp01_extractor=cp01,

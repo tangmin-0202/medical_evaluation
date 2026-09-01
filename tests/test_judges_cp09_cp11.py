@@ -36,12 +36,14 @@ def test_cp11_requests_review_when_final_nose_evidence_is_missing() -> None:
     result = judge_cp11(
         {
             "dam_stage_presence_ratio": 0.5,
+            "dam_final_presence_ratio": 0.8,
             "dam_area_ratio": 0.4,
             "nose_overlap": None,
             "visible_frame_area_ratio": 0.0,
         },
         {
             "min_stage_dam_presence_ratio": 0.05,
+            "min_final_dam_presence_ratio": 0.5,
             "min_dam_area_ratio": 0.20,
             "max_nose_overlap": 0.02,
             "max_visible_frame_area_ratio": 0.005,
@@ -55,6 +57,7 @@ def test_cp11_requests_review_when_final_nose_evidence_is_missing() -> None:
 def test_cp11_passes_only_when_all_final_criteria_pass() -> None:
     thresholds = {
         "min_stage_dam_presence_ratio": 0.05,
+        "min_final_dam_presence_ratio": 0.5,
         "min_dam_area_ratio": 0.20,
         "max_nose_overlap": 0.02,
         "max_visible_frame_area_ratio": 0.005,
@@ -63,6 +66,7 @@ def test_cp11_passes_only_when_all_final_criteria_pass() -> None:
     passing = judge_cp11(
         {
             "dam_stage_presence_ratio": 0.5,
+            "dam_final_presence_ratio": 0.8,
             "dam_area_ratio": 0.4,
             "nose_overlap": 0.01,
             "visible_frame_area_ratio": 0.0,
@@ -72,6 +76,7 @@ def test_cp11_passes_only_when_all_final_criteria_pass() -> None:
     failing = judge_cp11(
         {
             "dam_stage_presence_ratio": 0.5,
+            "dam_final_presence_ratio": 0.8,
             "dam_area_ratio": 0.4,
             "nose_overlap": 0.08,
             "visible_frame_area_ratio": 0.0,

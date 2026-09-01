@@ -126,11 +126,51 @@ def test_no_green_dam_returns_incomplete_features_without_sam2(tmp_path: Path) -
 
     assert result.features == {
         "dam_stage_presence_ratio": 0.0,
+        "dam_final_presence_ratio": 0.0,
         "dam_area_ratio": None,
         "nose_overlap": None,
         "visible_frame_area_ratio": None,
         "final_valid_frame_count": 0.0,
     }
+    assert segmenter.calls == []
+
+
+def test_dam_seen_earlier_but_absent_in_final_window_skips_sam2(tmp_path: Path) -> None:
+    path = tmp_path / "lost-at-end.avi"
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10,
+        (40, 40),
+    )
+    assert writer.isOpened()
+    for index in range(50):
+        frame = np.zeros((40, 40, 3), dtype=np.uint8)
+        if 10 <= index < 20:
+            frame[:] = (30, 170, 90)
+        writer.write(frame)
+    writer.release()
+    segmenter = FakeSegmenter([], [])
+    extractor = Cp11FeatureExtractor(
+        segmenter=segmenter,
+        annotations=VideoAnnotations(video_id="failure"),
+        evidence_root=tmp_path / "evidence",
+        frame_reference_time_range=TimeRange(start_sec=0.4, end_sec=0.6),
+        min_stage_dam_presence_ratio=0.05,
+        min_final_dam_presence_ratio=0.5,
+    )
+
+    result = extractor.extract(
+        path,
+        "cp_11",
+        TimeRange(start_sec=1.0, end_sec=5.0),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["dam_stage_presence_ratio"] == pytest.approx(0.25)
+    assert result.features["dam_final_presence_ratio"] == 0.0
+    assert result.features["dam_area_ratio"] is None
     assert segmenter.calls == []
 
 

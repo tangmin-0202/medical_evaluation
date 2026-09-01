@@ -35,14 +35,18 @@ class Cp11FeatureExtractor:
         evidence_root: Path,
         frame_reference_time_range: TimeRange,
         min_stage_dam_presence_ratio: float,
+        min_final_dam_presence_ratio: float = 0.5,
     ) -> None:
         if not 0 <= min_stage_dam_presence_ratio <= 1:
             raise ValueError("min_stage_dam_presence_ratio must be normalized")
+        if not 0 <= min_final_dam_presence_ratio <= 1:
+            raise ValueError("min_final_dam_presence_ratio must be normalized")
         self.segmenter = segmenter
         self.annotations = annotations
         self.evidence_root = evidence_root
         self.frame_reference_time_range = frame_reference_time_range
         self.min_stage_dam_presence_ratio = min_stage_dam_presence_ratio
+        self.min_final_dam_presence_ratio = min_final_dam_presence_ratio
 
     @property
     def model_version(self) -> str:
@@ -62,8 +66,8 @@ class Cp11FeatureExtractor:
         if analysis_width <= 0:
             raise ValueError("analysis_width must be positive")
 
-        stage_ratios = [
-            green_dam_area_ratio(item.image_bgr)
+        stage_samples = [
+            (item.time_sec, green_dam_area_ratio(item.image_bgr))
             for item in sample_frames(
                 video_path,
                 start_sec=time_range.start_sec,
@@ -76,15 +80,35 @@ class Cp11FeatureExtractor:
                 np.mean(
                     [
                         ratio >= self.minimum_green_area_per_present_frame
-                        for ratio in stage_ratios
+                        for _time_sec, ratio in stage_samples
                     ]
                 )
             )
-            if stage_ratios
+            if stage_samples
+            else None
+        )
+        final_start_sec = max(
+            time_range.start_sec,
+            time_range.end_sec - self.final_window_sec,
+        )
+        final_ratios = [
+            ratio for time_sec, ratio in stage_samples if time_sec >= final_start_sec
+        ]
+        final_presence = (
+            float(
+                np.mean(
+                    [
+                        ratio >= self.minimum_green_area_per_present_frame
+                        for ratio in final_ratios
+                    ]
+                )
+            )
+            if final_ratios
             else None
         )
         empty_features: dict[str, float | bool | None] = {
             "dam_stage_presence_ratio": presence,
+            "dam_final_presence_ratio": final_presence,
             "dam_area_ratio": None,
             "nose_overlap": None,
             "visible_frame_area_ratio": None,
@@ -92,9 +116,14 @@ class Cp11FeatureExtractor:
         }
         if presence is None or presence < self.min_stage_dam_presence_ratio:
             return ExtractedEvidence(features=empty_features, evidence=[])
+        if (
+            final_presence is None
+            or final_presence < self.min_final_dam_presence_ratio
+        ):
+            return ExtractedEvidence(features=empty_features, evidence=[])
 
         final_range = TimeRange(
-            start_sec=max(time_range.start_sec, time_range.end_sec - self.final_window_sec),
+            start_sec=final_start_sec,
             end_sec=time_range.end_sec,
         )
         dam_prompts = prompts_for_object(
@@ -184,6 +213,7 @@ class Cp11FeatureExtractor:
         return ExtractedEvidence(
             features={
                 "dam_stage_presence_ratio": presence,
+                "dam_final_presence_ratio": final_presence,
                 "dam_area_ratio": float(np.median([item[3] for item in measurements])),
                 "nose_overlap": float(np.median([item[4] for item in measurements])),
                 "visible_frame_area_ratio": float(

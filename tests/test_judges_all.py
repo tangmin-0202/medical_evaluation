@@ -75,12 +75,14 @@ CASES = [
         judge_cp11,
         {
             "dam_stage_presence_ratio": 0.5,
+            "dam_final_presence_ratio": 0.8,
             "dam_area_ratio": 0.4,
             "nose_overlap": 0.0,
             "visible_frame_area_ratio": 0.0,
         },
         {
             "dam_stage_presence_ratio": 0.5,
+            "dam_final_presence_ratio": 0.8,
             "dam_area_ratio": 0.1,
             "nose_overlap": 0.0,
             "visible_frame_area_ratio": 0.0,

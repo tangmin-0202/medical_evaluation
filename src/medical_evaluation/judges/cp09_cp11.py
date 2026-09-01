@@ -58,6 +58,23 @@ def judge_cp11(
             reason="本阶段未观察到橡皮布，操作未完成。",
             suggestion="请完成橡皮布调整并将其充分撑开至支架。",
         )
+    final_presence = features.get("dam_final_presence_ratio")
+    if final_presence is None:
+        return needs_review(
+            "cp_11",
+            features,
+            reason_code="unreliable_final_presence",
+            reason="无法可靠判断末尾是否仍有橡皮布。",
+        )
+    if float(final_presence) < thresholds["min_final_dam_presence_ratio"]:
+        return incorrect(
+            "cp_11",
+            features,
+            reason_code="rubber_dam_missing_at_end",
+            reason="阶段中出现过橡皮布，但末尾已不在位。",
+            matched_rules=["dam_present_at_end"],
+            suggestion="重新完成末尾调整，确保橡皮布最终保持撑开并覆盖支架。",
+        )
     dam_area = features.get("dam_area_ratio")
     nose_overlap = features.get("nose_overlap")
     visible_frame = features.get("visible_frame_area_ratio")
