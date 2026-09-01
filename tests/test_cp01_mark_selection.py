@@ -130,3 +130,26 @@ def test_dark_mark_detector_uses_dam_mask_and_rejects_large_shadow() -> None:
         [(0.15, 0.19), (0.52, 0.59)],
         atol=0.03,
     )
+
+
+def test_dark_mark_detector_keeps_tiny_black_and_faint_gray_marks() -> None:
+    frame = np.full((120, 120, 3), (30, 170, 90), dtype=np.uint8)
+    dam_mask = np.ones((120, 120), dtype=np.uint8)
+    cv2.circle(frame, (105, 12), 1, (20, 20, 20), -1)
+    cv2.circle(frame, (78, 82), 2, (145, 145, 145), -1)
+
+    observations = detect_dark_mark_observations(
+        frame,
+        dam_mask,
+        frame_index=9,
+        time_sec=4.5,
+        min_area_ratio=0.0001,
+        max_area_ratio=0.01,
+    )
+
+    assert len(observations) == 2
+    assert np.allclose(
+        sorted((item.u, item.v) for item in observations),
+        [(0.65, 0.68), (0.88, 0.10)],
+        atol=0.03,
+    )

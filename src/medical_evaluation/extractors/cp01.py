@@ -26,7 +26,7 @@ from medical_evaluation.video import read_frame
 class Cp01FeatureExtractor:
     corner_margin = 0.15
     max_local_cluster_distance = 0.04
-    min_mark_area_ratio = 0.0005
+    min_mark_area_ratio = 0.0001
     max_mark_area_ratio = 0.01
 
     def __init__(
@@ -55,7 +55,7 @@ class Cp01FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+opencv-marks-v1"
+        return f"{self.segmenter.model_version}+opencv-marks-v2"
 
     def extract(
         self,

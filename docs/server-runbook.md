@@ -139,7 +139,9 @@ http://127.0.0.1:8000/annotate/failure
 http://127.0.0.1:8000/annotate/clamp_failure
 ```
 
-`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别。CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。
+`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别；检测器保留原有暗色连通域和跨帧稳定性逻辑，同时允许更小、颜色更浅的笔点进入候选。CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。正点必须位于绿色橡皮布内部，避开模型皮肤、牙齿、支架和画面边缘。
+
+CP11 的支架提示复用 CP09 `rubber_dam_frame`，并从 CP09 连续跟踪至 CP11 末尾。CP11 末尾的橡皮布面积和鼻部重叠使用“原始 SAM2 橡皮布掩膜与确定性绿色像素掩膜的交集”，避免把模型皮肤计入橡皮布；证据图中的白色轮廓仅表示仍符合 CP09 支架外观的可见支架像素。没有白色轮廓且 `visible_frame_area_ratio` 接近零，表示未检出明显裸露支架。
 
 保存基准点后执行一次校准：
 

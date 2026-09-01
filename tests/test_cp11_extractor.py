@@ -62,6 +62,26 @@ def _video(path: Path, *, green_stage: bool) -> Path:
     return path
 
 
+def _mixed_green_skin_video(path: Path) -> Path:
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10,
+        (40, 40),
+    )
+    assert writer.isOpened()
+    for index in range(50):
+        frame = np.zeros((40, 40, 3), dtype=np.uint8)
+        if index >= 10:
+            frame[:, :20] = (30, 170, 90)
+            frame[:, 20:] = (120, 170, 220)
+        if index == 5:
+            frame[14:26, 14:26] = 240
+        writer.write(frame)
+    writer.release()
+    return path
+
+
 def _mask(object_id: str, index: int, region: tuple[slice, slice]) -> FrameMasks:
     mask = np.zeros((40, 40), dtype=bool)
     mask[region] = True
@@ -206,3 +226,33 @@ def test_attempted_stage_extracts_good_final_coverage(tmp_path: Path) -> None:
     assert result.features["final_valid_frame_count"] == 3.0
     assert len(result.evidence) == 3
     assert all((evidence_root / item.overlay_path).is_file() for item in result.evidence)
+
+
+def test_final_dam_measurements_exclude_skin_inside_sam_mask(tmp_path: Path) -> None:
+    full_region = (slice(0, 40), slice(0, 40))
+    segmenter = FakeSegmenter(
+        [_mask("rubber_dam", index, full_region) for index in (10, 20, 30)],
+        [_mask("rubber_dam_frame", index, full_region) for index in (5, 10, 20, 30)],
+    )
+    annotations = _attempted_annotations()
+    nose = next(item for item in annotations.prompts if item.object_id == "nose_region")
+    assert isinstance(nose, BoxPrompt)
+    nose.x1, nose.x2 = 0.75, 0.95
+    extractor = Cp11FeatureExtractor(
+        segmenter=segmenter,
+        annotations=annotations,
+        evidence_root=tmp_path / "evidence",
+        frame_reference_time_range=TimeRange(start_sec=0.4, end_sec=0.6),
+        min_stage_dam_presence_ratio=0.05,
+    )
+
+    result = extractor.extract(
+        _mixed_green_skin_video(tmp_path / "mixed.avi"),
+        "cp_11",
+        TimeRange(start_sec=1.0, end_sec=4.0),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["dam_area_ratio"] == pytest.approx(0.5, abs=0.02)
+    assert result.features["nose_overlap"] == 0.0

@@ -4,19 +4,23 @@ import cv2
 import numpy as np
 
 
-def green_dam_area_ratio(frame_bgr: np.ndarray) -> float:
-    """Return the fraction of the readable frame confidently green."""
-
+def green_dam_mask(frame_bgr: np.ndarray) -> np.ndarray:
+    """Return pixels whose HSV appearance is confidently rubber-dam green."""
     if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3 or frame_bgr.size == 0:
         raise ValueError("frame must be a non-empty BGR image")
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    green = (
+    return (
         (hsv[..., 0] >= 35)
         & (hsv[..., 0] <= 95)
         & (hsv[..., 1] >= 50)
         & (hsv[..., 2] >= 40)
     )
-    return float(green.mean())
+
+
+def green_dam_area_ratio(frame_bgr: np.ndarray) -> float:
+    """Return the fraction of the readable frame confidently green."""
+
+    return float(green_dam_mask(frame_bgr).mean())
 
 
 def box_overlap_ratio(
@@ -47,6 +51,25 @@ def visible_reference_area_ratio(
 ) -> float:
     """Measure candidate pixels whose Lab appearance still matches a visible frame."""
 
+    return float(
+        visible_reference_mask(
+            frame_bgr,
+            candidate_mask,
+            reference_lab,
+            max_lab_distance=max_lab_distance,
+        ).mean()
+    )
+
+
+def visible_reference_mask(
+    frame_bgr: np.ndarray,
+    candidate_mask: np.ndarray,
+    reference_lab: np.ndarray,
+    *,
+    max_lab_distance: float,
+) -> np.ndarray:
+    """Return candidate pixels that still look like the CP09 white frame."""
+
     candidate = _region(frame_bgr, candidate_mask)
     reference = np.asarray(reference_lab, dtype=float).reshape(-1)
     if reference.shape != (3,):
@@ -54,11 +77,10 @@ def visible_reference_area_ratio(
     if max_lab_distance <= 0:
         raise ValueError("max_lab_distance must be positive")
     if not candidate.any():
-        return 0.0
+        return np.zeros(candidate.shape, dtype=bool)
     lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB).astype(float)
     distance = np.linalg.norm(lab - reference, axis=2)
-    visible = candidate & (distance <= max_lab_distance)
-    return float(visible.sum() / candidate.size)
+    return candidate & (distance <= max_lab_distance)
 
 
 def color_ratio_hsv(

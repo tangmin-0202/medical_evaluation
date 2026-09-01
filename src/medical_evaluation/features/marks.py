@@ -133,7 +133,7 @@ def detect_dark_mark_observations(
 
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     value = hsv[:, :, 2]
-    dark_neutral = dam & (value <= 110)
+    dark_neutral = dam & (value <= 160)
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         dark_neutral.astype(np.uint8),
         connectivity=8,

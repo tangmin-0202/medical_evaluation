@@ -7,7 +7,9 @@ import pytest
 from medical_evaluation.features.appearance import (
     box_overlap_ratio,
     green_dam_area_ratio,
+    green_dam_mask,
     visible_reference_area_ratio,
+    visible_reference_mask,
 )
 
 
@@ -18,6 +20,16 @@ def test_green_dam_area_ratio_reports_confident_absence_and_half_frame() -> None
 
     assert green_dam_area_ratio(black) == 0.0
     assert green_dam_area_ratio(half_green) == pytest.approx(0.5)
+
+
+def test_green_dam_mask_excludes_skin_colored_pixels() -> None:
+    frame = np.full((20, 20, 3), (120, 170, 220), dtype=np.uint8)
+    frame[:, :10] = (30, 170, 90)
+
+    mask = green_dam_mask(frame)
+
+    assert mask[:, :10].all()
+    assert not mask[:, 10:].any()
 
 
 def test_box_overlap_is_normalized_by_box_area() -> None:
@@ -46,3 +58,9 @@ def test_green_covered_frame_candidate_is_not_visible_white_frame() -> None:
         reference_lab,
         max_lab_distance=10,
     ) == 0.0
+    assert not visible_reference_mask(
+        green,
+        candidate,
+        reference_lab,
+        max_lab_distance=10,
+    ).any()

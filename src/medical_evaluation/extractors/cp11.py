@@ -10,7 +10,8 @@ from medical_evaluation.domain import TimeRange
 from medical_evaluation.features.appearance import (
     box_overlap_ratio,
     green_dam_area_ratio,
-    visible_reference_area_ratio,
+    green_dam_mask,
+    visible_reference_mask,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
@@ -50,7 +51,7 @@ class Cp11FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+opencv-appearance-v1"
+        return f"{self.segmenter.model_version}+opencv-appearance-v2"
 
     def extract(
         self,
@@ -180,24 +181,26 @@ class Cp11FeatureExtractor:
             )
             if dam_mask is None or frame_mask is None:
                 continue
-            dam = np.asarray(dam_mask, dtype=bool)
+            raw_dam = np.asarray(dam_mask, dtype=bool)
             candidate = np.asarray(frame_mask, dtype=bool)
-            if dam.shape != candidate.shape or not dam.any():
+            if raw_dam.shape != candidate.shape or not raw_dam.any():
                 continue
             frame = read_frame(video_path, item.frame_index)
+            dam = raw_dam & green_dam_mask(frame)
+            visible_frame = visible_reference_mask(
+                frame,
+                candidate,
+                reference_lab,
+                max_lab_distance=self.frame_appearance_max_lab_distance,
+            )
             measurements.append(
                 (
                     item,
                     dam,
-                    candidate,
+                    visible_frame,
                     float(dam.mean()),
                     box_overlap_ratio(dam, nose_box),
-                    visible_reference_area_ratio(
-                        frame,
-                        candidate,
-                        reference_lab,
-                        max_lab_distance=self.frame_appearance_max_lab_distance,
-                    ),
+                    float(visible_frame.mean()),
                 )
             )
 
