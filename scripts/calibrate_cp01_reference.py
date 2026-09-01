@@ -4,7 +4,12 @@ import argparse
 import math
 from pathlib import Path
 
-from medical_evaluation.annotations import BoxPrompt, PointPrompt, VideoAnnotations
+from medical_evaluation.annotations import (
+    AnnotationStore,
+    BoxPrompt,
+    PointPrompt,
+    VideoAnnotations,
+)
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.storage import atomic_write_json
 
@@ -57,28 +62,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Save the one-time CP01 36-tooth reference in dam-local coordinates."
     )
-    parser.add_argument("--annotations", type=Path, required=True)
-    parser.add_argument("--start-sec", type=float, required=True)
-    parser.add_argument("--end-sec", type=float, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--video-id", default="success")
+    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
-    annotations = VideoAnnotations.model_validate_json(
-        args.annotations.read_text(encoding="utf-8")
-    )
-    values = calibrate_cp01_reference(
-        annotations,
-        TimeRange(start_sec=args.start_sec, end_sec=args.end_sec),
-    )
+    data_dir = args.data_dir.resolve()
+    annotations = AnnotationStore(data_dir / "annotations").load_segments(args.video_id)
+    segment = next(item for item in annotations.steps if item.checkpoint_id == "cp_01")
+    values = calibrate_cp01_reference(annotations, segment.time_range)
+    output = args.output or data_dir / "calibration/cp01_reference.json"
     atomic_write_json(
-        args.output,
+        output,
         {
             "checkpoint_id": "cp_01",
             "source_video_id": annotations.video_id,
             **values,
         },
     )
-    print(args.output)
+    print(output)
 
 
 if __name__ == "__main__":

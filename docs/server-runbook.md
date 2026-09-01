@@ -129,6 +129,41 @@ ssh -L 8000:127.0.0.1:8000 tangm@服务器地址
 
 在 33 项人工标签完成前，只能称为流程 Demo，不能报告准确率。三条视频得到的结果只能称为“Demo 集一致率”，不能称为测试集或泛化准确率。
 
+### 6.1 CP01 与 CP11 联合标注和运行
+
+启动标注网页后访问：
+
+```text
+http://127.0.0.1:8000/annotate/success
+http://127.0.0.1:8000/annotate/failure
+http://127.0.0.1:8000/annotate/clamp_failure
+```
+
+`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别。CP11 已执行的视频在末尾用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`；未执行的视频不伪造提示。
+
+保存基准点后执行一次校准：
+
+```bash
+python scripts/calibrate_cp01_reference.py \
+  --video-id success \
+  --data-dir "$HOME/medical_evaluation/data"
+```
+
+选择当前空闲 GPU（示例为物理 GPU 1）后，对每个视频联合运行：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp01_cp11.py \
+  --video-id success \
+  --checkpoint-path external/sam2/checkpoints/sam2.1_hiera_large.pt \
+  --model-config configs/sam2.1/sam2.1_hiera_l.yaml \
+  --device cuda:0 \
+  --sample-fps 2 \
+  --videos-dir "$HOME/medical_evaluation/videos" \
+  --data-dir "$HOME/medical_evaluation/data"
+```
+
+将 `--video-id` 依次改为 `failure`、`clamp_failure`。每次只检查命令打印的新运行目录，其中应同时存在 `summary.json`、`decisions.json`、`cp_01/overlays/` 和已执行情况下的 `cp_11/overlays/`。
+
 ## 7. CUDA OOM 诊断
 
 出现 OOM 时按顺序处理：
