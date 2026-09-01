@@ -95,7 +95,7 @@ def test_known_video_content_is_available_to_annotation_page(client: TestClient)
     assert response.content == b"video"
 
 
-def test_annotation_page_exposes_cp01_and_cp11_prompt_guidance(
+def test_reference_video_exposes_one_time_cp01_reference_guidance(
     client: TestClient,
 ) -> None:
     response = client.get("/annotate/success")
@@ -108,13 +108,29 @@ def test_annotation_page_exposes_cp01_and_cp11_prompt_guidance(
     guides = json.loads(guide_payload)
     assert guides == {
         "cp_01": {
-            "objects": ["rubber_dam", "mark"],
-            "hint": "同一清晰帧：框选展开的橡皮布，再点学员实际标记中心。",
+            "objects": ["rubber_dam", "cp01_reference"],
+            "hint": "基准视频仅标一次：框选完整橡皮布，并点36牙固定正确位置；学员实际标记由系统自动识别。",
         },
         "cp_11": {
             "objects": ["rubber_dam", "nose_region"],
             "hint": "末尾清晰帧：在绿色橡皮布内分散打3–5个正点，并紧框鼻部。",
         },
+    }
+
+
+def test_learner_video_cp01_guidance_does_not_request_reference_point(
+    client: TestClient,
+) -> None:
+    response = client.get("/annotate/failure")
+
+    guide_payload = response.text.split(
+        '<script id="annotation-guides" type="application/json">',
+        maxsplit=1,
+    )[1].split("</script>", maxsplit=1)[0]
+    guides = json.loads(guide_payload)
+    assert guides["cp_01"] == {
+        "objects": ["rubber_dam"],
+        "hint": "框选完整橡皮布；系统观察完整CP01阶段，自动识别学员最终打孔点并与固定标准点比较。",
     }
 
 

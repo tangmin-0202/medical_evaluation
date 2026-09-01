@@ -37,13 +37,18 @@ PRESETS = {
 
 ANNOTATION_GUIDES = {
     "cp_01": {
-        "objects": ["rubber_dam", "mark"],
-        "hint": "同一清晰帧：框选展开的橡皮布，再点学员实际标记中心。",
+        "objects": ["rubber_dam"],
+        "hint": "框选完整橡皮布；系统观察完整CP01阶段，自动识别学员最终打孔点并与固定标准点比较。",
     },
     "cp_11": {
         "objects": ["rubber_dam", "nose_region"],
         "hint": "末尾清晰帧：在绿色橡皮布内分散打3–5个正点，并紧框鼻部。",
     },
+}
+
+CP01_REFERENCE_GUIDE = {
+    "objects": ["rubber_dam", "cp01_reference"],
+    "hint": "基准视频仅标一次：框选完整橡皮布，并点36牙固定正确位置；学员实际标记由系统自动识别。",
 }
 
 
@@ -157,13 +162,16 @@ def create_router(settings: Settings, manager: JobManager, template_dir: Path) -
     @router.get("/annotate/{video_id}", response_class=HTMLResponse)
     async def annotate_page(request: Request, video_id: str) -> HTMLResponse:
         _require_known_video(video_id, manager)
+        annotation_guides = dict(ANNOTATION_GUIDES)
+        if video_id == "success":
+            annotation_guides["cp_01"] = CP01_REFERENCE_GUIDE
         return templates.TemplateResponse(
             request=request,
             name="annotate.html",
             context={
                 "video_id": video_id,
                 "rubric": rubric,
-                "annotation_guides": ANNOTATION_GUIDES,
+                "annotation_guides": annotation_guides,
             },
         )
 
