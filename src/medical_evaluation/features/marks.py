@@ -117,6 +117,9 @@ def detect_dark_mark_observations(
     time_sec: float,
     min_area_ratio: float,
     max_area_ratio: float,
+    maximum_black_value: int = 55,
+    maximum_faint_value: int = 160,
+    maximum_faint_saturation: int = 120,
 ) -> list[MarkObservation]:
     """Find compact, near-neutral dark blobs inside the segmented dam."""
 
@@ -127,13 +130,24 @@ def detect_dark_mark_observations(
         raise ValueError("rubber_dam_mask shape must match the frame")
     if not 0 < min_area_ratio < max_area_ratio < 1:
         raise ValueError("mark area ratios must be ordered between zero and one")
+    if not 0 <= maximum_black_value <= maximum_faint_value <= 255:
+        raise ValueError("mark value thresholds must be ordered between zero and 255")
+    if not 0 <= maximum_faint_saturation <= 255:
+        raise ValueError("maximum_faint_saturation must be between zero and 255")
     y_values, x_values = np.where(dam)
     if not len(x_values):
         return []
 
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
-    dark_neutral = dam & (value <= 160)
+    dark_neutral = dam & (
+        (value <= maximum_black_value)
+        | (
+            (value <= maximum_faint_value)
+            & (saturation <= maximum_faint_saturation)
+        )
+    )
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         dark_neutral.astype(np.uint8),
         connectivity=8,

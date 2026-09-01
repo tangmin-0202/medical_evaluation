@@ -28,6 +28,9 @@ class Cp01FeatureExtractor:
     max_local_cluster_distance = 0.04
     min_mark_area_ratio = 0.0001
     max_mark_area_ratio = 0.01
+    maximum_black_value = 55
+    maximum_faint_value = 160
+    maximum_faint_saturation = 120
 
     def __init__(
         self,
@@ -55,7 +58,7 @@ class Cp01FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+opencv-marks-v2"
+        return f"{self.segmenter.model_version}+opencv-marks-v3"
 
     def extract(
         self,
@@ -104,6 +107,9 @@ class Cp01FeatureExtractor:
                     time_sec=frame_masks.frame_time_sec,
                     min_area_ratio=self.min_mark_area_ratio,
                     max_area_ratio=self.max_mark_area_ratio,
+                    maximum_black_value=self.maximum_black_value,
+                    maximum_faint_value=self.maximum_faint_value,
+                    maximum_faint_saturation=self.maximum_faint_saturation,
                 )
             )
 

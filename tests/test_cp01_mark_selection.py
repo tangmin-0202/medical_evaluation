@@ -137,6 +137,7 @@ def test_dark_mark_detector_keeps_tiny_black_and_faint_gray_marks() -> None:
     dam_mask = np.ones((120, 120), dtype=np.uint8)
     cv2.circle(frame, (105, 12), 1, (20, 20, 20), -1)
     cv2.circle(frame, (78, 82), 2, (145, 145, 145), -1)
+    cv2.circle(frame, (35, 70), 3, (20, 80, 40), -1)
 
     observations = detect_dark_mark_observations(
         frame,
