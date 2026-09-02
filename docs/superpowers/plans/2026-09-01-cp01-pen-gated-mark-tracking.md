@@ -819,3 +819,53 @@ CUDA_VISIBLE_DEVICES=<free-physical-gpu> python scripts/smoke_sam2_cp01_cp11.py 
 ```
 
 Accept success only after the JSON features and all CP01/CP11 overlays agree with the visible objects. Then repeat annotation and smoke for `failure` and `clamp_failure`; do not copy success time ranges or prompts.
+
+### Task 8: Fast compatibility for marking-pen point prompts
+
+**User-authorized verification exception:** The user explicitly requested that this compatibility change not run tests. Update existing test expectations where text contracts change, but do not execute pytest or Ruff for this task. Report the skipped verification explicitly.
+
+**Files:**
+- Modify: `src/medical_evaluation/extractors/cp01.py`
+- Modify: `src/medical_evaluation/web/routes.py`
+- Modify: `tests/test_annotation_api.py`
+- Modify: `docs/server-runbook.md`
+
+- [ ] **Step 1: Accept one box or one-to-two same-frame positive points**
+
+After `prompts_for_object` returns the `marking_pen` prompts, validate this exact contract:
+
+```python
+if any(prompt.kind == "box" for prompt in pen_prompts):
+    valid = len(pen_prompts) == 1 and pen_prompts[0].kind == "box"
+else:
+    frame_times = {prompt.frame_time_sec for prompt in pen_prompts}
+    valid = (
+        1 <= len(pen_prompts) <= 2
+        and all(prompt.kind == "point" and prompt.positive for prompt in pen_prompts)
+        and len(frame_times) == 1
+    )
+if pen_prompts and not valid:
+    raise ValueError(
+        "cp_01 marking_pen requires one box or 1-2 positive points on one frame"
+    )
+```
+
+- [ ] **Step 2: Update annotation guidance**
+
+Use this learner hint and the equivalent reference-video wording:
+
+```python
+"CP01已执行时：框选完整橡皮布；标记笔可紧框，或在同一帧笔身内部打1–2个正点。"
+```
+
+- [ ] **Step 3: Update the runbook and existing API expectation**
+
+Document where pen points belong, forbid hand/fabric/black-mark points, and update the exact guide string in `tests/test_annotation_api.py` without running tests.
+
+- [ ] **Step 4: Commit and create a server bundle**
+
+```bash
+git add src/medical_evaluation/extractors/cp01.py src/medical_evaluation/web/routes.py tests/test_annotation_api.py docs/server-runbook.md
+git commit -m "fix: accept CP01 pen point prompts"
+git bundle create cp01-pen-points-<short-head>.bundle main ^fbc05e0298351374735f6c102e15a0a6e154dead
+```
