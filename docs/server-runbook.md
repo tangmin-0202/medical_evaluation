@@ -116,7 +116,66 @@ python scripts/run_server.py --host 0.0.0.0 --port 8000
 ssh -L 8000:127.0.0.1:8000 tangm@服务器地址
 ```
 
-当前 `fake` 模式用于网页流程验收。切换 `real` 前必须实现面向 11 个 Judge 的实际 `FeatureExtractor`、校准 rubric 阈值，并在应用创建时注入 `AnalysisPipeline`；仅安装权重后直接设置 `real` 会被应用明确拒绝，避免产生伪真实报告。
+`fake` 模式仍用于纯网页流程验收。当前 `real` 模式只接入 CP09 和 CP11，其他项目保留在 11 项报告中但标记为未评估，不计作零分。CP01 已暂停，不要再运行 `smoke_sam2_cp01_cp11.py` 作为当前验收入口。
+
+### 5.1 启动 CP09/CP11 真实评分与 Qwen 点评
+
+先在独立终端按第 3 节启动 Qwen。再检查 GPU，占用较低的物理 GPU 分配给 SAM2；以下仅以物理 GPU 4 和网页端口 57116 为示例：
+
+```bash
+conda activate video_medical
+cd ~/medical_evaluation
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu \
+  --format=csv,noheader
+
+export MED_EVAL_VIDEOS_DIR="$HOME/medical_evaluation/videos"
+export MED_EVAL_DATA_DIR="$HOME/medical_evaluation/data"
+export MED_EVAL_RUBRIC_PATH="$HOME/medical_evaluation/config/rubric.yaml"
+export MED_EVAL_SAM2_CHECKPOINT_PATH="$HOME/medical_evaluation/external/sam2/checkpoints/sam2.1_hiera_large.pt"
+export MED_EVAL_SAM2_MODEL_CONFIG="configs/sam2.1/sam2.1_hiera_l.yaml"
+export MED_EVAL_SAM_DEVICE="cuda:0"
+export MED_EVAL_SAMPLE_FPS=2
+export MED_EVAL_ANALYSIS_WIDTH=1280
+export MED_EVAL_VLM_BASE_URL="http://127.0.0.1:8001/v1"
+export MED_EVAL_VLM_MODEL="Qwen/Qwen3-VL-4B-Instruct"
+export MED_EVAL_PIPELINE_MODE=real
+
+CUDA_VISIBLE_DEVICES=4 python scripts/run_server.py --host 127.0.0.1 --port 57116
+```
+
+如果 GPU 4 已占用，替换 `CUDA_VISIBLE_DEVICES=4`，不要停止其他用户进程。因为该进程只看到所选物理卡，`MED_EVAL_SAM_DEVICE=cuda:0` 保持不变。Qwen 必须运行在另一个进程和另一张 GPU 上。
+
+本机建立端口转发：
+
+```powershell
+ssh -p 22 -L 57116:127.0.0.1:57116 tangm@10.25.64.102
+```
+
+打开 `http://127.0.0.1:57116/`，或者通过 API 创建三个任务：
+
+```bash
+curl -X POST http://127.0.0.1:57116/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"preset_id":"success"}'
+curl -X POST http://127.0.0.1:57116/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"preset_id":"failure"}'
+curl -X POST http://127.0.0.1:57116/api/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"preset_id":"clamp_failure"}'
+```
+
+响应中的 `job_id` 对应：
+
+```text
+http://127.0.0.1:57116/jobs/{job_id}
+http://127.0.0.1:57116/reports/{job_id}
+data/jobs/{job_id}/report.json
+```
+
+成功视频具备 CP09 支架提示和唯一 `oral_region` 框时应显示“已评估 2/11 项”。当前两个失败视频缺少完整 CP09 输入时，CP09 显示 `automatic_evaluation_input_missing` 且不参与评分，CP11 仍自动扫描绿色橡皮布，页面显示实际的“已评估 1/11 项”。不得用人工标签替代缺少的模型结果。
+
+阶段性分数只在已运行项目内归一化，页面必须同时显示“非最终成绩”。Qwen 服务不可用或返回非法 JSON 时，`ai_commentary.source` 应为 `template_fallback`，但 Judge 的 `status`、`reason_code`、特征和阶段性分数不能变化。
 
 ## 6. 标注与验证顺序
 
@@ -129,7 +188,9 @@ ssh -L 8000:127.0.0.1:8000 tangm@服务器地址
 
 在 33 项人工标签完成前，只能称为流程 Demo，不能报告准确率。三条视频得到的结果只能称为“Demo 集一致率”，不能称为测试集或泛化准确率。
 
-### 6.1 CP01 与 CP11 联合标注和运行
+### 6.1 已暂停的 CP01 实验记录
+
+以下 CP01 内容仅保留为历史实验记录，当前真实评分链路不会调用 CP01 提取器或 Judge。CP11 继续使用后文规定的标注和判定方式。
 
 启动标注网页后访问：
 
