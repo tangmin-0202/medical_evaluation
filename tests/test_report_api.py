@@ -11,6 +11,7 @@ from medical_evaluation.domain import CheckpointStatus
 from medical_evaluation.reporting import CheckpointResult, EvaluationReport, RunAudit
 from medical_evaluation.settings import Settings
 from medical_evaluation.storage import atomic_write_json
+from medical_evaluation.vlm.schemas import VlmReview
 
 
 @pytest.fixture
@@ -70,6 +71,44 @@ def test_report_page_contains_11_checkpoint_rows(report_client) -> None:
     assert response.status_code == 200
     assert response.text.count('data-checkpoint-id="cp_') == 11
     assert "测试总评" in response.text
+
+
+def test_partial_report_shows_provisional_score_and_ai_commentary(report_client) -> None:
+    client, settings, report = report_client
+    checkpoints = []
+    for item in report.checkpoints:
+        included = item.checkpoint_id in {"cp_09", "cp_11"}
+        update = {"included_in_provisional_score": included}
+        if item.checkpoint_id == "cp_09":
+            update["ai_commentary"] = VlmReview(
+                evidence_supported=True,
+                semantic_status="supports",
+                reason_zh="证据支持支架居中。",
+                suggestion_zh="保持支架位置。",
+                cited_evidence_indices=[],
+            )
+        if item.checkpoint_id == "cp_11":
+            update["status"] = CheckpointStatus.INCORRECT
+        checkpoints.append(item.model_copy(update=update))
+    partial = report.model_copy(
+        update={"checkpoints": checkpoints, "overall_feedback": "阶段性总评"}
+    )
+    atomic_write_json(
+        settings.data_dir / "jobs" / report.job_id / "report.json",
+        partial.model_dump(mode="json"),
+    )
+
+    response = client.get(f"/reports/{report.job_id}")
+
+    assert response.status_code == 200
+    assert "阶段性得分" in response.text
+    assert "已评估 2/11 项" in response.text
+    assert "非最终成绩" in response.text
+    assert "50.0" in response.text
+    assert "AI 点评" in response.text
+    assert "证据支持支架居中。" in response.text
+    assert "尚未接入自动评估" in response.text
+    assert ">/ 100<" not in response.text
 
 
 def test_resolving_review_recomputes_final_score(report_client) -> None:

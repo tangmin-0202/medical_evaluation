@@ -12,7 +12,15 @@
     <header class="report-header">
       <div><h1>考核报告</h1><p class="lead">{{ report.overall_feedback }}</p></div>
       <div class="score-block">
-        {% if report.summary.final_score is none %}
+        {% if report.summary.evaluated_count < report.summary.total_count %}
+          {% if report.summary.provisional_score is none %}
+          <strong id="score-label">{{ "%.1f"|format(report.summary.provisional_minimum_score) }}–{{ "%.1f"|format(report.summary.provisional_maximum_score) }}</strong>
+          {% else %}
+          <strong id="score-label">{{ "%.1f"|format(report.summary.provisional_score) }}</strong>
+          {% endif %}
+          <span>阶段性得分</span>
+          <small>已评估 {{ report.summary.evaluated_count }}/{{ report.summary.total_count }} 项 · 非最终成绩</small>
+        {% elif report.summary.final_score is none %}
           <strong id="score-label">{{ "%.1f"|format(report.summary.minimum_score) }}–{{ "%.1f"|format(report.summary.maximum_score) }}</strong><span>待复核</span>
         {% else %}
           <strong id="score-label">{{ "%.1f"|format(report.summary.final_score) }}</strong><span>/ 100</span>
@@ -30,13 +38,22 @@
         <div class="checkpoint-heading">
           <span class="checkpoint-number">{{ "%02d"|format(loop.index) }}</span>
           <div><h2>{{ checkpoint_names[item.checkpoint_id] }}</h2><code>{{ item.checkpoint_id }}</code></div>
-          <span class="status-badge">{{ item.status.value }}</span>
+          <span class="status-badge">{{ item.status.value if item.included_in_provisional_score else "未评估" }}</span>
         </div>
+        {% if not item.included_in_provisional_score %}<p>尚未接入自动评估，本项不计入阶段性得分。</p>{% endif %}
         <p>{{ item.reason }}</p>
         <p class="suggestion">建议：{{ item.suggestion }}</p>
         <dl><dt>置信度</dt><dd>{{ "%.2f"|format(item.confidence) }}</dd><dt>规则</dt><dd>{{ item.matched_rules|join(", ") or "—" }}</dd><dt>特征</dt><dd><code>{{ item.features }}</code></dd></dl>
         {% if item.evidence %}<div class="evidence-list">{% for evidence in item.evidence %}<span>{{ evidence.time_sec }}s · {{ evidence.overlay_path }}</span>{% endfor %}</div>{% endif %}
-        {% if item.status.value == "needs_review" %}
+        {% if item.ai_commentary %}
+        <section class="ai-commentary">
+          <h3>AI 点评</h3>
+          <p>{{ item.ai_commentary.reason_zh }}</p>
+          <p class="suggestion">建议：{{ item.ai_commentary.suggestion_zh }}</p>
+          <small>来源：{{ item.ai_commentary.source }} · 证据索引：{{ item.ai_commentary.cited_evidence_indices|join(", ") or "—" }}</small>
+        </section>
+        {% endif %}
+        {% if item.status.value == "needs_review" and item.included_in_provisional_score %}
         <form class="review-form" data-review-checkpoint-id="{{ item.checkpoint_id }}">
           <input name="actor" value="tangmin" aria-label="复核人" required>
           <select name="status"><option value="correct">正确</option><option value="incorrect">错误</option><option value="incomplete">未完成</option></select>
