@@ -15,6 +15,7 @@ from medical_evaluation.judges.cp01_cp03 import judge_cp01
 from medical_evaluation.judges.cp09_cp11 import judge_cp11
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.rubric import Rubric, load_rubric
+from medical_evaluation.segmentation.base import VideoSegmenter
 from medical_evaluation.segmentation.sam2_backend import Sam2Backend
 from medical_evaluation.storage import atomic_write_json, safe_child
 
@@ -38,6 +39,38 @@ class Extractor(Protocol):
         dense_fps: float,
         analysis_width: int,
     ) -> ExtractedEvidence: ...
+
+
+def build_cp01_extractor(
+    *,
+    segmenter: VideoSegmenter,
+    annotations: VideoAnnotations,
+    evidence_root: Path,
+    reference: dict[str, float],
+    rubric: Rubric,
+) -> Cp01FeatureExtractor:
+    rule = next(item for item in rubric.checkpoints if item.id == "cp_01")
+    thresholds = rule.thresholds
+    return Cp01FeatureExtractor(
+        segmenter=segmenter,
+        annotations=annotations,
+        evidence_root=evidence_root,
+        reference_u=float(reference["reference_u"]),
+        reference_v=float(reference["reference_v"]),
+        min_pen_dam_overlap_ratio=thresholds["min_pen_dam_overlap_ratio"],
+        min_pen_contact_frames=int(thresholds["min_pen_contact_frames"]),
+        min_mark_observed_frames=int(thresholds["min_mark_observed_frames"]),
+        min_new_mark_darkness_delta=thresholds["min_new_mark_darkness_delta"],
+        min_mark_area_ratio=thresholds["min_mark_area_ratio"],
+        max_mark_area_ratio=thresholds["max_mark_area_ratio"],
+        maximum_black_value=int(thresholds["maximum_black_value"]),
+        maximum_faint_value=int(thresholds["maximum_faint_value"]),
+        maximum_faint_saturation=int(thresholds["maximum_faint_saturation"]),
+        max_mark_aspect_ratio=thresholds["max_mark_aspect_ratio"],
+        min_mark_circularity=thresholds["min_mark_circularity"],
+        max_local_cluster_distance=thresholds["max_local_cluster_distance"],
+        local_darkness_ring_radius=int(thresholds["local_darkness_ring_radius"]),
+    )
 
 
 def run_cp01_cp11_smoke(
@@ -132,12 +165,12 @@ def main() -> None:
         args.checkpoint_path.resolve(),
         device=args.device,
     )
-    cp01 = Cp01FeatureExtractor(
+    cp01 = build_cp01_extractor(
         segmenter=backend,
         annotations=annotations,
         evidence_root=run_root,
-        reference_u=float(reference["reference_u"]),
-        reference_v=float(reference["reference_v"]),
+        reference=reference,
+        rubric=rubric,
     )
     cp11 = Cp11FeatureExtractor(
         segmenter=backend,

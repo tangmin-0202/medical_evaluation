@@ -1,38 +1,46 @@
 from __future__ import annotations
 
-import importlib.util
+from pathlib import Path
 
 import cv2
 import numpy as np
-import pytest
+
+from scripts.calibrate_cp01_detector import sweep_cp01_detector
 
 
-def test_sweep_keeps_only_thresholds_with_two_selectable_stable_marks() -> None:
-    spec = importlib.util.find_spec("scripts.calibrate_cp01_detector")
-    if spec is None:
-        pytest.fail("CP01 detector calibration script is missing")
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-
+def test_sweep_reports_preexisting_and_new_marks_with_overlay(
+    tmp_path: Path,
+) -> None:
     samples = []
-    for frame_index in (1, 2, 3):
+    for frame_index in range(1, 7):
         frame = np.full((120, 120, 3), (30, 170, 90), dtype=np.uint8)
-        cv2.circle(frame, (105, 12), 1, (20, 20, 20), -1)
-        cv2.circle(frame, (78, 82), 2, (145, 145, 145), -1)
-        cv2.circle(frame, (35, 70), 3, (20, 80, 40), -1)
-        samples.append((frame, np.ones((120, 120), dtype=bool), frame_index, frame_index / 2))
+        cv2.circle(frame, (20, 20), 2, (20, 20, 20), -1)
+        if frame_index >= 4:
+            cv2.circle(frame, (78, 82), 2, (20, 20, 20), -1)
+            cv2.circle(frame, (105, 12), 1, (10, 10, 10), -1)
+        dam = np.ones((120, 120), dtype=bool)
+        pen = np.zeros((120, 120), dtype=bool)
+        if frame_index >= 4:
+            pen[60:90, 60:90] = True
+        samples.append((frame, dam, pen, frame_index, frame_index / 2))
 
-    results = module.sweep_cp01_detector(
+    results = sweep_cp01_detector(
         samples,
         maximum_black_values=[55],
-        maximum_faint_values=[140, 160],
-        maximum_faint_saturations=[80, 120],
-        minimum_area_ratios=[0.0001],
-        minimum_observed_frames=3,
+        maximum_faint_values=[160],
+        maximum_faint_saturations=[120],
+        minimum_area_ratios=[0.00005],
+        minimum_observed_frames_values=[3],
+        minimum_pen_overlap_ratios=[0.02],
+        minimum_pen_contact_frames_values=[2],
+        minimum_darkness_deltas=[15.0],
+        reference_u=0.65,
+        reference_v=0.65,
+        output_dir=tmp_path,
     )
 
-    assert len(results) == 2
-    assert {item["maximum_faint_value"] for item in results} == {160}
-    assert all(item["candidate_count"] == 2 for item in results)
-    assert all(item["selection_status"] == "selected" for item in results)
+    assert len(results) == 1
+    assert results[0]["preexisting_candidate_count"] == 1
+    assert results[0]["new_candidate_count"] == 2
+    assert results[0]["pen_contact_detected"] is True
+    assert Path(results[0]["overlay_path"]).is_file()

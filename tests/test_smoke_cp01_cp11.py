@@ -7,7 +7,10 @@ from medical_evaluation.annotations import SegmentAnnotation, VideoAnnotations
 from medical_evaluation.domain import CheckpointStatus, TimeRange
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.rubric import load_rubric
-from scripts.smoke_sam2_cp01_cp11 import run_cp01_cp11_smoke
+from scripts.smoke_sam2_cp01_cp11 import (
+    build_cp01_extractor,
+    run_cp01_cp11_smoke,
+)
 
 
 class FakeExtractor:
@@ -30,7 +33,14 @@ def test_combined_smoke_writes_both_decisions_in_one_run(tmp_path: Path) -> None
             for number in range(1, 12)
         ],
     )
-    cp01 = FakeExtractor({"mark_reference_distance": 0.01})
+    cp01 = FakeExtractor(
+        {
+            "dam_valid_frame_count": 10.0,
+            "pen_contact_detected": True,
+            "new_mark_candidate_count": 1.0,
+            "mark_reference_distance": 0.01,
+        }
+    )
     cp11 = FakeExtractor({"dam_stage_presence_ratio": 0.5, "dam_final_presence_ratio": 0.8, "dam_area_ratio": 0.4, "nose_overlap": 0.0, "visible_frame_area_ratio": 0.0})
     run_root = tmp_path / "run"
 
@@ -51,3 +61,28 @@ def test_combined_smoke_writes_both_decisions_in_one_run(tmp_path: Path) -> None
     decisions = json.loads((run_root / "decisions.json").read_text("utf-8"))
     assert decisions["cp_01"]["status"] == "correct"
     assert decisions["cp_11"]["status"] == "correct"
+
+
+def test_build_cp01_extractor_uses_all_rubric_thresholds(tmp_path: Path) -> None:
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    extractor = build_cp01_extractor(
+        segmenter=FakeExtractor({}),
+        annotations=VideoAnnotations(video_id="success"),
+        evidence_root=tmp_path,
+        reference={"reference_u": 0.7, "reference_v": 0.6},
+        rubric=rubric,
+    )
+
+    assert extractor.min_pen_dam_overlap_ratio == 0.02
+    assert extractor.min_pen_contact_frames == 2
+    assert extractor.min_mark_observed_frames == 3
+    assert extractor.min_new_mark_darkness_delta == 15.0
+    assert extractor.min_mark_area_ratio == 0.0001
+    assert extractor.max_mark_area_ratio == 0.01
+    assert extractor.maximum_black_value == 55
+    assert extractor.maximum_faint_value == 160
+    assert extractor.maximum_faint_saturation == 120
+    assert extractor.max_mark_aspect_ratio == 2.0
+    assert extractor.min_mark_circularity == 0.35
+    assert extractor.max_local_cluster_distance == 0.04
+    assert extractor.local_darkness_ring_radius == 5
