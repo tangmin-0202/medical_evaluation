@@ -217,7 +217,7 @@ class AnalysisPipeline:
         )
         try:
             return self.commentary_provider.review(request)
-        except Exception:
+        except RuntimeError:
             return template_fallback(result.reason_code)
 
     @staticmethod
