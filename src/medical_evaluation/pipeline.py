@@ -30,6 +30,10 @@ class ExtractedEvidence(BaseModel):
     evidence: list[EvidenceItem] = Field(default_factory=list)
 
 
+class EvaluationInputMissing(ValueError):
+    """Raised when a supported checkpoint lacks required model inputs."""
+
+
 class FeatureExtractor(Protocol):
     def extract(
         self,
@@ -68,7 +72,8 @@ class AnalysisPipeline:
         self,
         *,
         rubric: Rubric,
-        extractor: FeatureExtractor,
+        extractor: FeatureExtractor | None = None,
+        extractor_factory: Callable[[JobRecord], FeatureExtractor] | None = None,
         localizer: ConfidenceProvider,
         output_root: Path,
         annotation_store: AnnotationStore | None = None,
@@ -77,9 +82,13 @@ class AnalysisPipeline:
         fallback_dense_fps: float = 1,
         fallback_analysis_width: int = 960,
         minimum_alignment_confidence: float = 0.5,
+        enabled_checkpoint_ids: frozenset[str] = frozenset({"cp_09", "cp_11"}),
     ) -> None:
+        if (extractor is None) == (extractor_factory is None):
+            raise ValueError("provide exactly one extractor or extractor_factory")
         self.rubric = rubric
         self.extractor = extractor
+        self.extractor_factory = extractor_factory
         self.localizer = localizer
         self.output_root = output_root
         self.annotation_store = annotation_store
@@ -88,6 +97,7 @@ class AnalysisPipeline:
         self.fallback_dense_fps = fallback_dense_fps
         self.fallback_analysis_width = fallback_analysis_width
         self.minimum_alignment_confidence = minimum_alignment_confidence
+        self.enabled_checkpoint_ids = enabled_checkpoint_ids
         self.judges = dict(JUDGES)
 
     def run(
@@ -98,29 +108,56 @@ class AnalysisPipeline:
         started = datetime.now(UTC)
         degradations: list[str] = []
         results: list[CheckpointResult] = []
+        extractor = (
+            self.extractor_factory(job)
+            if self.extractor_factory is not None
+            else self.extractor
+        )
+        assert extractor is not None
         annotated_ranges = self._annotation_ranges(job.video_id)
         for index, checkpoint in enumerate(self.rubric.checkpoints, start=1):
             time_range = annotated_ranges.get(checkpoint.id, checkpoint.reference_time)
-            alignment_confidence = self.localizer.checkpoint_confidence(checkpoint.id)
-            if alignment_confidence < self.minimum_alignment_confidence:
+            if checkpoint.id not in self.enabled_checkpoint_ids:
                 result = self._review_result(
                     checkpoint,
                     time_range,
-                    "low_step_alignment_confidence",
-                    "该步骤的自动时间对齐置信度不足。",
-                    confidence=alignment_confidence,
-                )
-            elif checkpoint.id not in self.judges:
-                result = self._review_result(
-                    checkpoint,
-                    time_range,
-                    "judge_not_implemented",
-                    "该考核点的判定规则尚未接入当前纵切片。",
+                    "automatic_evaluation_not_implemented",
+                    "该考核点尚未接入当前自动评估纵向切片。",
+                    included_in_provisional_score=False,
                 )
             else:
-                evidence = self._extract_with_retry(job, checkpoint, time_range, degradations)
-                decision = self.judges[checkpoint.id](evidence.features, checkpoint.thresholds)
-                result = self._to_result(decision, time_range, evidence.evidence)
+                alignment_confidence = self.localizer.checkpoint_confidence(checkpoint.id)
+                if alignment_confidence < self.minimum_alignment_confidence:
+                    result = self._review_result(
+                        checkpoint,
+                        time_range,
+                        "low_step_alignment_confidence",
+                        "该步骤的自动时间对齐置信度不足。",
+                        confidence=alignment_confidence,
+                    )
+                else:
+                    try:
+                        evidence = self._extract_with_retry(
+                            job,
+                            checkpoint,
+                            time_range,
+                            degradations,
+                            extractor,
+                        )
+                    except EvaluationInputMissing:
+                        result = self._review_result(
+                            checkpoint,
+                            time_range,
+                            "automatic_evaluation_input_missing",
+                            "该考核点缺少自动评估所需的有效提示或参考输入。",
+                            included_in_provisional_score=False,
+                        )
+                    else:
+                        decision = self.judges[checkpoint.id](
+                            evidence.features,
+                            checkpoint.thresholds,
+                        )
+                        result = self._to_result(decision, time_range, evidence.evidence)
             results.append(result)
             if progress is not None:
                 progress(index / 11, checkpoint.id)
@@ -152,9 +189,10 @@ class AnalysisPipeline:
         checkpoint: CheckpointRule,
         time_range: TimeRange,
         degradations: list[str],
+        extractor: FeatureExtractor,
     ) -> ExtractedEvidence:
         try:
-            return self.extractor.extract(
+            return extractor.extract(
                 Path(job.video_path),
                 checkpoint.id,
                 time_range,
@@ -170,7 +208,7 @@ class AnalysisPipeline:
                 f"analysis_width={self.fallback_analysis_width}"
             )
             degradations.append(degradation)
-            return self.extractor.extract(
+            return extractor.extract(
                 Path(job.video_path),
                 checkpoint.id,
                 time_range,
@@ -195,6 +233,7 @@ class AnalysisPipeline:
         reason: str,
         *,
         confidence: float = 0,
+        included_in_provisional_score: bool = True,
     ) -> CheckpointResult:
         return CheckpointResult(
             checkpoint_id=checkpoint.id,
@@ -204,6 +243,7 @@ class AnalysisPipeline:
             reason_code=reason_code,
             reason=reason,
             suggestion="请人工复核该步骤。",
+            included_in_provisional_score=included_in_provisional_score,
         )
 
     @staticmethod

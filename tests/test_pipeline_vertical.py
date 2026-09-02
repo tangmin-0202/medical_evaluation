@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from medical_evaluation.jobs import JobRecord
-from medical_evaluation.pipeline import AnalysisPipeline, ExtractedEvidence
+from medical_evaluation.pipeline import (
+    AnalysisPipeline,
+    EvaluationInputMissing,
+    ExtractedEvidence,
+)
 from medical_evaluation.rubric import load_rubric
 
 
@@ -39,6 +43,28 @@ class FakeExtractor:
         )
 
 
+class MissingCp09Extractor(FakeExtractor):
+    def extract(
+        self,
+        video_path: Path,
+        checkpoint_id: str,
+        time_range: object,
+        *,
+        dense_fps: float,
+        analysis_width: int,
+    ) -> ExtractedEvidence:
+        if checkpoint_id == "cp_09":
+            self.calls.append((checkpoint_id, dense_fps, analysis_width))
+            raise EvaluationInputMissing("cp_09 requires prompts")
+        return super().extract(
+            video_path,
+            checkpoint_id,
+            time_range,
+            dense_fps=dense_fps,
+            analysis_width=analysis_width,
+        )
+
+
 class FakeLocalizer:
     def __init__(self, confidence: float = 0.95) -> None:
         self.confidence = confidence
@@ -47,9 +73,13 @@ class FakeLocalizer:
         return self.confidence
 
 
-def make_pipeline(tmp_path: Path) -> tuple[AnalysisPipeline, FakeExtractor, FakeLocalizer]:
+def make_pipeline(
+    tmp_path: Path,
+    *,
+    extractor: FakeExtractor | None = None,
+) -> tuple[AnalysisPipeline, FakeExtractor, FakeLocalizer]:
     rubric = load_rubric(Path(__file__).parents[1] / "config" / "rubric.yaml")
-    extractor = FakeExtractor()
+    extractor = extractor or FakeExtractor()
     localizer = FakeLocalizer()
     pipeline = AnalysisPipeline(
         rubric=rubric,
@@ -71,7 +101,7 @@ def make_job(tmp_path: Path) -> JobRecord:
 
 
 def test_pipeline_writes_two_real_decisions_and_nine_review_results(tmp_path: Path) -> None:
-    pipeline, _, _ = make_pipeline(tmp_path)
+    pipeline, extractor, _ = make_pipeline(tmp_path)
 
     report = pipeline.run(make_job(tmp_path))
 
@@ -79,6 +109,10 @@ def test_pipeline_writes_two_real_decisions_and_nine_review_results(tmp_path: Pa
     assert report.checkpoints[8].status.value == "correct"
     assert report.checkpoints[10].status.value == "correct"
     assert report.checkpoints[0].status.value == "needs_review"
+    assert report.checkpoints[0].reason_code == "automatic_evaluation_not_implemented"
+    assert report.checkpoints[0].included_in_provisional_score is False
+    assert report.summary.evaluated_count == 2
+    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_11"]
     stored = json.loads((tmp_path / "jobs" / "job-1" / "report.json").read_text("utf-8"))
     assert len(stored["checkpoints"]) == 11
 
@@ -90,7 +124,7 @@ def test_pipeline_retries_oom_once_with_degraded_sampling(tmp_path: Path) -> Non
     report = pipeline.run(make_job(tmp_path))
 
     assert report.audit.degradations == ["cuda_oom:dense_fps=1.0,analysis_width=960"]
-    assert extractor.calls[:2] == [("cp_01", 5, 1280), ("cp_01", 1, 960)]
+    assert extractor.calls[:2] == [("cp_09", 5, 1280), ("cp_09", 1, 960)]
 
 
 def test_low_alignment_confidence_pauses_checkpoint(tmp_path: Path) -> None:
@@ -100,5 +134,19 @@ def test_low_alignment_confidence_pauses_checkpoint(tmp_path: Path) -> None:
     report = pipeline.run(make_job(tmp_path))
 
     assert all(item.status.value == "needs_review" for item in report.checkpoints)
-    assert report.checkpoints[0].reason_code == "low_step_alignment_confidence"
+    assert report.checkpoints[0].reason_code == "automatic_evaluation_not_implemented"
+    assert report.checkpoints[8].reason_code == "low_step_alignment_confidence"
+    assert report.checkpoints[10].reason_code == "low_step_alignment_confidence"
     assert extractor.calls == []
+
+
+def test_missing_cp09_input_excludes_cp09_but_still_runs_cp11(tmp_path: Path) -> None:
+    pipeline, extractor, _ = make_pipeline(tmp_path, extractor=MissingCp09Extractor())
+
+    report = pipeline.run(make_job(tmp_path))
+
+    assert report.checkpoints[8].reason_code == "automatic_evaluation_input_missing"
+    assert report.checkpoints[8].included_in_provisional_score is False
+    assert report.checkpoints[10].included_in_provisional_score is True
+    assert report.summary.evaluated_count == 1
+    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_11"]
