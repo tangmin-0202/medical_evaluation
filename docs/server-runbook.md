@@ -141,9 +141,9 @@ http://127.0.0.1:8000/annotate/clamp_failure
 
 `success` 的 CP01 保留一次性的 `rubber_dam` 框和 `cp01_reference` 点；每个实际执行 CP01 的视频还必须在笔正在橡皮布上标记的清晰帧提供 `marking_pen` 提示。可以紧框一次笔，也可以在同一帧笔身或笔尖内部打 1–2 个正点；不要混用框和点，不要跨帧打点，也不要把点落在手、橡皮布或黑色标记点上。若人工真值确认整个 CP01 没有执行，则不要伪造笔提示。
 
-CP01 在完整阶段同时跟踪橡皮布和笔。笔与橡皮布连续达到重叠阈值后才确认标记动作；接触前的模板孔、文字和十字线作为背景排除。接触后只保留新增或明显加深且跨帧稳定的暗点，按局部黑度取最黑的 1–2 个，再选择距离固定参考点最近的点。
+CP01 在完整阶段同时跟踪橡皮布和笔。至少两个有效帧检测到笔即确认执行了标记动作，不要求笔和橡皮布掩膜重叠。橡皮布内符合尺寸和形状要求、且跨帧稳定的暗点按局部黑度取最黑的 1–2 个，再选择距离固定参考点最近的点。
 
-CP01 状态顺序为：橡皮布有效帧少于 3 帧是 `needs_review`；没有稳定笔接触是 `incomplete`；稳定接触后没有稳定新增/加深暗点是 `incorrect`；有候选后才比较 `max_mark_distance`。
+CP01 状态顺序为：橡皮布有效帧少于 3 帧是 `needs_review`；没有稳定检测到笔是 `incomplete`；检测到笔但没有稳定黑点是 `incorrect`；有候选后才比较 `max_mark_distance`。
 
 CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。正点必须位于绿色橡皮布内部，避开模型皮肤、牙齿、支架和画面边缘。
 
@@ -197,7 +197,7 @@ CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp01_cp11.py \
 
 将 `--video-id` 依次改为 `failure`、`clamp_failure`。每次只检查命令打印的新运行目录，其中应同时存在 `summary.json`、`decisions.json`、`cp_01/evidence.json`、`cp_01/overlays/` 和已执行情况下的 `cp_11/overlays/`。
 
-CP01 最多三张证据图：黄色轮廓为橡皮布，青色为笔，洋红色为笔/布重叠，灰色为接触前背景暗点，红色为最黑 Top-2，绿色为固定参考点，黄线连接最终学员点和参考点。JSON 至少核对 `pen_contact_detected`、`preexisting_mark_candidate_count`、`new_mark_candidate_count`、`selected_mark_darkness` 和 `mark_reference_distance`。
+CP01 最多两张证据图：黄色轮廓为橡皮布，青色为笔，红色为最黑 Top-2，绿色为固定参考点，黄线连接最终学员点和参考点。JSON 至少核对 `pen_presence_detected`、`mark_candidate_count`、`selected_mark_darkness` 和 `mark_reference_distance`。
 
 ## 7. CUDA OOM 诊断
 

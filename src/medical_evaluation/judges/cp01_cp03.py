@@ -21,21 +21,21 @@ def judge_cp01(
             reason_code="missing_required_evidence",
             reason="橡皮布有效画面不足，无法判断标记过程。",
         )
-    if features.get("pen_contact_detected") is not True:
+    if features.get("pen_presence_detected") is not True:
         return incomplete(
             "cp_01",
             features,
-            reason_code="marking_pen_contact_not_observed",
-            reason="完整阶段内未观察到标记笔稳定接触橡皮布。",
+            reason_code="marking_pen_not_observed",
+            reason="完整阶段内未稳定观察到标记笔。",
             suggestion="请使用标记笔在橡皮布上完成目标牙位标记。",
         )
-    if float(features.get("new_mark_candidate_count") or 0) == 0:
+    if float(features.get("mark_candidate_count") or 0) == 0:
         return incorrect(
             "cp_01",
             features,
-            reason_code="mark_not_left_after_contact",
-            reason="标记笔接触橡皮布后未形成可确认的新标记。",
-            suggestion="接触橡皮布后留下清晰、稳定的牙位标记。",
+            reason_code="stable_mark_not_observed",
+            reason="观察到标记笔，但橡皮布上没有可确认的稳定黑点。",
+            suggestion="请在目标牙位留下清晰、稳定的黑色标记。",
         )
     distance = features.get("mark_reference_distance")
     if distance is None:
@@ -56,8 +56,8 @@ def judge_cp01(
     return correct(
         "cp_01",
         features,
-        matched_rules=["pen_contact_then_mark_at_reference_position"],
-        reason="标记笔接触后形成的标记与目标牙位一致。",
+        matched_rules=["pen_present_and_mark_at_reference_position"],
+        reason="检测到标记笔，且橡皮布上的黑色标记与目标牙位一致。",
     )
 
 

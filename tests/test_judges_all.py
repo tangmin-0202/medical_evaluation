@@ -23,14 +23,14 @@ CASES = [
         judge_cp01,
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 1.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 1.0,
             "mark_reference_distance": 0.02,
         },
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 1.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 1.0,
             "mark_reference_distance": 0.2,
         },
     ),

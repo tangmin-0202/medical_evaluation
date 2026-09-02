@@ -3,9 +3,9 @@ from medical_evaluation.judges.cp01_cp03 import judge_cp01
 THRESHOLDS = {"max_mark_distance": 0.05}
 
 
-def test_insufficient_dam_frames_need_review_before_contact_state() -> None:
+def test_insufficient_dam_frames_need_review_before_pen_presence_state() -> None:
     result = judge_cp01(
-        {"dam_valid_frame_count": 2.0, "pen_contact_detected": False},
+        {"dam_valid_frame_count": 2.0, "pen_presence_detected": False},
         THRESHOLDS,
     )
 
@@ -13,37 +13,37 @@ def test_insufficient_dam_frames_need_review_before_contact_state() -> None:
     assert result.reason_code == "missing_required_evidence"
 
 
-def test_no_stable_pen_contact_is_incomplete() -> None:
+def test_no_stable_pen_presence_is_incomplete() -> None:
     result = judge_cp01(
-        {"dam_valid_frame_count": 10.0, "pen_contact_detected": False},
+        {"dam_valid_frame_count": 10.0, "pen_presence_detected": False},
         THRESHOLDS,
     )
 
     assert result.status.value == "incomplete"
-    assert result.reason_code == "marking_pen_contact_not_observed"
+    assert result.reason_code == "marking_pen_not_observed"
 
 
-def test_contact_without_new_mark_is_incorrect() -> None:
+def test_pen_presence_without_stable_mark_is_incorrect() -> None:
     result = judge_cp01(
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 0.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 0.0,
             "mark_reference_distance": None,
         },
         THRESHOLDS,
     )
 
     assert result.status.value == "incorrect"
-    assert result.reason_code == "mark_not_left_after_contact"
+    assert result.reason_code == "stable_mark_not_observed"
 
 
-def test_contact_mark_near_reference_is_correct() -> None:
+def test_stable_mark_near_reference_is_correct() -> None:
     result = judge_cp01(
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 1.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 1.0,
             "mark_reference_distance": 0.02,
         },
         THRESHOLDS,
@@ -52,12 +52,12 @@ def test_contact_mark_near_reference_is_correct() -> None:
     assert result.status.value == "correct"
 
 
-def test_contact_mark_far_from_reference_is_incorrect() -> None:
+def test_stable_mark_far_from_reference_is_incorrect() -> None:
     result = judge_cp01(
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 1.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 1.0,
             "mark_reference_distance": 0.20,
         },
         THRESHOLDS,

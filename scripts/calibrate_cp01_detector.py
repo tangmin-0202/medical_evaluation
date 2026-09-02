@@ -10,14 +10,8 @@ import cv2
 import numpy as np
 
 from medical_evaluation.annotations import AnnotationStore
-from medical_evaluation.features.contact import (
-    MaskOverlap,
-    mask_overlap_ratio,
-    stable_contact_event,
-)
 from medical_evaluation.features.marks import (
     MarkCandidate,
-    build_temporal_mark_tracks,
     cluster_stable_marks,
     detect_dark_mark_observations,
     select_darkest_nearest_reference,
@@ -39,9 +33,7 @@ def sweep_cp01_detector(
     maximum_faint_saturations: Sequence[int],
     minimum_area_ratios: Sequence[float],
     minimum_observed_frames_values: Sequence[int],
-    minimum_pen_overlap_ratios: Sequence[float],
-    minimum_pen_contact_frames_values: Sequence[int],
-    minimum_darkness_deltas: Sequence[float],
+    minimum_pen_presence_frames_values: Sequence[int],
     reference_u: float,
     reference_v: float,
     output_dir: Path,
@@ -56,9 +48,7 @@ def sweep_cp01_detector(
         maximum_faint_saturations,
         minimum_area_ratios,
         minimum_observed_frames_values,
-        minimum_pen_overlap_ratios,
-        minimum_pen_contact_frames_values,
-        minimum_darkness_deltas,
+        minimum_pen_presence_frames_values,
     )
     for index, combination in enumerate(combinations):
         (
@@ -67,25 +57,12 @@ def sweep_cp01_detector(
             faint_saturation,
             minimum_area,
             minimum_observed_frames,
-            minimum_pen_overlap,
-            minimum_pen_contact_frames,
-            minimum_darkness_delta,
+            minimum_pen_presence_frames,
         ) = combination
         if black_value > faint_value:
             continue
-        overlaps = [
-            MaskOverlap(
-                frame_index=frame_index,
-                time_sec=time_sec,
-                ratio=mask_overlap_ratio(pen_mask, dam_mask),
-            )
-            for _, dam_mask, pen_mask, frame_index, time_sec in samples
-        ]
-        contact = stable_contact_event(
-            overlaps,
-            minimum_ratio=minimum_pen_overlap,
-            minimum_consecutive_frames=minimum_pen_contact_frames,
-        )
+        pen_valid_frame_count = sum(bool(pen_mask.any()) for _, _, pen_mask, _, _ in samples)
+        pen_presence_detected = pen_valid_frame_count >= minimum_pen_presence_frames
         observations = []
         for frame, dam_mask, _, frame_index, time_sec in samples:
             observations.extend(
@@ -101,34 +78,13 @@ def sweep_cp01_detector(
                     maximum_faint_saturation=faint_saturation,
                 )
             )
-        pre_contact = [
-            item
-            for item in observations
-            if contact.first_time_sec is None or item.time_sec < contact.first_time_sec
-        ]
-        post_contact = (
-            [
-                item
-                for item in observations
-                if item.time_sec >= contact.first_time_sec
-            ]
-            if contact.first_time_sec is not None
-            else []
-        )
-        preexisting = cluster_stable_marks(
-            pre_contact,
+        candidates = cluster_stable_marks(
+            observations,
             min_observed_frames=minimum_observed_frames,
             max_local_distance=maximum_local_distance,
         )
-        new_tracks = build_temporal_mark_tracks(
-            pre_contact=pre_contact,
-            post_contact=post_contact,
-            minimum_observed_frames=minimum_observed_frames,
-            maximum_local_distance=maximum_local_distance,
-            minimum_darkness_delta=minimum_darkness_delta,
-        )
         selection = select_darkest_nearest_reference(
-            new_tracks,
+            candidates if pen_presence_detected else [],
             reference_u=reference_u,
             reference_v=reference_v,
         )
@@ -136,7 +92,6 @@ def sweep_cp01_detector(
         _write_overlay(
             samples[-1][0],
             samples[-1][1],
-            preexisting,
             selection.ranked_candidates,
             reference_u,
             reference_v,
@@ -149,12 +104,10 @@ def sweep_cp01_detector(
                 "maximum_faint_saturation": faint_saturation,
                 "minimum_area_ratio": minimum_area,
                 "minimum_observed_frames": minimum_observed_frames,
-                "minimum_pen_overlap_ratio": minimum_pen_overlap,
-                "minimum_pen_contact_frames": minimum_pen_contact_frames,
-                "minimum_darkness_delta": minimum_darkness_delta,
-                "pen_contact_detected": contact.detected,
-                "preexisting_candidate_count": len(preexisting),
-                "new_candidate_count": len(new_tracks),
+                "minimum_pen_presence_frames": minimum_pen_presence_frames,
+                "pen_valid_frame_count": pen_valid_frame_count,
+                "pen_presence_detected": pen_presence_detected,
+                "mark_candidate_count": len(candidates) if pen_presence_detected else 0,
                 "selection_reason": selection.reason,
                 "punch_u": selection.punch.u if selection.punch else None,
                 "punch_v": selection.punch.v if selection.punch else None,
@@ -167,7 +120,6 @@ def sweep_cp01_detector(
 def _write_overlay(
     frame: np.ndarray,
     dam_mask: np.ndarray,
-    preexisting: Sequence[MarkCandidate],
     candidates: Sequence[MarkCandidate],
     reference_u: float,
     reference_v: float,
@@ -184,8 +136,6 @@ def _write_overlay(
             round(y_min + item.v * (y_max - y_min)),
         )
 
-    for item in preexisting:
-        cv2.circle(canvas, point(item), 5, (128, 128, 128), -1)
     for item in candidates:
         cv2.circle(canvas, point(item), 6, (0, 0, 255), -1)
     reference = (
@@ -207,7 +157,7 @@ def _floats(value: str) -> list[float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sweep pen-gated CP01 thresholds after one SAM2 pass."
+        description="Sweep pen-presence CP01 thresholds after one SAM2 pass."
     )
     parser.add_argument("--video-id", choices=tuple(VIDEO_FILENAMES), default="success")
     parser.add_argument("--checkpoint-path", required=True, type=Path)
@@ -221,9 +171,7 @@ def main() -> None:
     parser.add_argument("--maximum-faint-saturations", default="60,90,120")
     parser.add_argument("--minimum-area-ratios", default="0.00005,0.0001,0.0002")
     parser.add_argument("--minimum-observed-frames-values", default="2,3")
-    parser.add_argument("--minimum-pen-overlap-ratios", default="0.01,0.02,0.04")
-    parser.add_argument("--minimum-pen-contact-frames-values", default="2,3")
-    parser.add_argument("--minimum-darkness-deltas", default="10,15,20")
+    parser.add_argument("--minimum-pen-presence-frames-values", default="2,3")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -289,11 +237,9 @@ def main() -> None:
         minimum_observed_frames_values=_integers(
             args.minimum_observed_frames_values
         ),
-        minimum_pen_overlap_ratios=_floats(args.minimum_pen_overlap_ratios),
-        minimum_pen_contact_frames_values=_integers(
-            args.minimum_pen_contact_frames_values
+        minimum_pen_presence_frames_values=_integers(
+            args.minimum_pen_presence_frames_values
         ),
-        minimum_darkness_deltas=_floats(args.minimum_darkness_deltas),
         reference_u=float(reference["reference_u"]),
         reference_v=float(reference["reference_v"]),
         output_dir=overlay_dir,

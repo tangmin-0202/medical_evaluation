@@ -36,8 +36,8 @@ def test_combined_smoke_writes_both_decisions_in_one_run(tmp_path: Path) -> None
     cp01 = FakeExtractor(
         {
             "dam_valid_frame_count": 10.0,
-            "pen_contact_detected": True,
-            "new_mark_candidate_count": 1.0,
+            "pen_presence_detected": True,
+            "mark_candidate_count": 1.0,
             "mark_reference_distance": 0.01,
         }
     )
@@ -73,10 +73,8 @@ def test_build_cp01_extractor_uses_all_rubric_thresholds(tmp_path: Path) -> None
         rubric=rubric,
     )
 
-    assert extractor.min_pen_dam_overlap_ratio == 0.02
-    assert extractor.min_pen_contact_frames == 2
+    assert extractor.min_pen_presence_frames == 2
     assert extractor.min_mark_observed_frames == 3
-    assert extractor.min_new_mark_darkness_delta == 15.0
     assert extractor.min_mark_area_ratio == 0.0001
     assert extractor.max_mark_area_ratio == 0.01
     assert extractor.maximum_black_value == 55

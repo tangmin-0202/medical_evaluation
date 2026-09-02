@@ -14,10 +14,8 @@ checkpoints:
     end_sec: 14.0
   thresholds:
     max_mark_distance: 0.05
-    min_pen_dam_overlap_ratio: 0.02
-    min_pen_contact_frames: 2
+    min_pen_presence_frames: 2
     min_mark_observed_frames: 3
-    min_new_mark_darkness_delta: 15
     min_mark_area_ratio: 0.0001
     max_mark_area_ratio: 0.01
     maximum_black_value: 55

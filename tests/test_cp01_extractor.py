@@ -88,8 +88,8 @@ def _tracked_frames(*, include_pen: bool) -> list[FrameMasks]:
     mask = np.zeros((100, 120), dtype=bool)
     mask[10:90, 10:110] = True
     empty_pen = np.zeros((100, 120), dtype=bool)
-    contacting_pen = np.zeros((100, 120), dtype=bool)
-    contacting_pen[45:65, 50:70] = True
+    visible_pen = np.zeros((100, 120), dtype=bool)
+    visible_pen[0:8, 50:70] = True
     return [
         FrameMasks(
             frame_index=index,
@@ -99,7 +99,7 @@ def _tracked_frames(*, include_pen: bool) -> list[FrameMasks]:
                 **(
                     {
                         "marking_pen": (
-                            contacting_pen if index >= 5 else empty_pen
+                            visible_pen if index >= 5 else empty_pen
                         )
                     }
                     if include_pen
@@ -111,7 +111,7 @@ def _tracked_frames(*, include_pen: bool) -> list[FrameMasks]:
     ]
 
 
-def test_contact_splits_background_and_post_contact_marks(
+def test_pen_presence_selects_nearest_of_two_darkest_stable_marks(
     tmp_path: Path,
 ) -> None:
     evidence_root = tmp_path / "evidence"
@@ -122,10 +122,8 @@ def test_contact_splits_background_and_post_contact_marks(
         evidence_root=evidence_root,
         reference_u=0.50,
         reference_v=0.60,
-        min_pen_dam_overlap_ratio=0.02,
-        min_pen_contact_frames=2,
+        min_pen_presence_frames=2,
         min_mark_observed_frames=2,
-        min_new_mark_darkness_delta=15,
     )
 
     result = extractor.extract(
@@ -140,10 +138,9 @@ def test_contact_splits_background_and_post_contact_marks(
         "rubber_dam",
         "marking_pen",
     }
-    assert result.features["pen_contact_detected"] is True
+    assert result.features["pen_presence_detected"] is True
     assert result.features["pen_valid_frame_count"] == 3.0
-    assert result.features["preexisting_mark_candidate_count"] == 1.0
-    assert result.features["new_mark_candidate_count"] == 1.0
+    assert result.features["mark_candidate_count"] == 2.0
     assert result.features["selected_mark_u"] == pytest.approx(0.52, abs=0.03)
     assert result.features["selected_mark_v"] == pytest.approx(0.60, abs=0.03)
     assert result.features["mark_reference_distance"] == pytest.approx(0.02, abs=0.03)
@@ -158,10 +155,8 @@ def test_contact_splits_background_and_post_contact_marks(
         (evidence_root / "cp_01/evidence.json").read_text(encoding="utf-8")
     )
     assert evidence_payload["thresholds"] == {
-        "min_pen_dam_overlap_ratio": 0.02,
-        "min_pen_contact_frames": 2,
+        "min_pen_presence_frames": 2,
         "min_mark_observed_frames": 2,
-        "min_new_mark_darkness_delta": 15,
         "min_mark_area_ratio": 0.0001,
         "max_mark_area_ratio": 0.01,
         "maximum_black_value": 55,
@@ -174,7 +169,7 @@ def test_contact_splits_background_and_post_contact_marks(
     }
 
 
-def test_missing_pen_prompt_returns_no_contact_features_without_error(
+def test_missing_pen_prompt_returns_no_presence_features_without_error(
     tmp_path: Path,
 ) -> None:
     segmenter = FakeSegmenter(_tracked_frames(include_pen=False))
@@ -184,10 +179,8 @@ def test_missing_pen_prompt_returns_no_contact_features_without_error(
         evidence_root=tmp_path / "evidence",
         reference_u=0.50,
         reference_v=0.60,
-        min_pen_dam_overlap_ratio=0.02,
-        min_pen_contact_frames=2,
+        min_pen_presence_frames=2,
         min_mark_observed_frames=2,
-        min_new_mark_darkness_delta=15,
     )
 
     result = extractor.extract(
@@ -199,7 +192,7 @@ def test_missing_pen_prompt_returns_no_contact_features_without_error(
     )
 
     assert {prompt.object_id for prompt in segmenter.prompts} == {"rubber_dam"}
-    assert result.features["pen_contact_detected"] is False
+    assert result.features["pen_presence_detected"] is False
     assert result.features["pen_valid_frame_count"] == 0.0
-    assert result.features["new_mark_candidate_count"] == 0.0
+    assert result.features["mark_candidate_count"] == 0.0
     assert result.features["mark_reference_distance"] is None

@@ -9,17 +9,10 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
-from medical_evaluation.features.contact import (
-    ContactEvent,
-    MaskOverlap,
-    mask_overlap_ratio,
-    stable_contact_event,
-)
 from medical_evaluation.features.marks import (
     MarkCandidate,
     MarkObservation,
     PunchSelection,
-    build_temporal_mark_tracks,
     cluster_stable_marks,
     detect_dark_mark_observations,
     select_darkest_nearest_reference,
@@ -41,10 +34,8 @@ class Cp01FeatureExtractor:
         evidence_root: Path,
         reference_u: float,
         reference_v: float,
-        min_pen_dam_overlap_ratio: float = 0.02,
-        min_pen_contact_frames: int = 2,
+        min_pen_presence_frames: int = 2,
         min_mark_observed_frames: int = 3,
-        min_new_mark_darkness_delta: float = 15.0,
         min_mark_area_ratio: float = 0.0001,
         max_mark_area_ratio: float = 0.01,
         maximum_black_value: int = 55,
@@ -60,17 +51,15 @@ class Cp01FeatureExtractor:
             for value in (reference_u, reference_v)
         ):
             raise ValueError("CP01 reference coordinates must be normalized")
-        if min_pen_contact_frames <= 0 or min_mark_observed_frames <= 0:
+        if min_pen_presence_frames <= 0 or min_mark_observed_frames <= 0:
             raise ValueError("CP01 frame thresholds must be positive")
         self.segmenter = segmenter
         self.annotations = annotations
         self.evidence_root = evidence_root
         self.reference_u = reference_u
         self.reference_v = reference_v
-        self.min_pen_dam_overlap_ratio = min_pen_dam_overlap_ratio
-        self.min_pen_contact_frames = min_pen_contact_frames
+        self.min_pen_presence_frames = min_pen_presence_frames
         self.min_mark_observed_frames = min_mark_observed_frames
-        self.min_new_mark_darkness_delta = min_new_mark_darkness_delta
         self.min_mark_area_ratio = min_mark_area_ratio
         self.max_mark_area_ratio = max_mark_area_ratio
         self.maximum_black_value = maximum_black_value
@@ -83,7 +72,7 @@ class Cp01FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+opencv-pen-gated-marks-v1"
+        return f"{self.segmenter.model_version}+opencv-pen-presence-marks-v2"
 
     def extract(
         self,
@@ -145,9 +134,9 @@ class Cp01FeatureExtractor:
                 )
 
         observations: list[MarkObservation] = []
-        overlaps: list[MaskOverlap] = []
         valid_frames: dict[int, FrameMasks] = {}
         pen_valid_frame_count = 0
+        first_pen_frame_index: int | None = None
         tracked = self.segmenter.track(
             video_path,
             time_range,
@@ -182,51 +171,18 @@ class Cp01FeatureExtractor:
             pen_nonempty = pen_mask is not None and bool(np.asarray(pen_mask).any())
             if pen_nonempty:
                 pen_valid_frame_count += 1
-            overlaps.append(
-                MaskOverlap(
-                    frame_index=frame_masks.frame_index,
-                    time_sec=frame_masks.frame_time_sec,
-                    ratio=(
-                        mask_overlap_ratio(np.asarray(pen_mask), np.asarray(dam_mask))
-                        if pen_nonempty
-                        else 0.0
-                    ),
-                )
-            )
+                if first_pen_frame_index is None:
+                    first_pen_frame_index = frame_masks.frame_index
 
-        contact = stable_contact_event(
-            overlaps,
-            minimum_ratio=self.min_pen_dam_overlap_ratio,
-            minimum_consecutive_frames=self.min_pen_contact_frames,
-        )
-        pre_contact = [
-            item
-            for item in observations
-            if contact.first_time_sec is None or item.time_sec < contact.first_time_sec
-        ]
-        post_contact = (
-            [
-                item
-                for item in observations
-                if item.time_sec >= contact.first_time_sec
-            ]
-            if contact.first_time_sec is not None
-            else []
-        )
-        preexisting = cluster_stable_marks(
-            pre_contact,
+        pen_presence_detected = pen_valid_frame_count >= self.min_pen_presence_frames
+        candidates = cluster_stable_marks(
+            observations,
             min_observed_frames=self.min_mark_observed_frames,
             max_local_distance=self.max_local_cluster_distance,
         )
-        candidates = build_temporal_mark_tracks(
-            pre_contact=pre_contact,
-            post_contact=post_contact,
-            minimum_observed_frames=self.min_mark_observed_frames,
-            maximum_local_distance=self.max_local_cluster_distance,
-            minimum_darkness_delta=self.min_new_mark_darkness_delta,
-        )
+        eligible_candidates = candidates if pen_presence_detected else []
         selection = select_darkest_nearest_reference(
-            candidates,
+            eligible_candidates,
             reference_u=self.reference_u,
             reference_v=self.reference_v,
         )
@@ -239,20 +195,20 @@ class Cp01FeatureExtractor:
         evidence = self._write_evidence(
             video_path,
             valid_frames,
-            observations,
-            preexisting,
-            contact,
+            first_pen_frame_index,
             selection,
         )
-        self._write_evidence_json(contact, preexisting, candidates, selection)
+        self._write_evidence_json(
+            pen_valid_frame_count,
+            pen_presence_detected,
+            eligible_candidates,
+            selection,
+        )
         return ExtractedEvidence(
             features={
                 "pen_valid_frame_count": float(pen_valid_frame_count),
-                "pen_dam_overlap_ratio": contact.maximum_ratio,
-                "pen_contact_frame_count": float(contact.contact_frame_count),
-                "pen_contact_detected": contact.detected,
-                "preexisting_mark_candidate_count": float(len(preexisting)),
-                "new_mark_candidate_count": float(len(candidates)),
+                "pen_presence_detected": pen_presence_detected,
+                "mark_candidate_count": float(len(eligible_candidates)),
                 "selected_mark_u": punch.u if punch else None,
                 "selected_mark_v": punch.v if punch else None,
                 "selected_mark_darkness": punch.median_darkness if punch else None,
@@ -266,31 +222,14 @@ class Cp01FeatureExtractor:
         self,
         video_path: Path,
         valid_frames: dict[int, FrameMasks],
-        observations: Sequence[MarkObservation],
-        preexisting: Sequence[MarkCandidate],
-        contact: ContactEvent,
+        first_pen_frame_index: int | None,
         selection: PunchSelection,
     ) -> list[EvidenceItem]:
         evidence: list[EvidenceItem] = []
-        if contact.first_frame_index is not None:
-            frame_masks = valid_frames[contact.first_frame_index]
+        if first_pen_frame_index is not None:
+            frame_masks = valid_frames[first_pen_frame_index]
             evidence.append(
-                self._write_contact_overlay(video_path, frame_masks, contact.maximum_ratio)
-            )
-        pre_frames = [
-            item.frame_index
-            for item in observations
-            if contact.first_time_sec is not None and item.time_sec < contact.first_time_sec
-        ]
-        if pre_frames and preexisting:
-            evidence.append(
-                self._write_mark_overlay(
-                    video_path,
-                    valid_frames[max(pre_frames)],
-                    preexisting,
-                    "background",
-                    "preexisting_template_marks",
-                )
+                self._write_pen_presence_overlay(video_path, frame_masks)
             )
         if selection.punch is not None:
             evidence.append(
@@ -305,11 +244,10 @@ class Cp01FeatureExtractor:
             )
         return evidence[:3]
 
-    def _write_contact_overlay(
+    def _write_pen_presence_overlay(
         self,
         video_path: Path,
         frame_masks: FrameMasks,
-        ratio: float,
     ) -> EvidenceItem:
         frame = read_frame(video_path, frame_masks.frame_index)
         dam = np.asarray(frame_masks.masks["rubber_dam"], dtype=bool)
@@ -317,22 +255,21 @@ class Cp01FeatureExtractor:
         canvas = frame.copy()
         _draw_mask_contour(canvas, dam, (0, 215, 255))
         _draw_mask_contour(canvas, pen, (255, 255, 0))
-        canvas[dam & pen] = (255, 0, 255)
         cv2.putText(
             canvas,
-            f"pen/dam overlap={ratio:.3f}",
+            "marking pen detected",
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
-            (255, 0, 255),
+            (255, 255, 0),
             2,
         )
-        relative = f"cp_01/overlays/contact-{frame_masks.frame_index:08d}.jpg"
+        relative = f"cp_01/overlays/pen-{frame_masks.frame_index:08d}.jpg"
         _save_overlay(canvas, self.evidence_root, relative)
         return EvidenceItem(
             time_sec=frame_masks.frame_time_sec,
             overlay_path=relative,
-            rule="stable_marking_pen_contact",
+            rule="stable_marking_pen_presence",
         )
 
     def _write_mark_overlay(
@@ -367,8 +304,8 @@ class Cp01FeatureExtractor:
 
     def _write_evidence_json(
         self,
-        contact: ContactEvent,
-        preexisting: Sequence[MarkCandidate],
+        pen_valid_frame_count: int,
+        pen_presence_detected: bool,
         candidates: Sequence[MarkCandidate],
         selection: PunchSelection,
     ) -> None:
@@ -376,10 +313,8 @@ class Cp01FeatureExtractor:
             safe_child(self.evidence_root, "cp_01/evidence.json"),
             {
                 "thresholds": {
-                    "min_pen_dam_overlap_ratio": self.min_pen_dam_overlap_ratio,
-                    "min_pen_contact_frames": self.min_pen_contact_frames,
+                    "min_pen_presence_frames": self.min_pen_presence_frames,
                     "min_mark_observed_frames": self.min_mark_observed_frames,
-                    "min_new_mark_darkness_delta": self.min_new_mark_darkness_delta,
                     "min_mark_area_ratio": self.min_mark_area_ratio,
                     "max_mark_area_ratio": self.max_mark_area_ratio,
                     "maximum_black_value": self.maximum_black_value,
@@ -390,13 +325,10 @@ class Cp01FeatureExtractor:
                     "max_local_cluster_distance": self.max_local_cluster_distance,
                     "local_darkness_ring_radius": self.local_darkness_ring_radius,
                 },
-                "contact": {
-                    "detected": contact.detected,
-                    "first_frame_index": contact.first_frame_index,
-                    "first_time_sec": contact.first_time_sec,
-                    "maximum_ratio": contact.maximum_ratio,
+                "pen_presence": {
+                    "detected": pen_presence_detected,
+                    "valid_frame_count": pen_valid_frame_count,
                 },
-                "preexisting_tracks": [_track_payload(item) for item in preexisting],
                 "candidate_tracks": [_track_payload(item) for item in candidates],
                 "selection_reason": selection.reason,
             },
