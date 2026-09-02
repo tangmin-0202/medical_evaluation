@@ -139,7 +139,13 @@ http://127.0.0.1:8000/annotate/failure
 http://127.0.0.1:8000/annotate/clamp_failure
 ```
 
-`success` 的 CP01 只需一次性框选 `rubber_dam` 并点 `cp01_reference`；其他视频 CP01 只框 `rubber_dam`。学员实际暗点由系统扫描完整阶段自动识别；检测器保留原有暗色连通域和跨帧稳定性逻辑，同时允许更小、颜色更浅的低饱和度黑灰笔点进入候选，并排除高饱和度的深绿色网格和文字。CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。正点必须位于绿色橡皮布内部，避开模型皮肤、牙齿、支架和画面边缘。
+`success` 的 CP01 保留一次性的 `rubber_dam` 框和 `cp01_reference` 点；每个实际执行 CP01 的视频还必须在笔正在橡皮布上标记的清晰帧紧框一个 `marking_pen`。笔框应覆盖笔杆和笔尖，并尽量减少手部和背景。若人工真值确认整个 CP01 没有执行，则不要伪造笔框。
+
+CP01 在完整阶段同时跟踪橡皮布和笔。笔与橡皮布连续达到重叠阈值后才确认标记动作；接触前的模板孔、文字和十字线作为背景排除。接触后只保留新增或明显加深且跨帧稳定的暗点，按局部黑度取最黑的 1–2 个，再选择距离固定参考点最近的点。
+
+CP01 状态顺序为：橡皮布有效帧少于 3 帧是 `needs_review`；没有稳定笔接触是 `incomplete`；稳定接触后没有稳定新增/加深暗点是 `incorrect`；有候选后才比较 `max_mark_distance`。
+
+CP11 全阶段从未出现橡皮布时为 `incomplete`；中途出现但末尾消失时为 `incorrect`，这两种情况都不伪造末尾提示。只有末尾仍有橡皮布时，才用 3–5 个 `rubber_dam` 正点并紧框 `nose_region`。正点必须位于绿色橡皮布内部，避开模型皮肤、牙齿、支架和画面边缘。
 
 CP11 的支架提示复用 CP09 `rubber_dam_frame`，并从 CP09 连续跟踪至 CP11 末尾。CP11 末尾的橡皮布面积和鼻部重叠使用“原始 SAM2 橡皮布掩膜与确定性绿色像素掩膜的交集”，避免把模型皮肤计入橡皮布；证据图中的白色轮廓仅表示仍符合 CP09 支架外观的可见支架像素。没有白色轮廓且 `visible_frame_area_ratio` 接近零，表示未检出明显裸露支架。
 
@@ -150,6 +156,31 @@ python scripts/calibrate_cp01_reference.py \
   --video-id success \
   --data-dir "$HOME/medical_evaluation/data"
 ```
+
+重新标注笔框前先备份三个 JSON。只删除要重打的 CP01 `marking_pen`，不要删除 `rubber_dam`、`cp01_reference`、CP11 或其他阶段提示：
+
+```bash
+BACKUP_DIR="data/annotations/backups-cp01-pen-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$BACKUP_DIR"
+cp data/annotations/success.json "$BACKUP_DIR/"
+cp data/annotations/failure.json "$BACKUP_DIR/"
+cp data/annotations/clamp_failure.json "$BACKUP_DIR/"
+```
+
+标注后先运行时序阈值诊断；该命令只运行一次 SAM2，再在 CPU 上遍历阈值：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python scripts/calibrate_cp01_detector.py \
+  --video-id success \
+  --checkpoint-path external/sam2/checkpoints/sam2.1_hiera_large.pt \
+  --model-config configs/sam2.1/sam2.1_hiera_l.yaml \
+  --device cuda:0 \
+  --sample-fps 2 \
+  --videos-dir "$HOME/medical_evaluation/videos" \
+  --data-dir "$HOME/medical_evaluation/data"
+```
+
+检查 `data/calibration/cp01_detector_sweep.json` 和 `data/calibration/cp01_detector_sweep_overlays/`。必须目视确认灰色点是接触前模板背景、红色点是接触后最黑候选、绿色点是固定参考位置，不能仅凭候选数量选阈值。
 
 选择当前空闲 GPU（示例为物理 GPU 1）后，对每个视频联合运行：
 
@@ -164,7 +195,9 @@ CUDA_VISIBLE_DEVICES=1 python scripts/smoke_sam2_cp01_cp11.py \
   --data-dir "$HOME/medical_evaluation/data"
 ```
 
-将 `--video-id` 依次改为 `failure`、`clamp_failure`。每次只检查命令打印的新运行目录，其中应同时存在 `summary.json`、`decisions.json`、`cp_01/overlays/` 和已执行情况下的 `cp_11/overlays/`。
+将 `--video-id` 依次改为 `failure`、`clamp_failure`。每次只检查命令打印的新运行目录，其中应同时存在 `summary.json`、`decisions.json`、`cp_01/evidence.json`、`cp_01/overlays/` 和已执行情况下的 `cp_11/overlays/`。
+
+CP01 最多三张证据图：黄色轮廓为橡皮布，青色为笔，洋红色为笔/布重叠，灰色为接触前背景暗点，红色为最黑 Top-2，绿色为固定参考点，黄线连接最终学员点和参考点。JSON 至少核对 `pen_contact_detected`、`preexisting_mark_candidate_count`、`new_mark_candidate_count`、`selected_mark_darkness` 和 `mark_reference_distance`。
 
 ## 7. CUDA OOM 诊断
 
