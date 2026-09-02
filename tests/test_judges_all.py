@@ -19,7 +19,21 @@ def thresholds() -> dict[str, dict[str, float]]:
 
 
 CASES = [
-    (judge_cp01, {"mark_reference_distance": 0.02}, {"mark_reference_distance": 0.2}),
+    (
+        judge_cp01,
+        {
+            "dam_valid_frame_count": 10.0,
+            "pen_contact_detected": True,
+            "new_mark_candidate_count": 1.0,
+            "mark_reference_distance": 0.02,
+        },
+        {
+            "dam_valid_frame_count": 10.0,
+            "pen_contact_detected": True,
+            "new_mark_candidate_count": 1.0,
+            "mark_reference_distance": 0.2,
+        },
+    ),
     (
         judge_cp02,
         {"selected_hole_index": 2, "residue_present": False, "residue_cleared": None},

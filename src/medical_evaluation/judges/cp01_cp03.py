@@ -14,27 +14,28 @@ def judge_cp01(
     features: dict[str, float | bool | None],
     thresholds: dict[str, float],
 ) -> JudgeDecision:
-    if features.get("mark_selection_ambiguous") is True:
+    if float(features.get("dam_valid_frame_count") or 0) < 3:
         return needs_review(
             "cp_01",
             features,
-            reason_code="ambiguous_punch_candidates",
-            reason="完整阶段内检测到的稳定标记无法唯一确定打孔点。",
+            reason_code="missing_required_evidence",
+            reason="橡皮布有效画面不足，无法判断标记过程。",
         )
-    if features.get("mark_missing") is True:
-        if float(features.get("dam_valid_frame_count") or 0) < 3:
-            return needs_review(
-                "cp_01",
-                features,
-                reason_code="missing_required_evidence",
-                reason="橡皮布有效画面不足，无法确认是否完成牙位标记。",
-            )
+    if features.get("pen_contact_detected") is not True:
         return incomplete(
             "cp_01",
             features,
-            reason_code="punch_mark_not_observed",
-            reason="完整阶段内未观察到稳定的打孔位置标记。",
-            suggestion="请在橡皮布上标出36牙对应的打孔位置。",
+            reason_code="marking_pen_contact_not_observed",
+            reason="完整阶段内未观察到标记笔稳定接触橡皮布。",
+            suggestion="请使用标记笔在橡皮布上完成目标牙位标记。",
+        )
+    if float(features.get("new_mark_candidate_count") or 0) == 0:
+        return incorrect(
+            "cp_01",
+            features,
+            reason_code="mark_not_left_after_contact",
+            reason="标记笔接触橡皮布后未形成可确认的新标记。",
+            suggestion="接触橡皮布后留下清晰、稳定的牙位标记。",
         )
     distance = features.get("mark_reference_distance")
     if distance is None:
@@ -42,21 +43,21 @@ def judge_cp01(
             "cp_01",
             features,
             reason_code="missing_required_evidence",
-            reason="未能同时识别打孔标记和参考牙位。",
+            reason="候选标记证据不足，无法计算与参考牙位的距离。",
         )
     if float(distance) > thresholds["max_mark_distance"]:
         return incorrect(
             "cp_01",
             features,
             reason_code="mark_position_incorrect",
-            reason="打孔标记偏离目标牙位。",
-            suggestion="重新确认 36 牙对应的橡皮布打孔点位。",
+            reason="学员标记偏离目标牙位。",
+            suggestion="重新确认36牙在橡皮布上的相对位置。",
         )
     return correct(
         "cp_01",
         features,
-        matched_rules=["mark_at_reference_position"],
-        reason="打孔标记与目标牙位一致。",
+        matched_rules=["pen_contact_then_mark_at_reference_position"],
+        reason="标记笔接触后形成的标记与目标牙位一致。",
     )
 
 
