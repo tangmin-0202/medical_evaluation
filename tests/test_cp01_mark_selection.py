@@ -7,8 +7,10 @@ import pytest
 from medical_evaluation.features.marks import (
     MarkCandidate,
     MarkObservation,
+    build_temporal_mark_tracks,
     cluster_stable_marks,
     detect_dark_mark_observations,
+    select_darkest_nearest_reference,
     select_punch_candidate,
 )
 
@@ -154,3 +156,123 @@ def test_dark_mark_detector_keeps_tiny_black_and_faint_gray_marks() -> None:
         [(0.65, 0.68), (0.88, 0.10)],
         atol=0.03,
     )
+
+
+def _observation(
+    u: float,
+    v: float,
+    *,
+    darkness: float,
+    frame: int,
+) -> MarkObservation:
+    return MarkObservation(
+        u=u,
+        v=v,
+        frame_index=frame,
+        time_sec=frame / 2,
+        local_darkness=darkness,
+    )
+
+
+def _dark_candidate(u: float, v: float, *, darkness: float) -> MarkCandidate:
+    return MarkCandidate(
+        u=u,
+        v=v,
+        first_sec=1.0,
+        last_sec=3.0,
+        observed_frame_count=3,
+        first_frame_index=2,
+        last_frame_index=6,
+        median_darkness=darkness,
+        darkness_delta=darkness,
+    )
+
+
+def test_pre_contact_template_marks_are_excluded() -> None:
+    tracks = build_temporal_mark_tracks(
+        pre_contact=[_observation(0.30, 0.30, darkness=35, frame=1)],
+        post_contact=[_observation(0.30, 0.30, darkness=36, frame=5)],
+        minimum_observed_frames=1,
+        maximum_local_distance=0.04,
+        minimum_darkness_delta=15,
+    )
+
+    assert tracks == []
+
+
+def test_existing_mark_that_darkens_after_contact_becomes_candidate() -> None:
+    tracks = build_temporal_mark_tracks(
+        pre_contact=[_observation(0.60, 0.62, darkness=20, frame=1)],
+        post_contact=[_observation(0.60, 0.62, darkness=55, frame=5)],
+        minimum_observed_frames=1,
+        maximum_local_distance=0.04,
+        minimum_darkness_delta=15,
+    )
+
+    assert len(tracks) == 1
+    assert tracks[0].darkness_delta == pytest.approx(35)
+
+
+def test_new_post_contact_mark_becomes_candidate() -> None:
+    tracks = build_temporal_mark_tracks(
+        pre_contact=[_observation(0.20, 0.20, darkness=40, frame=1)],
+        post_contact=[_observation(0.65, 0.65, darkness=70, frame=5)],
+        minimum_observed_frames=1,
+        maximum_local_distance=0.04,
+        minimum_darkness_delta=15,
+    )
+
+    assert len(tracks) == 1
+    assert tracks[0].u == pytest.approx(0.65)
+
+
+def test_track_reconnects_after_temporary_occlusion() -> None:
+    tracks = build_temporal_mark_tracks(
+        pre_contact=[],
+        post_contact=[
+            _observation(0.60, 0.62, darkness=55, frame=5),
+            _observation(0.61, 0.61, darkness=58, frame=8),
+        ],
+        minimum_observed_frames=2,
+        maximum_local_distance=0.04,
+        minimum_darkness_delta=15,
+    )
+
+    assert len(tracks) == 1
+    assert tracks[0].observed_frame_count == 2
+
+
+def test_darkest_two_choose_candidate_nearest_reference() -> None:
+    selected = select_darkest_nearest_reference(
+        [
+            _dark_candidate(0.92, 0.06, darkness=90),
+            _dark_candidate(0.62, 0.64, darkness=80),
+            _dark_candidate(0.20, 0.30, darkness=30),
+        ],
+        reference_u=0.65,
+        reference_v=0.65,
+        maximum_candidates=2,
+    )
+
+    assert selected.punch is not None
+    assert selected.punch.u == pytest.approx(0.62)
+    assert len(selected.ranked_candidates) == 2
+
+
+def test_detector_records_local_darkness_against_surrounding_dam() -> None:
+    frame = np.full((80, 80, 3), (80, 180, 120), dtype=np.uint8)
+    dam_mask = np.ones((80, 80), dtype=np.uint8)
+    cv2.circle(frame, (40, 40), 3, (20, 20, 20), -1)
+
+    observations = detect_dark_mark_observations(
+        frame,
+        dam_mask,
+        frame_index=4,
+        time_sec=2.0,
+        min_area_ratio=0.0001,
+        max_area_ratio=0.01,
+        local_darkness_ring_radius=5,
+    )
+
+    assert len(observations) == 1
+    assert observations[0].local_darkness > 80

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import cv2
@@ -17,6 +17,10 @@ class MarkCandidate:
     first_sec: float
     last_sec: float
     observed_frame_count: int
+    first_frame_index: int = 0
+    last_frame_index: int = 0
+    median_darkness: float = 0.0
+    darkness_delta: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -25,6 +29,7 @@ class MarkObservation:
     v: float
     frame_index: int
     time_sec: float
+    local_darkness: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,7 @@ class PunchSelection:
     status: Literal["selected", "missing", "ambiguous"]
     punch: MarkCandidate | None
     reason: str
+    ranked_candidates: tuple[MarkCandidate, ...] = ()
 
 
 def select_punch_candidate(
@@ -104,9 +110,83 @@ def cluster_stable_marks(
                 first_sec=min(item.time_sec for item in cluster),
                 last_sec=max(item.time_sec for item in cluster),
                 observed_frame_count=frame_count,
+                first_frame_index=min(item.frame_index for item in cluster),
+                last_frame_index=max(item.frame_index for item in cluster),
+                median_darkness=float(
+                    np.median([item.local_darkness for item in cluster])
+                ),
             )
         )
     return sorted(stable, key=lambda item: (item.u, item.v))
+
+
+def build_temporal_mark_tracks(
+    *,
+    pre_contact: Sequence[MarkObservation],
+    post_contact: Sequence[MarkObservation],
+    minimum_observed_frames: int,
+    maximum_local_distance: float,
+    minimum_darkness_delta: float,
+) -> list[MarkCandidate]:
+    preexisting = cluster_stable_marks(
+        pre_contact,
+        min_observed_frames=minimum_observed_frames,
+        max_local_distance=maximum_local_distance,
+    )
+    post_tracks = cluster_stable_marks(
+        post_contact,
+        min_observed_frames=minimum_observed_frames,
+        max_local_distance=maximum_local_distance,
+    )
+    candidates: list[MarkCandidate] = []
+    for track in post_tracks:
+        nearby = [
+            (
+                float(np.hypot(track.u - background.u, track.v - background.v)),
+                background,
+            )
+            for background in preexisting
+            if np.hypot(track.u - background.u, track.v - background.v)
+            <= maximum_local_distance
+        ]
+        if not nearby:
+            candidates.append(replace(track, darkness_delta=track.median_darkness))
+            continue
+        background = min(nearby, key=lambda item: item[0])[1]
+        darkness_delta = track.median_darkness - background.median_darkness
+        if darkness_delta >= minimum_darkness_delta:
+            candidates.append(replace(track, darkness_delta=darkness_delta))
+    return sorted(candidates, key=lambda item: (-item.median_darkness, item.u, item.v))
+
+
+def select_darkest_nearest_reference(
+    candidates: Sequence[MarkCandidate],
+    *,
+    reference_u: float,
+    reference_v: float,
+    maximum_candidates: int = 2,
+) -> PunchSelection:
+    if not 0 <= reference_u <= 1 or not 0 <= reference_v <= 1:
+        raise ValueError("reference coordinates must be normalized")
+    if maximum_candidates <= 0:
+        raise ValueError("maximum_candidates must be positive")
+    ranked = tuple(
+        sorted(candidates, key=lambda item: (-item.median_darkness, item.u, item.v))[
+            :maximum_candidates
+        ]
+    )
+    if not ranked:
+        return PunchSelection("missing", None, "no_new_or_darkened_mark")
+    punch = min(
+        ranked,
+        key=lambda item: np.hypot(item.u - reference_u, item.v - reference_v),
+    )
+    return PunchSelection(
+        "selected",
+        punch,
+        "nearest_reference_among_darkest",
+        ranked,
+    )
 
 
 def detect_dark_mark_observations(
@@ -120,6 +200,9 @@ def detect_dark_mark_observations(
     maximum_black_value: int = 55,
     maximum_faint_value: int = 160,
     maximum_faint_saturation: int = 120,
+    max_mark_aspect_ratio: float = 2.0,
+    min_mark_circularity: float = 0.35,
+    local_darkness_ring_radius: int = 5,
 ) -> list[MarkObservation]:
     """Find compact, near-neutral dark blobs inside the segmented dam."""
 
@@ -134,6 +217,12 @@ def detect_dark_mark_observations(
         raise ValueError("mark value thresholds must be ordered between zero and 255")
     if not 0 <= maximum_faint_saturation <= 255:
         raise ValueError("maximum_faint_saturation must be between zero and 255")
+    if max_mark_aspect_ratio < 1:
+        raise ValueError("max_mark_aspect_ratio must be at least one")
+    if not 0 <= min_mark_circularity <= 1:
+        raise ValueError("min_mark_circularity must be between zero and one")
+    if local_darkness_ring_radius <= 0:
+        raise ValueError("local_darkness_ring_radius must be positive")
     y_values, x_values = np.where(dam)
     if not len(x_values):
         return []
@@ -167,7 +256,10 @@ def detect_dark_mark_observations(
             min(component_width, component_height),
             1,
         )
-        if not min_area_ratio <= area_ratio <= max_area_ratio or aspect > 2.0:
+        if (
+            not min_area_ratio <= area_ratio <= max_area_ratio
+            or aspect > max_mark_aspect_ratio
+        ):
             continue
         component = (labels == label).astype(np.uint8)
         contours, _ = cv2.findContours(
@@ -177,8 +269,21 @@ def detect_dark_mark_observations(
         )
         perimeter = cv2.arcLength(max(contours, key=cv2.contourArea), True)
         circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter else 0.0
-        if circularity < 0.35:
+        if circularity < min_mark_circularity:
             continue
+        component_mask = labels == label
+        kernel_size = 2 * local_darkness_ring_radius + 1
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (kernel_size, kernel_size),
+        )
+        ring = (
+            cv2.dilate(component_mask.astype(np.uint8), kernel).astype(bool)
+            & dam
+            & ~component_mask
+        )
+        local_background = float(np.median(value[ring])) if ring.any() else 0.0
+        component_value = float(np.median(value[component_mask]))
         center_x, center_y = centroids[label]
         results.append(
             MarkObservation(
@@ -186,6 +291,7 @@ def detect_dark_mark_observations(
                 v=float((center_y - y_min) / height),
                 frame_index=frame_index,
                 time_sec=time_sec,
+                local_darkness=max(local_background - component_value, 0.0),
             )
         )
     return sorted(results, key=lambda item: (item.u, item.v))
