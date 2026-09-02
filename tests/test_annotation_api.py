@@ -109,7 +109,7 @@ def test_reference_video_exposes_one_time_cp01_reference_guidance(
     assert guides == {
         "cp_01": {
             "objects": ["rubber_dam", "marking_pen", "cp01_reference"],
-            "hint": "基准视频：框选橡皮布和正在接触的标记笔，并点一次36牙固定正确位置。",
+            "hint": "基准视频：框选橡皮布；标记笔可紧框或在同一帧笔身内部打1–2个正点，并点一次36牙固定正确位置。",
         },
         "cp_11": {
             "objects": ["rubber_dam", "nose_region"],
@@ -130,7 +130,7 @@ def test_learner_video_cp01_guidance_does_not_request_reference_point(
     guides = json.loads(guide_payload)
     assert guides["cp_01"] == {
         "objects": ["rubber_dam", "marking_pen"],
-        "hint": "CP01已执行时：框选完整橡皮布，并在笔接触橡皮布的清晰帧紧框标记笔；未执行时不要伪造笔提示。",
+        "hint": "CP01已执行时：框选完整橡皮布；标记笔可紧框，或在同一帧笔身内部打1–2个正点。未执行时不要伪造笔提示。",
     }
 
 

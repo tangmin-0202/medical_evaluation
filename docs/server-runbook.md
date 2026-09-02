@@ -139,7 +139,7 @@ http://127.0.0.1:8000/annotate/failure
 http://127.0.0.1:8000/annotate/clamp_failure
 ```
 
-`success` 的 CP01 保留一次性的 `rubber_dam` 框和 `cp01_reference` 点；每个实际执行 CP01 的视频还必须在笔正在橡皮布上标记的清晰帧紧框一个 `marking_pen`。笔框应覆盖笔杆和笔尖，并尽量减少手部和背景。若人工真值确认整个 CP01 没有执行，则不要伪造笔框。
+`success` 的 CP01 保留一次性的 `rubber_dam` 框和 `cp01_reference` 点；每个实际执行 CP01 的视频还必须在笔正在橡皮布上标记的清晰帧提供 `marking_pen` 提示。可以紧框一次笔，也可以在同一帧笔身或笔尖内部打 1–2 个正点；不要混用框和点，不要跨帧打点，也不要把点落在手、橡皮布或黑色标记点上。若人工真值确认整个 CP01 没有执行，则不要伪造笔提示。
 
 CP01 在完整阶段同时跟踪橡皮布和笔。笔与橡皮布连续达到重叠阈值后才确认标记动作；接触前的模板孔、文字和十字线作为背景排除。接触后只保留新增或明显加深且跨帧稳定的暗点，按局部黑度取最黑的 1–2 个，再选择距离固定参考点最近的点。
 
@@ -157,7 +157,7 @@ python scripts/calibrate_cp01_reference.py \
   --data-dir "$HOME/medical_evaluation/data"
 ```
 
-重新标注笔框前先备份三个 JSON。只删除要重打的 CP01 `marking_pen`，不要删除 `rubber_dam`、`cp01_reference`、CP11 或其他阶段提示：
+重新标注笔提示前先备份三个 JSON。只删除要重打的 CP01 `marking_pen`，不要删除 `rubber_dam`、`cp01_reference`、CP11 或其他阶段提示：
 
 ```bash
 BACKUP_DIR="data/annotations/backups-cp01-pen-$(date -u +%Y%m%dT%H%M%SZ)"

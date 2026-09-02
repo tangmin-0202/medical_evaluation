@@ -112,8 +112,6 @@ class Cp01FeatureExtractor:
             and time_range.start_sec <= prompt.frame_time_sec <= time_range.end_sec
             for prompt in self.annotations.prompts
         )
-        if pen_prompt_count > 1:
-            raise ValueError("cp_01 accepts at most one marking_pen prompt")
         pen_prompts = (
             prompts_for_object(
                 self.annotations,
@@ -124,8 +122,27 @@ class Cp01FeatureExtractor:
             if pen_prompt_count
             else []
         )
-        if pen_prompts and pen_prompts[0].kind != "box":
-            raise ValueError("cp_01 marking_pen prompt must be a box")
+        if pen_prompts:
+            has_box = any(prompt.kind == "box" for prompt in pen_prompts)
+            if has_box:
+                valid_pen_prompts = (
+                    len(pen_prompts) == 1 and pen_prompts[0].kind == "box"
+                )
+            else:
+                frame_times = {prompt.frame_time_sec for prompt in pen_prompts}
+                valid_pen_prompts = (
+                    1 <= len(pen_prompts) <= 2
+                    and all(
+                        prompt.kind == "point" and prompt.positive is True
+                        for prompt in pen_prompts
+                    )
+                    and len(frame_times) == 1
+                )
+            if not valid_pen_prompts:
+                raise ValueError(
+                    "cp_01 marking_pen requires one box or 1-2 positive points "
+                    "on one frame"
+                )
 
         observations: list[MarkObservation] = []
         overlaps: list[MaskOverlap] = []
