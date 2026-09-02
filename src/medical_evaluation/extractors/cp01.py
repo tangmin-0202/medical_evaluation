@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -8,30 +9,30 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.features.contact import (
+    ContactEvent,
+    MaskOverlap,
+    mask_overlap_ratio,
+    stable_contact_event,
+)
 from medical_evaluation.features.marks import (
     MarkCandidate,
     MarkObservation,
+    PunchSelection,
+    build_temporal_mark_tracks,
     cluster_stable_marks,
     detect_dark_mark_observations,
-    select_punch_candidate,
+    select_darkest_nearest_reference,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import FrameMasks, VideoSegmenter
 from medical_evaluation.segmentation.prompts import prompts_for_object
-from medical_evaluation.storage import safe_child
+from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
 
 class Cp01FeatureExtractor:
-    corner_margin = 0.15
-    max_local_cluster_distance = 0.04
-    min_mark_area_ratio = 0.0001
-    max_mark_area_ratio = 0.01
-    maximum_black_value = 55
-    maximum_faint_value = 160
-    maximum_faint_saturation = 120
-
     def __init__(
         self,
         *,
@@ -40,25 +41,49 @@ class Cp01FeatureExtractor:
         evidence_root: Path,
         reference_u: float,
         reference_v: float,
-        min_observed_frames: int = 3,
+        min_pen_dam_overlap_ratio: float = 0.02,
+        min_pen_contact_frames: int = 2,
+        min_mark_observed_frames: int = 3,
+        min_new_mark_darkness_delta: float = 15.0,
+        min_mark_area_ratio: float = 0.0001,
+        max_mark_area_ratio: float = 0.01,
+        maximum_black_value: int = 55,
+        maximum_faint_value: int = 160,
+        maximum_faint_saturation: int = 120,
+        max_mark_aspect_ratio: float = 2.0,
+        min_mark_circularity: float = 0.35,
+        max_local_cluster_distance: float = 0.04,
+        local_darkness_ring_radius: int = 5,
     ) -> None:
         if not all(
             math.isfinite(value) and 0 <= value <= 1
             for value in (reference_u, reference_v)
         ):
             raise ValueError("CP01 reference coordinates must be normalized")
-        if min_observed_frames <= 0:
-            raise ValueError("min_observed_frames must be positive")
+        if min_pen_contact_frames <= 0 or min_mark_observed_frames <= 0:
+            raise ValueError("CP01 frame thresholds must be positive")
         self.segmenter = segmenter
         self.annotations = annotations
         self.evidence_root = evidence_root
         self.reference_u = reference_u
         self.reference_v = reference_v
-        self.min_observed_frames = min_observed_frames
+        self.min_pen_dam_overlap_ratio = min_pen_dam_overlap_ratio
+        self.min_pen_contact_frames = min_pen_contact_frames
+        self.min_mark_observed_frames = min_mark_observed_frames
+        self.min_new_mark_darkness_delta = min_new_mark_darkness_delta
+        self.min_mark_area_ratio = min_mark_area_ratio
+        self.max_mark_area_ratio = max_mark_area_ratio
+        self.maximum_black_value = maximum_black_value
+        self.maximum_faint_value = maximum_faint_value
+        self.maximum_faint_saturation = maximum_faint_saturation
+        self.max_mark_aspect_ratio = max_mark_aspect_ratio
+        self.min_mark_circularity = min_mark_circularity
+        self.max_local_cluster_distance = max_local_cluster_distance
+        self.local_darkness_ring_radius = local_darkness_ring_radius
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+opencv-marks-v3"
+        return f"{self.segmenter.model_version}+opencv-pen-gated-marks-v1"
 
     def extract(
         self,
@@ -74,21 +99,42 @@ class Cp01FeatureExtractor:
         if analysis_width <= 0:
             raise ValueError("analysis_width must be positive")
 
-        prompts = prompts_for_object(
+        dam_prompts = prompts_for_object(
             self.annotations,
             "rubber_dam",
             time_range,
             checkpoint_id=checkpoint_id,
         )
-        if len(prompts) != 1 or prompts[0].kind != "box":
+        if len(dam_prompts) != 1 or dam_prompts[0].kind != "box":
             raise ValueError("cp_01 requires exactly one rubber_dam box")
+        pen_prompt_count = sum(
+            prompt.object_id == "marking_pen"
+            and time_range.start_sec <= prompt.frame_time_sec <= time_range.end_sec
+            for prompt in self.annotations.prompts
+        )
+        if pen_prompt_count > 1:
+            raise ValueError("cp_01 accepts at most one marking_pen prompt")
+        pen_prompts = (
+            prompts_for_object(
+                self.annotations,
+                "marking_pen",
+                time_range,
+                checkpoint_id=checkpoint_id,
+            )
+            if pen_prompt_count
+            else []
+        )
+        if pen_prompts and pen_prompts[0].kind != "box":
+            raise ValueError("cp_01 marking_pen prompt must be a box")
 
         observations: list[MarkObservation] = []
+        overlaps: list[MaskOverlap] = []
         valid_frames: dict[int, FrameMasks] = {}
+        pen_valid_frame_count = 0
         tracked = self.segmenter.track(
             video_path,
             time_range,
-            prompts,
+            [*dam_prompts, *pen_prompts],
             sample_fps=dense_fps,
         )
         for frame_masks in tracked:
@@ -110,17 +156,62 @@ class Cp01FeatureExtractor:
                     maximum_black_value=self.maximum_black_value,
                     maximum_faint_value=self.maximum_faint_value,
                     maximum_faint_saturation=self.maximum_faint_saturation,
+                    max_mark_aspect_ratio=self.max_mark_aspect_ratio,
+                    min_mark_circularity=self.min_mark_circularity,
+                    local_darkness_ring_radius=self.local_darkness_ring_radius,
+                )
+            )
+            pen_mask = frame_masks.masks.get("marking_pen")
+            pen_nonempty = pen_mask is not None and bool(np.asarray(pen_mask).any())
+            if pen_nonempty:
+                pen_valid_frame_count += 1
+            overlaps.append(
+                MaskOverlap(
+                    frame_index=frame_masks.frame_index,
+                    time_sec=frame_masks.frame_time_sec,
+                    ratio=(
+                        mask_overlap_ratio(np.asarray(pen_mask), np.asarray(dam_mask))
+                        if pen_nonempty
+                        else 0.0
+                    ),
                 )
             )
 
-        candidates = cluster_stable_marks(
-            observations,
-            min_observed_frames=self.min_observed_frames,
+        contact = stable_contact_event(
+            overlaps,
+            minimum_ratio=self.min_pen_dam_overlap_ratio,
+            minimum_consecutive_frames=self.min_pen_contact_frames,
+        )
+        pre_contact = [
+            item
+            for item in observations
+            if contact.first_time_sec is None or item.time_sec < contact.first_time_sec
+        ]
+        post_contact = (
+            [
+                item
+                for item in observations
+                if item.time_sec >= contact.first_time_sec
+            ]
+            if contact.first_time_sec is not None
+            else []
+        )
+        preexisting = cluster_stable_marks(
+            pre_contact,
+            min_observed_frames=self.min_mark_observed_frames,
             max_local_distance=self.max_local_cluster_distance,
         )
-        selection = select_punch_candidate(
+        candidates = build_temporal_mark_tracks(
+            pre_contact=pre_contact,
+            post_contact=post_contact,
+            minimum_observed_frames=self.min_mark_observed_frames,
+            maximum_local_distance=self.max_local_cluster_distance,
+            minimum_darkness_delta=self.min_new_mark_darkness_delta,
+        )
+        selection = select_darkest_nearest_reference(
             candidates,
-            corner_margin=self.corner_margin,
+            reference_u=self.reference_u,
+            reference_v=self.reference_v,
         )
         punch = selection.punch
         distance = (
@@ -128,17 +219,27 @@ class Cp01FeatureExtractor:
             if punch is not None
             else None
         )
-        evidence = self._write_evidence(video_path, valid_frames, observations, punch)
+        evidence = self._write_evidence(
+            video_path,
+            valid_frames,
+            observations,
+            preexisting,
+            contact,
+            selection,
+        )
+        self._write_evidence_json(contact, preexisting, candidates, selection)
         return ExtractedEvidence(
             features={
-                "mark_u": punch.u if punch is not None else None,
-                "mark_v": punch.v if punch is not None else None,
-                "reference_u": self.reference_u,
-                "reference_v": self.reference_v,
+                "pen_valid_frame_count": float(pen_valid_frame_count),
+                "pen_dam_overlap_ratio": contact.maximum_ratio,
+                "pen_contact_frame_count": float(contact.contact_frame_count),
+                "pen_contact_detected": contact.detected,
+                "preexisting_mark_candidate_count": float(len(preexisting)),
+                "new_mark_candidate_count": float(len(candidates)),
+                "selected_mark_u": punch.u if punch else None,
+                "selected_mark_v": punch.v if punch else None,
+                "selected_mark_darkness": punch.median_darkness if punch else None,
                 "mark_reference_distance": distance,
-                "mark_candidate_count": float(len(candidates)),
-                "mark_selection_ambiguous": selection.status == "ambiguous",
-                "mark_missing": selection.status == "missing",
                 "dam_valid_frame_count": float(len(valid_frames)),
             },
             evidence=evidence,
@@ -148,72 +249,180 @@ class Cp01FeatureExtractor:
         self,
         video_path: Path,
         valid_frames: dict[int, FrameMasks],
-        observations: list[MarkObservation],
-        punch: MarkCandidate | None,
+        observations: Sequence[MarkObservation],
+        preexisting: Sequence[MarkCandidate],
+        contact: ContactEvent,
+        selection: PunchSelection,
     ) -> list[EvidenceItem]:
-        if punch is None:
-            return []
-        matching = [
-            item
-            for item in observations
-            if math.hypot(item.u - punch.u, item.v - punch.v)
-            <= self.max_local_cluster_distance
-        ]
-        if not matching:
-            return []
-        chosen = max(matching, key=lambda item: item.time_sec)
-        frame_masks = valid_frames[chosen.frame_index]
-        dam_mask = np.asarray(frame_masks.masks["rubber_dam"], dtype=bool)
-        frame = read_frame(video_path, chosen.frame_index)
-        overlay = _write_overlay(
-            frame,
-            dam_mask,
-            punch,
-            self.reference_u,
-            self.reference_v,
-            self.evidence_root,
-            f"cp_01/overlays/{chosen.frame_index:08d}.jpg",
-        )
-        return [
-            EvidenceItem(
-                time_sec=chosen.time_sec,
-                overlay_path=overlay.relative_to(self.evidence_root).as_posix(),
-                rule="auto_punch_relative_to_saved_reference",
+        evidence: list[EvidenceItem] = []
+        if contact.first_frame_index is not None:
+            frame_masks = valid_frames[contact.first_frame_index]
+            evidence.append(
+                self._write_contact_overlay(video_path, frame_masks, contact.maximum_ratio)
             )
+        pre_frames = [
+            item.frame_index
+            for item in observations
+            if contact.first_time_sec is not None and item.time_sec < contact.first_time_sec
         ]
+        if pre_frames and preexisting:
+            evidence.append(
+                self._write_mark_overlay(
+                    video_path,
+                    valid_frames[max(pre_frames)],
+                    preexisting,
+                    "background",
+                    "preexisting_template_marks",
+                )
+            )
+        if selection.punch is not None:
+            evidence.append(
+                self._write_mark_overlay(
+                    video_path,
+                    valid_frames[selection.punch.last_frame_index],
+                    selection.ranked_candidates,
+                    "selection",
+                    "darkest_marks_nearest_reference",
+                    selected=selection.punch,
+                )
+            )
+        return evidence[:3]
+
+    def _write_contact_overlay(
+        self,
+        video_path: Path,
+        frame_masks: FrameMasks,
+        ratio: float,
+    ) -> EvidenceItem:
+        frame = read_frame(video_path, frame_masks.frame_index)
+        dam = np.asarray(frame_masks.masks["rubber_dam"], dtype=bool)
+        pen = np.asarray(frame_masks.masks["marking_pen"], dtype=bool)
+        canvas = frame.copy()
+        _draw_mask_contour(canvas, dam, (0, 215, 255))
+        _draw_mask_contour(canvas, pen, (255, 255, 0))
+        canvas[dam & pen] = (255, 0, 255)
+        cv2.putText(
+            canvas,
+            f"pen/dam overlap={ratio:.3f}",
+            (20, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 255),
+            2,
+        )
+        relative = f"cp_01/overlays/contact-{frame_masks.frame_index:08d}.jpg"
+        _save_overlay(canvas, self.evidence_root, relative)
+        return EvidenceItem(
+            time_sec=frame_masks.frame_time_sec,
+            overlay_path=relative,
+            rule="stable_marking_pen_contact",
+        )
+
+    def _write_mark_overlay(
+        self,
+        video_path: Path,
+        frame_masks: FrameMasks,
+        candidates: Sequence[MarkCandidate],
+        name: str,
+        rule: str,
+        *,
+        selected: MarkCandidate | None = None,
+    ) -> EvidenceItem:
+        frame = read_frame(video_path, frame_masks.frame_index)
+        dam = np.asarray(frame_masks.masks["rubber_dam"], dtype=bool)
+        canvas = frame.copy()
+        _draw_mask_contour(canvas, dam, (0, 215, 255))
+        for candidate in candidates:
+            color = (128, 128, 128) if selected is None else (0, 0, 255)
+            cv2.circle(canvas, _local_to_pixel(dam, candidate.u, candidate.v), 6, color, -1)
+        if selected is not None:
+            actual = _local_to_pixel(dam, selected.u, selected.v)
+            reference = _local_to_pixel(dam, self.reference_u, self.reference_v)
+            cv2.circle(canvas, reference, 6, (0, 255, 0), -1)
+            cv2.line(canvas, actual, reference, (0, 215, 255), 2)
+        relative = f"cp_01/overlays/{name}-{frame_masks.frame_index:08d}.jpg"
+        _save_overlay(canvas, self.evidence_root, relative)
+        return EvidenceItem(
+            time_sec=frame_masks.frame_time_sec,
+            overlay_path=relative,
+            rule=rule,
+        )
+
+    def _write_evidence_json(
+        self,
+        contact: ContactEvent,
+        preexisting: Sequence[MarkCandidate],
+        candidates: Sequence[MarkCandidate],
+        selection: PunchSelection,
+    ) -> None:
+        atomic_write_json(
+            safe_child(self.evidence_root, "cp_01/evidence.json"),
+            {
+                "thresholds": {
+                    "min_pen_dam_overlap_ratio": self.min_pen_dam_overlap_ratio,
+                    "min_pen_contact_frames": self.min_pen_contact_frames,
+                    "min_mark_observed_frames": self.min_mark_observed_frames,
+                    "min_new_mark_darkness_delta": self.min_new_mark_darkness_delta,
+                    "min_mark_area_ratio": self.min_mark_area_ratio,
+                    "max_mark_area_ratio": self.max_mark_area_ratio,
+                    "maximum_black_value": self.maximum_black_value,
+                    "maximum_faint_value": self.maximum_faint_value,
+                    "maximum_faint_saturation": self.maximum_faint_saturation,
+                    "max_mark_aspect_ratio": self.max_mark_aspect_ratio,
+                    "min_mark_circularity": self.min_mark_circularity,
+                    "max_local_cluster_distance": self.max_local_cluster_distance,
+                    "local_darkness_ring_radius": self.local_darkness_ring_radius,
+                },
+                "contact": {
+                    "detected": contact.detected,
+                    "first_frame_index": contact.first_frame_index,
+                    "first_time_sec": contact.first_time_sec,
+                    "maximum_ratio": contact.maximum_ratio,
+                },
+                "preexisting_tracks": [_track_payload(item) for item in preexisting],
+                "candidate_tracks": [_track_payload(item) for item in candidates],
+                "selection_reason": selection.reason,
+            },
+        )
 
 
-def _write_overlay(
-    frame_bgr: np.ndarray,
-    dam_mask: np.ndarray,
-    punch: MarkCandidate,
-    reference_u: float,
-    reference_v: float,
-    evidence_root: Path,
-    relative_output: str,
-) -> Path:
-    y_values, x_values = np.where(dam_mask)
+def _track_payload(candidate: MarkCandidate) -> dict[str, float | int]:
+    return {
+        "u": candidate.u,
+        "v": candidate.v,
+        "first_sec": candidate.first_sec,
+        "last_sec": candidate.last_sec,
+        "observed_frame_count": candidate.observed_frame_count,
+        "median_darkness": candidate.median_darkness,
+        "darkness_delta": candidate.darkness_delta,
+    }
+
+
+def _local_to_pixel(mask: np.ndarray, u: float, v: float) -> tuple[int, int]:
+    y_values, x_values = np.where(mask)
     x_min, x_max = int(x_values.min()), int(x_values.max()) + 1
     y_min, y_max = int(y_values.min()), int(y_values.max()) + 1
-    width = x_max - x_min
-    height = y_max - y_min
-    actual = (round(x_min + punch.u * width), round(y_min + punch.v * height))
-    reference = (
-        round(x_min + reference_u * width),
-        round(y_min + reference_v * height),
+    return (
+        round(x_min + u * (x_max - x_min)),
+        round(y_min + v * (y_max - y_min)),
     )
-    canvas = frame_bgr.copy()
+
+
+def _draw_mask_contour(
+    canvas: np.ndarray,
+    mask: np.ndarray,
+    color: tuple[int, int, int],
+) -> None:
     contours, _ = cv2.findContours(
-        dam_mask.astype(np.uint8),
+        mask.astype(np.uint8),
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
-    cv2.drawContours(canvas, contours, -1, (0, 215, 255), 2)
-    cv2.circle(canvas, actual, 6, (0, 0, 255), -1)
-    cv2.circle(canvas, reference, 6, (0, 255, 0), -1)
-    cv2.line(canvas, actual, reference, (0, 215, 255), 2)
-    output_path = safe_child(evidence_root, relative_output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if not cv2.imwrite(str(output_path), canvas):
-        raise OSError(f"could not write evidence overlay: {output_path}")
-    return output_path
+    cv2.drawContours(canvas, contours, -1, color, 2)
+
+
+def _save_overlay(canvas: np.ndarray, evidence_root: Path, relative: str) -> None:
+    output = safe_child(evidence_root, relative)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(output), canvas):
+        raise OSError(f"could not write evidence overlay: {output}")
