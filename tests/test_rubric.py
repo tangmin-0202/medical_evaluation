@@ -33,13 +33,29 @@ def test_cp09_requires_frame_and_fixed_oral_reference() -> None:
     assert cp09.required_objects == ["rubber_dam_frame", "oral_region"]
 
 
-def test_cp01_requires_only_manually_segmented_rubber_dam() -> None:
+def test_cp01_requires_pen_gated_mark_tracking_thresholds() -> None:
     from medical_evaluation.rubric import load_rubric
 
     rubric = load_rubric(Path("config/rubric.yaml"))
     cp01 = next(cp for cp in rubric.checkpoints if cp.id == "cp_01")
 
-    assert cp01.required_objects == ["rubber_dam"]
+    assert cp01.required_objects == ["rubber_dam", "marking_pen"]
+    assert cp01.thresholds == {
+        "max_mark_distance": 0.05,
+        "min_pen_dam_overlap_ratio": 0.02,
+        "min_pen_contact_frames": 2.0,
+        "min_mark_observed_frames": 3.0,
+        "min_new_mark_darkness_delta": 15.0,
+        "min_mark_area_ratio": 0.0001,
+        "max_mark_area_ratio": 0.01,
+        "maximum_black_value": 55.0,
+        "maximum_faint_value": 160.0,
+        "maximum_faint_saturation": 120.0,
+        "max_mark_aspect_ratio": 2.0,
+        "min_mark_circularity": 0.35,
+        "max_local_cluster_distance": 0.04,
+        "local_darkness_ring_radius": 5.0,
+    }
 
 
 def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:

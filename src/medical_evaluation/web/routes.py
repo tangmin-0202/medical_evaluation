@@ -37,8 +37,8 @@ PRESETS = {
 
 ANNOTATION_GUIDES = {
     "cp_01": {
-        "objects": ["rubber_dam"],
-        "hint": "框选完整橡皮布；系统观察完整CP01阶段，自动识别学员最终打孔点并与固定标准点比较。",
+        "objects": ["rubber_dam", "marking_pen"],
+        "hint": "CP01已执行时：框选完整橡皮布，并在笔接触橡皮布的清晰帧紧框标记笔；未执行时不要伪造笔提示。",
     },
     "cp_11": {
         "objects": ["rubber_dam", "nose_region"],
@@ -47,8 +47,8 @@ ANNOTATION_GUIDES = {
 }
 
 CP01_REFERENCE_GUIDE = {
-    "objects": ["rubber_dam", "cp01_reference"],
-    "hint": "基准视频仅标一次：框选完整橡皮布，并点36牙固定正确位置；学员实际标记由系统自动识别。",
+    "objects": ["rubber_dam", "marking_pen", "cp01_reference"],
+    "hint": "基准视频：框选橡皮布和正在接触的标记笔，并点一次36牙固定正确位置。",
 }
 
 
