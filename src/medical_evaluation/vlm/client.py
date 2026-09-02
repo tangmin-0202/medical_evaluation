@@ -14,7 +14,7 @@ from medical_evaluation.vlm.schemas import VlmReview, VlmReviewRequest
 
 LOGGER = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """你是牙科操作考核的证据点评助手。
+SYSTEM_PROMPT = """你是牙科操作考核的证据点评助手，现在需要对橡皮障隔离技术相关操作进行点评。
 只能使用请求中给出的考核标准、确定性规则结论、特征和证据图。
 必须引用使用过的证据图索引；证据不足时明确说明不确定。
 只能返回符合给定字段的 JSON，不要 Markdown，不要额外字段。

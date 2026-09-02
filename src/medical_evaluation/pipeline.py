@@ -172,6 +172,7 @@ class AnalysisPipeline:
                                     "ai_commentary": self._review(
                                         checkpoint,
                                         result,
+                                        self.output_root / job.id,
                                     )
                                 }
                             )
@@ -204,6 +205,7 @@ class AnalysisPipeline:
         self,
         checkpoint: CheckpointRule,
         result: CheckpointResult,
+        evidence_root: Path,
     ) -> VlmReview:
         assert self.commentary_provider is not None
         request = VlmReviewRequest(
@@ -213,7 +215,9 @@ class AnalysisPipeline:
             deterministic_status=result.status.value,
             reason_code=result.reason_code,
             features=result.features,
-            evidence_images=[Path(item.overlay_path) for item in result.evidence],
+            evidence_images=[
+                evidence_root / item.overlay_path for item in result.evidence
+            ],
         )
         try:
             return self.commentary_provider.review(request)

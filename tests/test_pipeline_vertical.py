@@ -9,6 +9,7 @@ from medical_evaluation.pipeline import (
     EvaluationInputMissing,
     ExtractedEvidence,
 )
+from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.rubric import load_rubric
 from medical_evaluation.vlm.schemas import VlmReview
 
@@ -63,6 +64,38 @@ class MissingCp09Extractor(FakeExtractor):
             time_range,
             dense_fps=dense_fps,
             analysis_width=analysis_width,
+        )
+
+
+class EvidenceExtractor(FakeExtractor):
+    def extract(
+        self,
+        video_path: Path,
+        checkpoint_id: str,
+        time_range: object,
+        *,
+        dense_fps: float,
+        analysis_width: int,
+    ) -> ExtractedEvidence:
+        extracted = super().extract(
+            video_path,
+            checkpoint_id,
+            time_range,
+            dense_fps=dense_fps,
+            analysis_width=analysis_width,
+        )
+        if checkpoint_id != "cp_09":
+            return extracted
+        return extracted.model_copy(
+            update={
+                "evidence": [
+                    EvidenceItem(
+                        time_sec=1.0,
+                        overlay_path="cp_09/overlays/frame.jpg",
+                        rule="test_evidence",
+                    )
+                ]
+            }
         )
 
 
@@ -187,6 +220,23 @@ def test_commentary_is_attached_without_mutating_deterministic_decision(tmp_path
     assert cp09.ai_commentary is not None
     assert cp09.ai_commentary.reason_zh == "证据支持cp_09的确定性结论。"
     assert report.checkpoints[0].ai_commentary is None
+
+
+def test_commentary_resolves_evidence_inside_job_directory(tmp_path: Path) -> None:
+    evidence_path = tmp_path / "jobs" / "job-1" / "cp_09" / "overlays" / "frame.jpg"
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_bytes(b"jpeg")
+    reviewer = FakeReviewer()
+    pipeline, _, _ = make_pipeline(
+        tmp_path,
+        extractor=EvidenceExtractor(),
+        reviewer=reviewer,
+    )
+
+    pipeline.run(make_job(tmp_path))
+
+    assert reviewer.requests[0].evidence_images == [evidence_path]
+    assert reviewer.requests[0].evidence_images[0].is_file()
 
 
 def test_commentary_provider_failure_uses_template_and_still_writes_report(

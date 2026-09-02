@@ -50,6 +50,40 @@ def test_valid_structured_response_is_returned_without_score_override() -> None:
     assert result.score_override is None
 
 
+def test_system_prompt_scopes_review_to_rubber_dam_isolation() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        content = json.dumps(
+            {
+                "evidence_supported": True,
+                "semantic_status": "supports",
+                "reason_zh": "结论",
+                "suggestion_zh": "建议",
+                "cited_evidence_indices": [],
+            },
+            ensure_ascii=False,
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    client = QwenVlmClient(
+        "http://local/v1",
+        "Qwen3-VL-4B-Instruct",
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.review(make_review_request())
+
+    assert captured["messages"][0]["content"] == (
+        "你是牙科操作考核的证据点评助手，现在需要对橡皮障隔离技术相关操作进行点评。\n"
+        "只能使用请求中给出的考核标准、确定性规则结论、特征和证据图。\n"
+        "必须引用使用过的证据图索引；证据不足时明确说明不确定。\n"
+        "只能返回符合给定字段的 JSON，不要 Markdown，不要额外字段。\n"
+        "绝对不能给出、修改或建议任何分数；确定性规则结论不可被覆盖。"
+    )
+
+
 def test_invalid_json_retries_once_then_returns_template() -> None:
     calls = 0
 
