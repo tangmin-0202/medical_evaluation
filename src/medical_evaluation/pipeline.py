@@ -23,6 +23,8 @@ from medical_evaluation.reporting import (
 )
 from medical_evaluation.rubric import CheckpointRule, Rubric
 from medical_evaluation.storage import atomic_write_json
+from medical_evaluation.vlm.client import template_fallback
+from medical_evaluation.vlm.schemas import VlmReview, VlmReviewRequest
 
 
 class ExtractedEvidence(BaseModel):
@@ -48,6 +50,10 @@ class FeatureExtractor(Protocol):
 
 class ConfidenceProvider(Protocol):
     def checkpoint_confidence(self, checkpoint_id: str) -> float: ...
+
+
+class CommentaryProvider(Protocol):
+    def review(self, request: VlmReviewRequest) -> VlmReview: ...
 
 
 Judge = Callable[[dict[str, float | bool | None], dict[str, float]], JudgeDecision]
@@ -83,6 +89,7 @@ class AnalysisPipeline:
         fallback_analysis_width: int = 960,
         minimum_alignment_confidence: float = 0.5,
         enabled_checkpoint_ids: frozenset[str] = frozenset({"cp_09", "cp_11"}),
+        commentary_provider: CommentaryProvider | None = None,
     ) -> None:
         if (extractor is None) == (extractor_factory is None):
             raise ValueError("provide exactly one extractor or extractor_factory")
@@ -98,6 +105,7 @@ class AnalysisPipeline:
         self.fallback_analysis_width = fallback_analysis_width
         self.minimum_alignment_confidence = minimum_alignment_confidence
         self.enabled_checkpoint_ids = enabled_checkpoint_ids
+        self.commentary_provider = commentary_provider
         self.judges = dict(JUDGES)
 
     def run(
@@ -158,6 +166,15 @@ class AnalysisPipeline:
                             checkpoint.thresholds,
                         )
                         result = self._to_result(decision, time_range, evidence.evidence)
+                        if self.commentary_provider is not None:
+                            result = result.model_copy(
+                                update={
+                                    "ai_commentary": self._review(
+                                        checkpoint,
+                                        result,
+                                    )
+                                }
+                            )
             results.append(result)
             if progress is not None:
                 progress(index / 11, checkpoint.id)
@@ -175,13 +192,47 @@ class AnalysisPipeline:
                 runtime_sec=(completed - started).total_seconds(),
                 degradations=degradations,
             ),
-            overall_feedback="考核点 9 和 11 已自动判定，其余考核点等待规则接入或人工复核。",
+            overall_feedback=self._overall_feedback(results),
         )
         atomic_write_json(
             self.output_root / job.id / "report.json",
             report.model_dump(mode="json"),
         )
         return report
+
+    def _review(
+        self,
+        checkpoint: CheckpointRule,
+        result: CheckpointResult,
+    ) -> VlmReview:
+        assert self.commentary_provider is not None
+        request = VlmReviewRequest(
+            checkpoint_id=checkpoint.id,
+            checkpoint_name=checkpoint.name,
+            criteria=checkpoint.criteria,
+            deterministic_status=result.status.value,
+            reason_code=result.reason_code,
+            features=result.features,
+            evidence_images=[Path(item.overlay_path) for item in result.evidence],
+        )
+        try:
+            return self.commentary_provider.review(request)
+        except Exception:
+            return template_fallback(result.reason_code)
+
+    @staticmethod
+    def _overall_feedback(results: list[CheckpointResult]) -> str:
+        evaluated = [item for item in results if item.included_in_provisional_score]
+        prefix = (
+            f"本报告仅自动评估 {len(evaluated)}/11 项，"
+            "以下为阶段性结果，不是最终成绩。"
+        )
+        comments = [
+            f"{item.checkpoint_id.upper()}：{item.ai_commentary.reason_zh}"
+            for item in evaluated
+            if item.ai_commentary is not None
+        ]
+        return " ".join([prefix, *comments])
 
     def _extract_with_retry(
         self,

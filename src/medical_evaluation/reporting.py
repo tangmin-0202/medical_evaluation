@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, computed_field, model_validator
 
 from medical_evaluation.domain import CheckpointStatus, TimeRange
 from medical_evaluation.scoring import ScoreSummary, aggregate_evaluation_score
+from medical_evaluation.vlm.schemas import VlmReview
 
 
 class EvidenceItem(BaseModel):
@@ -36,6 +37,7 @@ class CheckpointResult(BaseModel):
     suggestion: str = ""
     review_history: list[ReviewAuditEntry] = Field(default_factory=list)
     included_in_provisional_score: bool = True
+    ai_commentary: VlmReview | None = None
 
     @computed_field
     @property

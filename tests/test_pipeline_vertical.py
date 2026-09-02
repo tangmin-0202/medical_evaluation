@@ -10,6 +10,7 @@ from medical_evaluation.pipeline import (
     ExtractedEvidence,
 )
 from medical_evaluation.rubric import load_rubric
+from medical_evaluation.vlm.schemas import VlmReview
 
 
 class FakeExtractor:
@@ -73,10 +74,29 @@ class FakeLocalizer:
         return self.confidence
 
 
+class FakeReviewer:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.requests = []
+
+    def review(self, request):
+        self.requests.append(request)
+        if self.fail:
+            raise RuntimeError("review service failed")
+        return VlmReview(
+            evidence_supported=True,
+            semantic_status="supports",
+            reason_zh=f"证据支持{request.checkpoint_id}的确定性结论。",
+            suggestion_zh="继续保持规范操作。",
+            cited_evidence_indices=[],
+        )
+
+
 def make_pipeline(
     tmp_path: Path,
     *,
     extractor: FakeExtractor | None = None,
+    reviewer: FakeReviewer | None = None,
 ) -> tuple[AnalysisPipeline, FakeExtractor, FakeLocalizer]:
     rubric = load_rubric(Path(__file__).parents[1] / "config" / "rubric.yaml")
     extractor = extractor or FakeExtractor()
@@ -90,6 +110,7 @@ def make_pipeline(
         analysis_width=1280,
         fallback_dense_fps=1,
         fallback_analysis_width=960,
+        commentary_provider=reviewer,
     )
     return pipeline, extractor, localizer
 
@@ -150,3 +171,32 @@ def test_missing_cp09_input_excludes_cp09_but_still_runs_cp11(tmp_path: Path) ->
     assert report.checkpoints[10].included_in_provisional_score is True
     assert report.summary.evaluated_count == 1
     assert [call[0] for call in extractor.calls] == ["cp_09", "cp_11"]
+
+
+def test_commentary_is_attached_without_mutating_deterministic_decision(tmp_path: Path) -> None:
+    reviewer = FakeReviewer()
+    pipeline, _, _ = make_pipeline(tmp_path, reviewer=reviewer)
+
+    report = pipeline.run(make_job(tmp_path))
+
+    cp09 = report.checkpoints[8]
+    assert [request.checkpoint_id for request in reviewer.requests] == ["cp_09", "cp_11"]
+    assert reviewer.requests[0].deterministic_status == "correct"
+    assert cp09.status.value == "correct"
+    assert cp09.reason_code == "criteria_satisfied"
+    assert cp09.ai_commentary is not None
+    assert cp09.ai_commentary.reason_zh == "证据支持cp_09的确定性结论。"
+    assert report.checkpoints[0].ai_commentary is None
+
+
+def test_commentary_provider_failure_uses_template_and_still_writes_report(
+    tmp_path: Path,
+) -> None:
+    pipeline, _, _ = make_pipeline(tmp_path, reviewer=FakeReviewer(fail=True))
+
+    report = pipeline.run(make_job(tmp_path))
+
+    assert report.checkpoints[8].status.value == "correct"
+    assert report.checkpoints[8].ai_commentary is not None
+    assert report.checkpoints[8].ai_commentary.source == "template_fallback"
+    assert (tmp_path / "jobs" / "job-1" / "report.json").is_file()

@@ -148,3 +148,15 @@ def test_only_configured_maximum_number_of_images_is_sent(tmp_path) -> None:
 
     content = captured["messages"][1]["content"]
     assert len([item for item in content if item["type"] == "image_url"]) == 2
+
+
+def test_missing_evidence_image_returns_template_without_aborting(tmp_path) -> None:
+    request = make_review_request().model_copy(
+        update={"evidence_images": [tmp_path / "missing.jpg"]}
+    )
+    client = QwenVlmClient("http://local/v1", "Qwen3-VL-4B-Instruct")
+
+    result = client.review(request)
+
+    assert result.source == "template_fallback"
+    assert result.score_override is None

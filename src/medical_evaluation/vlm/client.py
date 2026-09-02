@@ -59,14 +59,21 @@ class QwenVlmClient:
                 digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
                 LOGGER.info("local VLM review model=%s response_sha256=%s", self.model, digest)
                 return review
-            except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as exc:
+            except (
+                OSError,
+                httpx.HTTPError,
+                KeyError,
+                TypeError,
+                ValueError,
+                ValidationError,
+            ) as exc:
                 LOGGER.warning(
                     "local VLM review attempt failed model=%s attempt=%d error=%s",
                     self.model,
                     attempt + 1,
                     type(exc).__name__,
                 )
-        return _template_fallback(request.reason_code)
+        return template_fallback(request.reason_code)
 
     def _payload(
         self,
@@ -117,15 +124,43 @@ def _image_data_url(path: Path) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def _template_fallback(reason_code: str) -> VlmReview:
+def template_fallback(reason_code: str) -> VlmReview:
     templates = {
+        "criteria_satisfied": (
+            "现有证据支持确定性规则的通过结论。",
+            "继续保持当前规范操作。",
+        ),
+        "missing_frame_oral_evidence": (
+            "支架相对口腔参考区域的位置证据不足。",
+            "请补充清晰支架提示和唯一口腔参考框后复核。",
+        ),
         "frame_not_centered_on_oral_region": (
             "支架位置未达到居中要求。",
             "检查支架四周张力后重新调整至中央。",
         ),
-        "face_region_not_visible": (
-            "口鼻区域证据不足，当前结论需要人工复核。",
-            "选择能同时显示橡皮布与口鼻区域的关键帧。",
+        "unreliable_stage_presence": (
+            "无法可靠确认本阶段是否出现橡皮布。",
+            "请检查阶段时间范围和视频清晰度。",
+        ),
+        "rubber_dam_not_observed": (
+            "本阶段未观察到橡皮布，操作没有完成。",
+            "请完成橡皮布调整并将其撑开至支架。",
+        ),
+        "unreliable_final_presence": (
+            "无法可靠确认阶段末尾的橡皮布状态。",
+            "请提供末尾清晰且无遮挡的证据帧。",
+        ),
+        "rubber_dam_missing_at_end": (
+            "阶段中出现过橡皮布，但末尾没有保持在位。",
+            "重新完成末尾调整并确认橡皮布稳定覆盖支架。",
+        ),
+        "missing_required_evidence": (
+            "末尾橡皮布、鼻部或支架可见性证据不足。",
+            "请补充能够同时观察这些区域的清晰末尾证据。",
+        ),
+        "final_position_incorrect": (
+            "橡皮布最终位置未同时满足规则要求。",
+            "重新调整游离缘，保证口鼻无遮挡并充分撑开。",
         ),
     }
     reason, suggestion = templates.get(
