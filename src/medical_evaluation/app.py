@@ -62,7 +62,9 @@ def create_app(
     selected_pipeline: Pipeline = fake_pipeline
     if resolved.pipeline_mode == "real":
         if analysis_pipeline is None:
-            raise ValueError("real pipeline mode requires an AnalysisPipeline instance")
+            from medical_evaluation.runtime import build_analysis_pipeline
+
+            analysis_pipeline = build_analysis_pipeline(resolved)
 
         async def run_analysis(job: JobRecord, _update: ProgressCallback) -> None:
             await asyncio.to_thread(analysis_pipeline.run, job)
