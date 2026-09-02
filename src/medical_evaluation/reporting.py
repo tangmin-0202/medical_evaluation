@@ -5,7 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 from medical_evaluation.domain import CheckpointStatus, TimeRange
-from medical_evaluation.scoring import ScoreSummary, aggregate_equal_weight_score
+from medical_evaluation.scoring import ScoreSummary, aggregate_evaluation_score
 
 
 class EvidenceItem(BaseModel):
@@ -35,11 +35,12 @@ class CheckpointResult(BaseModel):
     reason: str = ""
     suggestion: str = ""
     review_history: list[ReviewAuditEntry] = Field(default_factory=list)
+    included_in_provisional_score: bool = True
 
     @computed_field
     @property
     def score(self) -> float | None:
-        if self.status is CheckpointStatus.NEEDS_REVIEW:
+        if not self.included_in_provisional_score or self.status is CheckpointStatus.NEEDS_REVIEW:
             return None
         return 100.0 / 11.0 if self.status is CheckpointStatus.CORRECT else 0.0
 
@@ -72,4 +73,7 @@ class EvaluationReport(BaseModel):
     @computed_field
     @property
     def summary(self) -> ScoreSummary:
-        return aggregate_equal_weight_score([item.status for item in self.checkpoints])
+        return aggregate_evaluation_score(
+            [item.status for item in self.checkpoints],
+            [item.included_in_provisional_score for item in self.checkpoints],
+        )

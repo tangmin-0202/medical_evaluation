@@ -38,6 +38,55 @@ def test_score_requires_exactly_11_statuses() -> None:
         aggregate_equal_weight_score([CheckpointStatus.CORRECT] * 10)
 
 
+def test_two_evaluated_items_produce_provisional_score_only() -> None:
+    from medical_evaluation.scoring import aggregate_evaluation_score
+
+    statuses = [CheckpointStatus.NEEDS_REVIEW] * 11
+    statuses[8] = CheckpointStatus.CORRECT
+    statuses[10] = CheckpointStatus.INCORRECT
+    included = [False] * 11
+    included[8] = included[10] = True
+
+    result = aggregate_evaluation_score(statuses, included)
+
+    assert result.final_score is None
+    assert result.evaluated_count == 2
+    assert result.total_count == 11
+    assert result.provisional_score == pytest.approx(50.0)
+    assert result.provisional_minimum_score == pytest.approx(50.0)
+    assert result.provisional_maximum_score == pytest.approx(50.0)
+
+
+def test_one_evaluated_correct_item_is_provisional_100() -> None:
+    from medical_evaluation.scoring import aggregate_evaluation_score
+
+    statuses = [CheckpointStatus.NEEDS_REVIEW] * 11
+    statuses[10] = CheckpointStatus.CORRECT
+    included = [False] * 11
+    included[10] = True
+
+    result = aggregate_evaluation_score(statuses, included)
+
+    assert result.evaluated_count == 1
+    assert result.provisional_score == pytest.approx(100.0)
+
+
+def test_evaluated_review_item_produces_provisional_range() -> None:
+    from medical_evaluation.scoring import aggregate_evaluation_score
+
+    statuses = [CheckpointStatus.NEEDS_REVIEW] * 11
+    statuses[8] = CheckpointStatus.CORRECT
+    statuses[10] = CheckpointStatus.NEEDS_REVIEW
+    included = [False] * 11
+    included[8] = included[10] = True
+
+    result = aggregate_evaluation_score(statuses, included)
+
+    assert result.provisional_score is None
+    assert result.provisional_minimum_score == pytest.approx(50.0)
+    assert result.provisional_maximum_score == pytest.approx(100.0)
+
+
 def test_report_derives_summary_from_unique_checkpoint_results() -> None:
     from medical_evaluation.reporting import CheckpointResult, EvaluationReport, RunAudit
 
@@ -58,6 +107,8 @@ def test_report_derives_summary_from_unique_checkpoint_results() -> None:
     report = EvaluationReport(job_id="job-1", video_id="success", checkpoints=checkpoints, audit=audit)
 
     assert report.summary.final_score == pytest.approx(100.0)
+    assert report.summary.evaluated_count == 11
+    assert report.summary.provisional_score == pytest.approx(100.0)
     assert report.checkpoints[0].score == pytest.approx(100.0 / 11.0)
 
     with pytest.raises(ValidationError, match="11 unique checkpoint results"):
