@@ -110,7 +110,14 @@ class QwenVlmClient:
         return {
             "model": self.model,
             "temperature": 0,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "vlm_review",
+                    "strict": True,
+                    "schema": VlmReview.model_json_schema(),
+                },
+            },
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": content},

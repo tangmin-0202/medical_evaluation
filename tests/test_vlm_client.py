@@ -82,6 +82,18 @@ def test_system_prompt_scopes_review_to_rubber_dam_isolation() -> None:
         "只能返回符合给定字段的 JSON，不要 Markdown，不要额外字段。\n"
         "绝对不能给出、修改或建议任何分数；确定性规则结论不可被覆盖。"
     )
+    response_format = captured["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "vlm_review"
+    schema = response_format["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert {
+        "evidence_supported",
+        "semantic_status",
+        "reason_zh",
+        "suggestion_zh",
+        "cited_evidence_indices",
+    } <= set(schema["required"])
 
 
 def test_invalid_json_retries_once_then_returns_template() -> None:
