@@ -65,6 +65,10 @@ SAM3 权重和代码受各自随附许可证约束，部署前阅读并保留 `e
 及 `models/SAM3.1/LICENSE`。本项目第一轮只使用官方 multiplex video predictor 的文本
 提示模式，并转换为统一 `FrameMasks`；不静默回退 SAM2。
 
+锁定提交的共享 `Sam3BasePredictor.start_session()` 会传入 multiplex `init_state()`
+不接受的 `offload_state_to_cpu`。项目适配器按底层方法签名过滤不支持的参数，与
+facebookresearch/sam3#543 的修复方式一致；不要直接修改 `external/sam3`。
+
 每次先查看 GPU，选择利用率为 0 且显存占用最低的卡，不终止其他用户进程。下面的
 `sam3_gpu` 必须按实时结果填写；进程内设备仍为 `cuda:0`：
 

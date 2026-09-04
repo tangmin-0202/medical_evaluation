@@ -56,6 +56,38 @@ class FakeSam3Predictor:
             }
 
 
+class StrictMultiplexModel:
+    def init_state(
+        self,
+        resource_path: str,
+        offload_video_to_cpu: bool = False,
+        async_loading_frames: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "resource_path": resource_path,
+            "offload_video_to_cpu": offload_video_to_cpu,
+            "async_loading_frames": async_loading_frames,
+        }
+
+
+class BaseStylePredictor(FakeSam3Predictor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.model = StrictMultiplexModel()
+
+    def handle_request(self, request: dict[str, object]) -> dict[str, object]:
+        if request["type"] == "start_session":
+            self.requests.append(request)
+            self.model.init_state(
+                resource_path=str(request["resource_path"]),
+                offload_video_to_cpu=False,
+                offload_state_to_cpu=False,
+                async_loading_frames=False,
+            )
+            return {"session_id": "session-1"}
+        return super().handle_request(request)
+
+
 def _text_prompt() -> SegmentationPrompt:
     return SegmentationPrompt(
         object_id="rubber_dam_frame",
@@ -204,3 +236,22 @@ def test_sam3_closes_session_when_propagation_fails(tmp_path: Path) -> None:
             )
         )
     assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_sam3_filters_base_predictor_kwargs_for_multiplex_init_state(
+    tmp_path: Path,
+) -> None:
+    predictor = BaseStylePredictor()
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    assert len(frames) == 2

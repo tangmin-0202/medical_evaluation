@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -57,6 +58,7 @@ class Sam3Backend:
                 async_loading_frames=False,
             )
         self.predictor = predictor
+        _filter_unsupported_init_state_kwargs(self.predictor)
 
     @property
     def model_version(self) -> str:
@@ -169,3 +171,22 @@ def _as_array(value: object) -> np.ndarray:
     detached = value.detach() if hasattr(value, "detach") else value
     cpu_value = detached.cpu() if hasattr(detached, "cpu") else detached
     return np.asarray(cpu_value)
+
+
+def _filter_unsupported_init_state_kwargs(predictor: Any) -> None:
+    """Work around facebookresearch/sam3#543 without editing vendored source."""
+    model = getattr(predictor, "model", None)
+    original = getattr(model, "init_state", None)
+    if not callable(original) or getattr(original, "_medical_eval_filters_kwargs", False):
+        return
+    parameters = inspect.signature(original).parameters
+    if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values()):
+        return
+    accepted = set(parameters)
+
+    def compatible_init_state(*args: object, **kwargs: object) -> object:
+        filtered = {key: value for key, value in kwargs.items() if key in accepted}
+        return original(*args, **filtered)
+
+    compatible_init_state._medical_eval_filters_kwargs = True  # type: ignore[attr-defined]
+    model.init_state = compatible_init_state
