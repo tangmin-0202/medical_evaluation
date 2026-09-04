@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
@@ -13,7 +14,11 @@ from medical_evaluation.segmentation.base import (
     checkpoint_digest,
     normalize_masks,
 )
-from medical_evaluation.video import probe_video
+from medical_evaluation.video import write_sampled_frame_sequence
+
+
+class Sam3AmbiguousTextResult(RuntimeError):
+    """Raised when a text prompt returns candidates without ranking information."""
 
 
 class Sam3Backend:
@@ -21,21 +26,35 @@ class Sam3Backend:
         self,
         checkpoint: Path,
         *,
-        device: str = "cuda",
+        bpe_path: Path | None = None,
+        device: str = "cuda:0",
+        output_prob_threshold: float = 0.5,
         predictor: Any | None = None,
     ) -> None:
+        if not 0 <= output_prob_threshold <= 1:
+            raise ValueError("output_prob_threshold must be between zero and one")
         self.checkpoint = checkpoint
+        self.bpe_path = bpe_path
         self.device = device
+        self.output_prob_threshold = output_prob_threshold
         if predictor is None:
             try:
-                from sam3.model_builder import build_sam3_video_predictor
+                import torch
+                from sam3.model_builder import build_sam3_multiplex_video_predictor
             except ImportError as exc:
                 raise RuntimeError(
                     "SAM3 is not installed; install Meta's official sam3 package on the GPU server"
                 ) from exc
-            predictor = build_sam3_video_predictor(
+
+            torch.cuda.set_device(device)
+            predictor = build_sam3_multiplex_video_predictor(
                 checkpoint_path=str(checkpoint),
-                device=device,
+                bpe_path=str(bpe_path) if bpe_path else None,
+                use_fa3=False,
+                use_rope_real=False,
+                compile=False,
+                warm_up=False,
+                async_loading_frames=False,
             )
         self.predictor = predictor
 
@@ -50,68 +69,103 @@ class Sam3Backend:
         prompts: list[SegmentationPrompt],
         sample_fps: float,
     ) -> Iterator[FrameMasks]:
-        if any(prompt.kind == "mask" for prompt in prompts):
-            raise ValueError("SAM3 adapter accepts text, point, and box prompts; use SAM2 for masks")
+        if len(prompts) != 1 or prompts[0].kind != "text" or not prompts[0].text:
+            raise ValueError("SAM3 text mode requires exactly one text prompt")
         if sample_fps <= 0:
             raise ValueError("sample_fps must be positive")
-        metadata = probe_video(video_path)
-        response = self.predictor.handle_request(
-            {"type": "start_session", "resource_path": str(video_path)}
-        )
-        session_id = response["session_id"]
-        object_numbers = {
-            object_id: number
-            for number, object_id in enumerate(dict.fromkeys(p.object_id for p in prompts), start=1)
-        }
-        reverse_ids = {number: object_id for object_id, number in object_numbers.items()}
-        try:
-            for prompt in prompts:
-                request: dict[str, object] = {
-                    "type": "add_prompt",
-                    "session_id": session_id,
-                    "frame_index": round(prompt.frame_time_sec * metadata.fps),
-                    "obj_id": object_numbers[prompt.object_id],
-                }
-                if prompt.kind == "text":
-                    request["text"] = prompt.text
-                elif prompt.kind == "point":
-                    request["points"] = np.asarray([prompt.coordinates], dtype=np.float32)
-                    request["point_labels"] = np.asarray([int(prompt.positive)], dtype=np.int32)
-                else:
-                    assert prompt.coordinates is not None
-                    x1, y1, x2, y2 = prompt.coordinates
-                    request["bounding_boxes"] = np.asarray(
-                        [[x1, y1, x2 - x1, y2 - y1]],
-                        dtype=np.float32,
-                    )
-                    request["bounding_box_labels"] = np.asarray([1], dtype=np.int32)
-                self.predictor.handle_request(request)
 
-            stride = max(1, round(metadata.fps / sample_fps))
-            stream = self.predictor.handle_stream_request(
-                {"type": "propagate_in_video", "session_id": session_id}
+        prompt = prompts[0]
+        with TemporaryDirectory(prefix="medical-evaluation-sam3-") as temporary:
+            sequence = write_sampled_frame_sequence(
+                video_path,
+                Path(temporary) / "frames",
+                time_range=time_range,
+                sample_fps=sample_fps,
+                required_times_sec=[prompt.frame_time_sec],
             )
-            for item in stream:
-                frame_index = int(item["frame_index"])
-                frame_time = frame_index / metadata.fps
-                if not time_range.start_sec <= frame_time <= time_range.end_sec:
-                    continue
-                if frame_index % stride:
-                    continue
-                outputs = item["outputs"]
-                raw = {
-                    "frame": frame_index,
-                    "objects": {
-                        reverse_ids.get(int(object_id), f"detected_{int(object_id)}"): mask
-                        for object_id, mask in zip(
-                            outputs["out_obj_ids"],
-                            outputs["out_binary_masks"],
-                            strict=True,
-                        )
-                    },
-                }
-                yield normalize_masks(raw, threshold=0.5, frame_time_sec=frame_time)
-        finally:
-            self.predictor.handle_request(
-                {"type": "close_session", "session_id": session_id}
+            prompt_source_index = min(
+                round(prompt.frame_time_sec * sequence.metadata.fps),
+                sequence.metadata.frame_count - 1,
             )
+            prompt_local_index = sequence.source_to_local[prompt_source_index]
+            response = self.predictor.handle_request(
+                {"type": "start_session", "resource_path": str(sequence.directory)}
+            )
+            session_id = str(response["session_id"])
+            try:
+                prompt_result = self.predictor.handle_request(
+                    {
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": prompt_local_index,
+                        "text": prompt.text,
+                        "output_prob_thresh": self.output_prob_threshold,
+                    }
+                )
+                selected_id = _select_candidate_id(prompt_result)
+                if selected_id is None:
+                    return
+
+                stream = self.predictor.handle_stream_request(
+                    {
+                        "type": "propagate_in_video",
+                        "session_id": session_id,
+                        "propagation_direction": "forward",
+                        "start_frame_index": prompt_local_index,
+                        "max_frame_num_to_track": len(sequence.entries) - prompt_local_index,
+                        "output_prob_thresh": self.output_prob_threshold,
+                    }
+                )
+                for item in stream:
+                    local_index = int(item["frame_index"])
+                    if local_index < 0 or local_index >= len(sequence.entries):
+                        raise ValueError(f"SAM3 returned invalid local frame index {local_index}")
+                    entry = sequence.entries[local_index]
+                    outputs = item["outputs"]
+                    object_ids = _as_array(outputs["out_obj_ids"]).reshape(-1)
+                    masks = list(outputs["out_binary_masks"])
+                    selected_masks = [
+                        mask
+                        for object_id, mask in zip(object_ids, masks, strict=True)
+                        if int(object_id) == selected_id
+                    ]
+                    raw = {
+                        "frame": entry.source_frame_index,
+                        "objects": (
+                            {prompt.object_id: selected_masks[0]} if selected_masks else {}
+                        ),
+                    }
+                    yield normalize_masks(
+                        raw,
+                        threshold=self.output_prob_threshold,
+                        frame_time_sec=entry.source_time_sec,
+                    )
+            finally:
+                self.predictor.handle_request(
+                    {"type": "close_session", "session_id": session_id}
+                )
+
+
+def _select_candidate_id(prompt_result: dict[str, object]) -> int | None:
+    outputs = prompt_result.get("outputs")
+    if not isinstance(outputs, dict):
+        raise TypeError("SAM3 add_prompt response has no outputs mapping")
+    object_ids = _as_array(outputs.get("out_obj_ids", [])).reshape(-1)
+    if object_ids.size == 0:
+        return None
+    if object_ids.size == 1:
+        return int(object_ids[0])
+    if "out_scores" not in outputs:
+        raise Sam3AmbiguousTextResult(
+            "SAM3 text prompt returned multiple candidates without scores"
+        )
+    scores = _as_array(outputs["out_scores"]).reshape(-1)
+    if scores.size != object_ids.size:
+        raise ValueError("SAM3 candidate scores do not match object IDs")
+    return int(object_ids[int(np.argmax(scores))])
+
+
+def _as_array(value: object) -> np.ndarray:
+    detached = value.detach() if hasattr(value, "detach") else value
+    cpu_value = detached.cpu() if hasattr(detached, "cpu") else detached
+    return np.asarray(cpu_value)

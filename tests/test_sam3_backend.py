@@ -1,0 +1,206 @@
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from medical_evaluation.domain import TimeRange
+from medical_evaluation.segmentation.base import SegmentationPrompt
+from medical_evaluation.segmentation.sam3_backend import (
+    Sam3AmbiguousTextResult,
+    Sam3Backend,
+)
+from tests.fixtures.make_test_video import make_test_video
+
+
+class FakeSam3Predictor:
+    def __init__(
+        self,
+        *,
+        object_ids: tuple[int, ...] = (7,),
+        scores: tuple[float, ...] | None = None,
+        fail_stream: bool = False,
+    ) -> None:
+        self.object_ids = object_ids
+        self.scores = scores
+        self.fail_stream = fail_stream
+        self.requests: list[dict[str, object]] = []
+        self.stream_requests: list[dict[str, object]] = []
+
+    def handle_request(self, request: dict[str, object]) -> dict[str, object]:
+        self.requests.append(request)
+        if request["type"] == "start_session":
+            return {"session_id": "session-1"}
+        if request["type"] == "add_prompt":
+            outputs: dict[str, object] = {
+                "out_obj_ids": np.asarray(self.object_ids),
+                "out_binary_masks": np.ones((len(self.object_ids), 20, 40), dtype=bool),
+            }
+            if self.scores is not None:
+                outputs["out_scores"] = np.asarray(self.scores)
+            return {"frame_index": 0, "outputs": outputs}
+        return {"is_success": True}
+
+    def handle_stream_request(self, request: dict[str, object]):
+        self.stream_requests.append(request)
+        if self.fail_stream:
+            raise RuntimeError("stream failed")
+        for local_index in range(2):
+            yield {
+                "frame_index": local_index,
+                "outputs": {
+                    "out_obj_ids": np.asarray(self.object_ids),
+                    "out_binary_masks": np.ones(
+                        (len(self.object_ids), 20, 40), dtype=bool
+                    ),
+                },
+            }
+
+
+def _text_prompt() -> SegmentationPrompt:
+    return SegmentationPrompt(
+        object_id="rubber_dam_frame",
+        kind="text",
+        frame_time_sec=1.0,
+        text="white U-shaped dental frame",
+    )
+
+
+def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor()
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    start = predictor.requests[0]
+    assert start["type"] == "start_session"
+    assert Path(str(start["resource_path"])).name == "frames"
+    assert predictor.requests[1] == {
+        "type": "add_prompt",
+        "session_id": "session-1",
+        "frame_index": 0,
+        "text": "white U-shaped dental frame",
+        "output_prob_thresh": 0.5,
+    }
+    assert predictor.stream_requests == [
+        {
+            "type": "propagate_in_video",
+            "session_id": "session-1",
+            "propagation_direction": "forward",
+            "start_frame_index": 0,
+            "max_frame_num_to_track": 2,
+            "output_prob_thresh": 0.5,
+        }
+    ]
+    assert [item.frame_index for item in frames] == [10, 20]
+    assert all(set(item.masks) == {"rubber_dam_frame"} for item in frames)
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert not Path(str(start["resource_path"])).exists()
+
+
+@pytest.mark.parametrize("prompts", [[], [_text_prompt(), _text_prompt()]])
+def test_sam3_requires_exactly_one_prompt(tmp_path: Path, prompts) -> None:
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())
+    with pytest.raises(ValueError, match="exactly one text prompt"):
+        list(
+            backend.track(
+                tmp_path / "unused.mp4",
+                TimeRange(start_sec=1, end_sec=2),
+                prompts,
+                sample_fps=1,
+            )
+        )
+
+
+def test_sam3_rejects_non_text_prompt(tmp_path: Path) -> None:
+    prompt = SegmentationPrompt(
+        object_id="rubber_dam_frame",
+        kind="point",
+        frame_time_sec=1,
+        coordinates=[0.5, 0.5],
+    )
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())
+    with pytest.raises(ValueError, match="exactly one text prompt"):
+        list(
+            backend.track(
+                tmp_path / "unused.mp4",
+                TimeRange(start_sec=1, end_sec=2),
+                [prompt],
+                sample_fps=1,
+            )
+        )
+
+
+def test_sam3_returns_no_frames_when_text_finds_no_candidate(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(object_ids=())
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    assert list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    ) == []
+    assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_sam3_selects_highest_scored_candidate(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(object_ids=(7, 8), scores=(0.2, 0.9))
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    assert len(frames) == 2
+    assert all(frame.masks["rubber_dam_frame"].all() for frame in frames)
+
+
+def test_sam3_rejects_ambiguous_unscored_candidates(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(object_ids=(7, 8))
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    with pytest.raises(Sam3AmbiguousTextResult):
+        list(
+            backend.track(
+                video,
+                TimeRange(start_sec=1, end_sec=3),
+                [_text_prompt()],
+                sample_fps=1,
+            )
+        )
+    assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_sam3_closes_session_when_propagation_fails(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(fail_stream=True)
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    with pytest.raises(RuntimeError, match="stream failed"):
+        list(
+            backend.track(
+                video,
+                TimeRange(start_sec=1, end_sec=3),
+                [_text_prompt()],
+                sample_fps=1,
+            )
+        )
+    assert predictor.requests[-1]["type"] == "close_session"
