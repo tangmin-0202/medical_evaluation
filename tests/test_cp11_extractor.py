@@ -280,7 +280,7 @@ def test_text_policy_needs_no_manual_dam_or_frame_prompts(tmp_path: Path) -> Non
     )
     assert (frame_call[0].start_sec, frame_call[1][0].text) == (
         0.4,
-        "white U-shaped dental frame",
+        "thin white U-shaped plastic frame around the mouth",
     )
     assert frame_call[0].end_sec == 4.0
 

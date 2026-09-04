@@ -19,10 +19,12 @@ class FakeSam3Predictor:
         object_ids: tuple[int, ...] = (7,),
         scores: tuple[float, ...] | None = None,
         fail_stream: bool = False,
+        detect_at_frame: int = 0,
     ) -> None:
         self.object_ids = object_ids
         self.scores = scores
         self.fail_stream = fail_stream
+        self.detect_at_frame = detect_at_frame
         self.requests: list[dict[str, object]] = []
         self.stream_requests: list[dict[str, object]] = []
 
@@ -31,9 +33,14 @@ class FakeSam3Predictor:
         if request["type"] == "start_session":
             return {"session_id": "session-1"}
         if request["type"] == "add_prompt":
+            object_ids = (
+                self.object_ids
+                if int(request["frame_index"]) >= self.detect_at_frame
+                else ()
+            )
             outputs: dict[str, object] = {
-                "out_obj_ids": np.asarray(self.object_ids),
-                "out_binary_masks": np.ones((len(self.object_ids), 20, 40), dtype=bool),
+                "out_obj_ids": np.asarray(object_ids),
+                "out_binary_masks": np.ones((len(object_ids), 20, 40), dtype=bool),
             }
             if self.scores is not None:
                 outputs["out_scores"] = np.asarray(self.scores)
@@ -44,7 +51,9 @@ class FakeSam3Predictor:
         self.stream_requests.append(request)
         if self.fail_stream:
             raise RuntimeError("stream failed")
-        for local_index in range(2):
+        start = int(request["start_frame_index"])
+        local_indices = [0, 1] if start == 0 else [1, 0]
+        for local_index in local_indices:
             yield {
                 "frame_index": local_index,
                 "outputs": {
@@ -125,7 +134,7 @@ def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> No
         {
             "type": "propagate_in_video",
             "session_id": "session-1",
-            "propagation_direction": "forward",
+            "propagation_direction": "both",
             "start_frame_index": 0,
             "max_frame_num_to_track": 2,
             "output_prob_thresh": 0.5,
@@ -236,6 +245,32 @@ def test_sam3_closes_session_when_propagation_fails(tmp_path: Path) -> None:
             )
         )
     assert predictor.requests[-1]["type"] == "close_session"
+
+
+def test_sam3_scans_later_frames_then_tracks_both_directions(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(detect_at_frame=1)
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    add_frames = [
+        request["frame_index"]
+        for request in predictor.requests
+        if request["type"] == "add_prompt"
+    ]
+    assert add_frames == [0, 1]
+    assert any(request["type"] == "reset_session" for request in predictor.requests)
+    assert predictor.stream_requests[0]["propagation_direction"] == "both"
+    assert predictor.stream_requests[0]["start_frame_index"] == 1
+    assert [frame.frame_index for frame in frames] == [10, 20]
 
 
 def test_sam3_filters_base_predictor_kwargs_for_multiplex_init_state(

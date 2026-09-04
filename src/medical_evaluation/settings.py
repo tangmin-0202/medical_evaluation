@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     sam3_bpe_path: Path = Path(
         "external/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
     )
-    sam3_output_prob_threshold: float = Field(default=0.5, ge=0, le=1)
+    sam3_output_prob_threshold: float = Field(default=0.2, ge=0, le=1)
     sam3_source_revision: str = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
     sam3_checkpoint_sha256: str = (
         "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6"

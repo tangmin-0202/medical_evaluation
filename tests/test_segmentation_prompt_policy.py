@@ -33,7 +33,7 @@ def test_text_policy_ignores_annotation_object_prompts() -> None:
     )
 
     assert [(p.kind, p.text, p.frame_time_sec) for p in frame] == [
-        ("text", "white U-shaped dental frame", 10)
+        ("text", "thin white U-shaped plastic frame around the mouth", 10)
     ]
     assert [(p.kind, p.text, p.frame_time_sec) for p in dam] == [
         ("text", "green dental rubber dam", 30)

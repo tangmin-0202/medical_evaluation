@@ -8,6 +8,10 @@
 
 **Tech Stack:** Python 3.11/3.12、Pydantic 2、NumPy、OpenCV、PyTorch 2.10、Meta SAM3.1 multiplex predictor、pytest、Ruff。
 
+> **2026-09-04 真实验证修订：** 起始帧文本发现失败，但描述性提示从约 180 秒起
+> 目视确认正确。最终实现按采样帧逐帧发现首个候选并双向传播；支架提示改为
+> `thin white U-shaped plastic frame around the mouth`，SAM3 输出概率阈值为 `0.2`。
+
 ---
 
 ## 文件结构

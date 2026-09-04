@@ -28,7 +28,7 @@
 
 第一轮只使用 SAM3 文本提示：
 
-- CP09：white U-shaped dental frame
+- CP09：thin white U-shaped plastic frame around the mouth
 - CP11：green dental rubber dam
 - 不向 SAM3 发送 SAM2 的人工对象点、框或掩膜；
 - 不做文本加视觉提示或人工修正的混合模式；
@@ -46,8 +46,8 @@
 1. 读取人工 CP09 时间范围；
 2. 读取且只接受一个 oral_region 固定框，并保留固定中心；
 3. 忽略 rubber_dam_frame 人工点或框；
-4. CP09 第一帧发送 white U-shaped dental frame；
-5. 从 CP09 第一帧跟踪支架至 CP09 结束；
+4. CP09 从阶段起点逐帧发送描述性支架提示，找到首个候选后停止发现扫描；
+5. 从首次发现帧双向传播，覆盖 CP09 全阶段；
 6. 逐帧计算支架包围盒中心相对口腔框中心的宽高归一化距离；
 7. 至少三个有效帧，取中位数得到 frame_oral_center_offset；
 8. Judge 仍使用 max_oral_center_offset: 0.50；
@@ -73,7 +73,7 @@
 
 ### 6.3 支架跨阶段跟踪
 
-CP11 的裸露支架特征使用 white U-shaped dental frame，在 CP09 第一帧发送提示并跟踪到 CP11 结束。继续用 CP09 支架 Lab 外观估计 CP11 末尾 visible_frame_area_ratio，阈值仍为 0.005。
+CP11 的裸露支架特征使用描述性支架提示，从 CP09 起点逐帧发现首个候选，再双向传播并持续跟踪到 CP11 结束。继续用 CP09 支架 Lab 外观估计 CP11 末尾 visible_frame_area_ratio，阈值仍为 0.005。
 
 首轮中 CP09 提取与 CP11 跨阶段提取各自建立独立 SAM3 会话；CP11 会话本身仍从 CP09 首帧开始，故判定含义不变。暂不增加跨提取器缓存。
 

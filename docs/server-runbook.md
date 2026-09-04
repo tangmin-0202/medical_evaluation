@@ -78,7 +78,7 @@ sam3_gpu=6
 CUDA_VISIBLE_DEVICES="$sam3_gpu" conda run --no-capture-output -n sam3_medical \
   python scripts/run_sam3_text_smoke.py \
   --video "videos/橡皮障完整.mp4" --start-sec 175 --end-sec 195 --sample-fps 2 \
-  --object-id rubber_dam_frame --text "white U-shaped dental frame" \
+  --object-id rubber_dam_frame --text "thin white U-shaped plastic frame around the mouth" \
   --checkpoint models/SAM3.1/sam3.1_multiplex.pt \
   --bpe-path external/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz \
   --device cuda:0 --output-dir data/runs/sam3-text/cp09-success
@@ -87,6 +87,10 @@ CUDA_VISIBLE_DEVICES="$sam3_gpu" conda run --no-capture-output -n sam3_medical \
 CP11 最后三秒使用固定文本 `green dental rubber dam`，区间 `255–258`。输出目录必须
 不存在，防止覆盖已有证据。分别目视检查首、中、末帧掩膜；CP09 必须覆盖白色 U 形
 支架，CP11 必须覆盖绿色橡皮布。语义不对时停止，不改 Judge 或阈值。
+
+2026-09-04 真实验证发现支架在 CP09 起始帧不可识别，但从约 180 秒开始可由描述性
+提示稳定检出。正式适配器会逐帧扫描首个候选，再从发现帧双向传播；SAM3 输出概率
+阈值使用 `0.2`。该值不是 CP09 Judge 的 `max_oral_center_offset: 0.50`。
 
 ## 3. 启动本地 Qwen3-VL
 

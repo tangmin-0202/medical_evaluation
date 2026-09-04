@@ -85,26 +85,30 @@ class Sam3Backend:
                 sample_fps=sample_fps,
                 required_times_sec=[prompt.frame_time_sec],
             )
-            prompt_source_index = min(
-                round(prompt.frame_time_sec * sequence.metadata.fps),
-                sequence.metadata.frame_count - 1,
-            )
-            prompt_local_index = sequence.source_to_local[prompt_source_index]
             response = self.predictor.handle_request(
                 {"type": "start_session", "resource_path": str(sequence.directory)}
             )
             session_id = str(response["session_id"])
             try:
-                prompt_result = self.predictor.handle_request(
-                    {
-                        "type": "add_prompt",
-                        "session_id": session_id,
-                        "frame_index": prompt_local_index,
-                        "text": prompt.text,
-                        "output_prob_thresh": self.output_prob_threshold,
-                    }
-                )
-                selected_id = _select_candidate_id(prompt_result)
+                selected_id: int | None = None
+                prompt_local_index = 0
+                for candidate_index in range(len(sequence.entries)):
+                    prompt_result = self.predictor.handle_request(
+                        {
+                            "type": "add_prompt",
+                            "session_id": session_id,
+                            "frame_index": candidate_index,
+                            "text": prompt.text,
+                            "output_prob_thresh": self.output_prob_threshold,
+                        }
+                    )
+                    selected_id = _select_candidate_id(prompt_result)
+                    if selected_id is not None:
+                        prompt_local_index = candidate_index
+                        break
+                    self.predictor.handle_request(
+                        {"type": "reset_session", "session_id": session_id}
+                    )
                 if selected_id is None:
                     return
 
@@ -112,12 +116,13 @@ class Sam3Backend:
                     {
                         "type": "propagate_in_video",
                         "session_id": session_id,
-                        "propagation_direction": "forward",
+                        "propagation_direction": "both",
                         "start_frame_index": prompt_local_index,
-                        "max_frame_num_to_track": len(sequence.entries) - prompt_local_index,
+                        "max_frame_num_to_track": len(sequence.entries),
                         "output_prob_thresh": self.output_prob_threshold,
                     }
                 )
+                tracked: dict[int, FrameMasks] = {}
                 for item in stream:
                     local_index = int(item["frame_index"])
                     if local_index < 0 or local_index >= len(sequence.entries):
@@ -137,11 +142,13 @@ class Sam3Backend:
                             {prompt.object_id: selected_masks[0]} if selected_masks else {}
                         ),
                     }
-                    yield normalize_masks(
+                    tracked[local_index] = normalize_masks(
                         raw,
                         threshold=self.output_prob_threshold,
                         frame_time_sec=entry.source_time_sec,
                     )
+                for local_index in sorted(tracked):
+                    yield tracked[local_index]
             finally:
                 self.predictor.handle_request(
                     {"type": "close_session", "session_id": session_id}

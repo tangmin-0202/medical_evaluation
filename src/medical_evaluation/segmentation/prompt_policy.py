@@ -7,7 +7,7 @@ from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import SegmentationPrompt
 from medical_evaluation.segmentation.prompts import prompts_for_object
 
-FRAME_TEXT_PROMPT = "white U-shaped dental frame"
+FRAME_TEXT_PROMPT = "thin white U-shaped plastic frame around the mouth"
 DAM_TEXT_PROMPT = "green dental rubber dam"
 
 
