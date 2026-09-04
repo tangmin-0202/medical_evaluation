@@ -86,7 +86,11 @@ class Sam3Backend:
                 required_times_sec=[prompt.frame_time_sec],
             )
             response = self.predictor.handle_request(
-                {"type": "start_session", "resource_path": str(sequence.directory)}
+                {
+                    "type": "start_session",
+                    "resource_path": str(sequence.directory),
+                    "offload_video_to_cpu": True,
+                }
             )
             session_id = str(response["session_id"])
             try:

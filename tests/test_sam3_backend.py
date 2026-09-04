@@ -123,6 +123,7 @@ def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> No
     start = predictor.requests[0]
     assert start["type"] == "start_session"
     assert Path(str(start["resource_path"])).name == "frames"
+    assert start["offload_video_to_cpu"] is True
     assert predictor.requests[1] == {
         "type": "add_prompt",
         "session_id": "session-1",
