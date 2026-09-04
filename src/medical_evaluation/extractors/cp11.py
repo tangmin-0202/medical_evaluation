@@ -16,7 +16,10 @@ from medical_evaluation.features.appearance import (
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import FrameMasks, VideoSegmenter
-from medical_evaluation.segmentation.prompts import prompts_for_object
+from medical_evaluation.segmentation.prompt_policy import (
+    AnnotationPromptPolicy,
+    Cp09Cp11PromptPolicy,
+)
 from medical_evaluation.storage import safe_child
 from medical_evaluation.video import read_frame, sample_frames
 
@@ -37,6 +40,7 @@ class Cp11FeatureExtractor:
         frame_reference_time_range: TimeRange,
         min_stage_dam_presence_ratio: float,
         min_final_dam_presence_ratio: float = 0.5,
+        prompt_policy: Cp09Cp11PromptPolicy | None = None,
     ) -> None:
         if not 0 <= min_stage_dam_presence_ratio <= 1:
             raise ValueError("min_stage_dam_presence_ratio must be normalized")
@@ -48,6 +52,7 @@ class Cp11FeatureExtractor:
         self.frame_reference_time_range = frame_reference_time_range
         self.min_stage_dam_presence_ratio = min_stage_dam_presence_ratio
         self.min_final_dam_presence_ratio = min_final_dam_presence_ratio
+        self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
 
     @property
     def model_version(self) -> str:
@@ -127,20 +132,14 @@ class Cp11FeatureExtractor:
             start_sec=final_start_sec,
             end_sec=time_range.end_sec,
         )
-        dam_prompts = prompts_for_object(
+        dam_prompts = self.prompt_policy.dam_prompts(
             self.annotations,
-            "rubber_dam",
             final_range,
             checkpoint_id=checkpoint_id,
         )
-        if not 3 <= len(dam_prompts) <= 5 or any(
-            item.kind != "point" or not item.positive for item in dam_prompts
-        ):
-            raise ValueError("cp_11 requires 3-5 positive rubber_dam points")
         nose_box = self._nose_box(final_range)
-        frame_prompts = prompts_for_object(
+        frame_prompts = self.prompt_policy.frame_prompts(
             self.annotations,
-            "rubber_dam_frame",
             self.frame_reference_time_range,
             checkpoint_id=checkpoint_id,
         )

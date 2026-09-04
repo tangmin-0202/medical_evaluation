@@ -11,6 +11,7 @@ from medical_evaluation.annotations import BoxPrompt, PointPrompt, VideoAnnotati
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp09 import Cp09FeatureExtractor
 from medical_evaluation.segmentation.base import FrameMasks, SegmentationPrompt
+from medical_evaluation.segmentation.prompt_policy import TextPromptPolicy
 
 
 class FakeSegmenter:
@@ -163,6 +164,44 @@ def test_extracts_fixed_reference_feature_and_three_evidence_overlays(tmp_path: 
     assert all((evidence_root / item.overlay_path).is_file() for item in result.evidence)
     assert len(list((evidence_root / "cp_09/masks/rubber_dam_frame").glob("*.png"))) == 3
     assert not (evidence_root / "cp_09/masks/oral_region").exists()
+
+
+def test_text_policy_needs_no_manual_frame_prompt(tmp_path: Path) -> None:
+    frame_mask, _ = _masks()
+    segmenter = FakeSegmenter([_frame(index, frame_mask, None) for index in (5, 10, 15)])
+    annotations = VideoAnnotations(
+        video_id="success",
+        prompts=[
+            BoxPrompt(
+                video_id="success",
+                frame_time_sec=0.5,
+                object_id="oral_region",
+                x1=0.25,
+                y1=0.2,
+                x2=0.75,
+                y2=0.8,
+            )
+        ],
+    )
+    extractor = Cp09FeatureExtractor(
+        segmenter=segmenter,
+        annotations=annotations,
+        evidence_root=tmp_path / "evidence",
+        prompt_policy=TextPromptPolicy(),
+    )
+
+    result = extractor.extract(
+        _video(tmp_path / "video.avi"),
+        "cp_09",
+        TimeRange(start_sec=0.5, end_sec=1.6),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["frame_oral_center_offset"] == pytest.approx(0.0)
+    assert [(p.kind, p.text) for p in segmenter.prompts] == [
+        ("text", "white U-shaped dental frame")
+    ]
 
 
 def test_missing_frame_masks_produce_review_features(tmp_path: Path) -> None:

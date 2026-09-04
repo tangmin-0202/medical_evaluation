@@ -6,6 +6,7 @@ from medical_evaluation.annotations import BoxPrompt, PointPrompt, VideoAnnotati
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp09_cp11 import Cp09Cp11FeatureExtractor
 from medical_evaluation.pipeline import EvaluationInputMissing, ExtractedEvidence
+from medical_evaluation.segmentation.prompt_policy import TextPromptPolicy
 
 
 class RecordingExtractor:
@@ -86,3 +87,37 @@ def test_missing_cp09_oral_box_is_reported_before_cp09_delegate_runs() -> None:
         )
 
     assert cp09.calls == []
+
+
+def test_text_policy_allows_cp09_without_manual_frame_prompt() -> None:
+    cp09 = RecordingExtractor()
+    only_oral = VideoAnnotations(
+        video_id="success",
+        prompts=[
+            BoxPrompt(
+                video_id="success",
+                frame_time_sec=5,
+                object_id="oral_region",
+                x1=0.2,
+                y1=0.2,
+                x2=0.8,
+                y2=0.8,
+            )
+        ],
+    )
+    extractor = Cp09Cp11FeatureExtractor(
+        cp09=cp09,
+        cp11=RecordingExtractor(),
+        annotations=only_oral,
+        prompt_policy=TextPromptPolicy(),
+    )
+
+    extractor.extract(
+        Path("video.mp4"),
+        "cp_09",
+        TimeRange(start_sec=0, end_sec=10),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert cp09.calls == ["cp_09"]

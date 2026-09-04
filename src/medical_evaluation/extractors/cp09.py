@@ -14,7 +14,10 @@ from medical_evaluation.features.geometry import (
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import FrameMasks, VideoSegmenter
-from medical_evaluation.segmentation.prompts import prompts_for_object
+from medical_evaluation.segmentation.prompt_policy import (
+    AnnotationPromptPolicy,
+    Cp09Cp11PromptPolicy,
+)
 from medical_evaluation.storage import safe_child
 from medical_evaluation.video import read_frame
 
@@ -29,10 +32,12 @@ class Cp09FeatureExtractor:
         segmenter: VideoSegmenter,
         annotations: VideoAnnotations,
         evidence_root: Path,
+        prompt_policy: Cp09Cp11PromptPolicy | None = None,
     ) -> None:
         self.segmenter = segmenter
         self.annotations = annotations
         self.evidence_root = evidence_root
+        self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
 
     @property
     def model_version(self) -> str:
@@ -52,9 +57,8 @@ class Cp09FeatureExtractor:
         if analysis_width <= 0:
             raise ValueError("analysis_width must be positive")
 
-        frame_prompts = prompts_for_object(
+        frame_prompts = self.prompt_policy.frame_prompts(
             self.annotations,
-            "rubber_dam_frame",
             time_range,
             checkpoint_id=checkpoint_id,
             boundary_tolerance_sec=self.prompt_boundary_tolerance_sec,

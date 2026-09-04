@@ -44,6 +44,7 @@ def make_settings(tmp_path: Path, *, pipeline_mode: str = "real") -> Settings:
         videos_dir=tmp_path / "videos",
         rubric_path=rubric_path,
         pipeline_mode=pipeline_mode,
+        sam_backend="sam2",
         sam2_checkpoint_path=checkpoint,
         sam2_model_config="configs/sam2.1/sam2.1_hiera_l.yaml",
         vlm_base_url="http://qwen.local/v1",
@@ -82,6 +83,55 @@ def test_runtime_rejects_missing_sam2_checkpoint(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="SAM2 checkpoint"):
+        build_analysis_pipeline(settings, segmenter_factory=lambda *args, **kwargs: FakeBackend())
+
+
+def test_runtime_builds_sam3_without_validating_sam2(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path).model_copy(
+        update={
+            "sam_backend": "sam3",
+            "sam2_checkpoint_path": tmp_path / "missing-sam2.pt",
+            "sam3_checkpoint_path": tmp_path / "sam3.pt",
+            "sam3_bpe_path": tmp_path / "bpe.gz",
+        }
+    )
+    settings.sam3_checkpoint_path.write_bytes(b"weights")
+    settings.sam3_bpe_path.write_bytes(b"vocab")
+    calls = []
+
+    def factory(checkpoint, **kwargs):
+        calls.append((checkpoint, kwargs))
+        return FakeBackend()
+
+    pipeline = build_analysis_pipeline(settings, segmenter_factory=factory)
+    extractor = pipeline.extractor_factory(
+        JobRecord(id="job-1", video_id="success", video_path=str(tmp_path / "video.mp4"))
+    )
+
+    assert calls[0][0] == settings.sam3_checkpoint_path
+    assert calls[0][1]["bpe_path"] == settings.sam3_bpe_path
+    assert extractor.cp09.prompt_policy.__class__.__name__ == "TextPromptPolicy"
+
+
+@pytest.mark.parametrize("missing", ["checkpoint", "bpe"])
+def test_runtime_rejects_missing_sam3_resource(tmp_path: Path, missing: str) -> None:
+    checkpoint = tmp_path / "sam3.pt"
+    bpe = tmp_path / "bpe.gz"
+    checkpoint.write_bytes(b"weights")
+    bpe.write_bytes(b"vocab")
+    if missing == "checkpoint":
+        checkpoint.unlink()
+    else:
+        bpe.unlink()
+    settings = make_settings(tmp_path).model_copy(
+        update={
+            "sam_backend": "sam3",
+            "sam3_checkpoint_path": checkpoint,
+            "sam3_bpe_path": bpe,
+        }
+    )
+
+    with pytest.raises(ValueError, match=f"SAM3 {missing}"):
         build_analysis_pipeline(settings, segmenter_factory=lambda *args, **kwargs: FakeBackend())
 
 

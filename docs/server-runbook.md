@@ -46,15 +46,43 @@ segmentation:
 
 ### SAM3.1
 
+当前已验证的锁定版本：
+
+- Meta 源码提交：`660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`；
+- 权重：`models/SAM3.1/sam3.1_multiplex.pt`；
+- 权重 SHA-256：`0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`；
+- 独立 Conda 环境：`sam3_medical`（不得改动 `video_medical` 或 `qwen_medical`）；
+- PyTorch `2.10.0+cu128`、`decord2 3.4.0`。普通 Python 包使用清华镜像；CUDA
+  PyTorch wheel 仍使用 PyTorch 官方 CUDA 索引。
+
 ```bash
-git clone https://github.com/facebookresearch/sam3.git external/sam3
-git -C external/sam3 rev-parse HEAD | tee models/sam3-code-commit.txt
-pip install -e external/sam3
-# 从 Meta 官方许可页面取得 checkpoint 后放到 models/
-sha256sum models/sam3.1_multiplex.pt | tee models/sam3.1_multiplex.pt.sha256
+git -C external/sam3 rev-parse HEAD
+conda run --no-capture-output -n sam3_medical python -m pip check
+echo "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6  models/SAM3.1/sam3.1_multiplex.pt" | sha256sum -c -
 ```
 
-SAM3 权重和代码受仓库中的 SAM License 约束，部署前阅读并保留许可证。SAM3.1 官方视频接口使用 session/request 流程，支持文本提示及点/框细化；本项目适配器把它转换为统一 `FrameMasks`。
+SAM3 权重和代码受各自随附许可证约束，部署前阅读并保留 `external/sam3/LICENSE`
+及 `models/SAM3.1/LICENSE`。本项目第一轮只使用官方 multiplex video predictor 的文本
+提示模式，并转换为统一 `FrameMasks`；不静默回退 SAM2。
+
+每次先查看 GPU，选择利用率为 0 且显存占用最低的卡，不终止其他用户进程。下面的
+`sam3_gpu` 必须按实时结果填写；进程内设备仍为 `cuda:0`：
+
+```bash
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+sam3_gpu=6
+CUDA_VISIBLE_DEVICES="$sam3_gpu" conda run --no-capture-output -n sam3_medical \
+  python scripts/run_sam3_text_smoke.py \
+  --video "videos/橡皮障完整.mp4" --start-sec 175 --end-sec 195 --sample-fps 2 \
+  --object-id rubber_dam_frame --text "white U-shaped dental frame" \
+  --checkpoint models/SAM3.1/sam3.1_multiplex.pt \
+  --bpe-path external/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz \
+  --device cuda:0 --output-dir data/runs/sam3-text/cp09-success
+```
+
+CP11 最后三秒使用固定文本 `green dental rubber dam`，区间 `255–258`。输出目录必须
+不存在，防止覆盖已有证据。分别目视检查首、中、末帧掩膜；CP09 必须覆盖白色 U 形
+支架，CP11 必须覆盖绿色橡皮布。语义不对时停止，不改 Judge 或阈值。
 
 ## 3. 启动本地 Qwen3-VL
 

@@ -19,12 +19,21 @@ class Settings(BaseSettings):
     model_config_path: Path = Path("config/models.yaml")
     max_upload_mb: int = Field(default=2048, gt=0)
     pipeline_mode: Literal["fake", "real"] = "fake"
-    sam_backend: str = "sam3"
+    sam_backend: Literal["sam2", "sam3"] = "sam3"
     sam_device: str = "cuda:0"
     sam2_checkpoint_path: Path = Path(
         "external/sam2/checkpoints/sam2.1_hiera_large.pt"
     )
     sam2_model_config: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    sam3_checkpoint_path: Path = Path("models/SAM3.1/sam3.1_multiplex.pt")
+    sam3_bpe_path: Path = Path(
+        "external/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+    )
+    sam3_output_prob_threshold: float = Field(default=0.5, ge=0, le=1)
+    sam3_source_revision: str = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
+    sam3_checkpoint_sha256: str = (
+        "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6"
+    )
     sample_fps: float = Field(default=2.0, gt=0)
     analysis_width: int = Field(default=1280, gt=0)
     vlm_base_url: str = "http://127.0.0.1:8001/v1"
@@ -45,4 +54,10 @@ class Settings(BaseSettings):
             self.sam2_checkpoint_path = (
                 self.project_root / self.sam2_checkpoint_path
             ).resolve()
+        if not self.sam3_checkpoint_path.is_absolute():
+            self.sam3_checkpoint_path = (
+                self.project_root / self.sam3_checkpoint_path
+            ).resolve()
+        if not self.sam3_bpe_path.is_absolute():
+            self.sam3_bpe_path = (self.project_root / self.sam3_bpe_path).resolve()
         return self

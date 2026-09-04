@@ -6,6 +6,10 @@ from typing import Protocol
 from medical_evaluation.annotations import BoxPrompt, VideoAnnotations
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.pipeline import EvaluationInputMissing, ExtractedEvidence
+from medical_evaluation.segmentation.prompt_policy import (
+    AnnotationPromptPolicy,
+    Cp09Cp11PromptPolicy,
+)
 
 
 class CheckpointExtractor(Protocol):
@@ -32,10 +36,12 @@ class Cp09Cp11FeatureExtractor:
         cp09: CheckpointExtractor,
         cp11: CheckpointExtractor,
         annotations: VideoAnnotations,
+        prompt_policy: Cp09Cp11PromptPolicy | None = None,
     ) -> None:
         self.cp09 = cp09
         self.cp11 = cp11
         self.annotations = annotations
+        self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
 
     @property
     def model_version(self) -> str:
@@ -68,12 +74,15 @@ class Cp09Cp11FeatureExtractor:
     def _validate_cp09_inputs(self, time_range: TimeRange) -> None:
         start = time_range.start_sec - self.prompt_boundary_tolerance_sec
         end = time_range.end_sec + self.prompt_boundary_tolerance_sec
-        frame_prompts = [
-            prompt
-            for prompt in self.annotations.prompts
-            if prompt.object_id == "rubber_dam_frame"
-            and start <= prompt.frame_time_sec <= end
-        ]
+        try:
+            self.prompt_policy.frame_prompts(
+                self.annotations,
+                time_range,
+                checkpoint_id="cp_09",
+                boundary_tolerance_sec=self.prompt_boundary_tolerance_sec,
+            )
+        except ValueError as exc:
+            raise EvaluationInputMissing(str(exc)) from exc
         oral_boxes = [
             prompt
             for prompt in self.annotations.prompts
@@ -81,7 +90,5 @@ class Cp09Cp11FeatureExtractor:
             and isinstance(prompt, BoxPrompt)
             and start <= prompt.frame_time_sec <= end
         ]
-        if not frame_prompts:
-            raise EvaluationInputMissing("cp_09 requires a rubber_dam_frame prompt")
         if len(oral_boxes) != 1:
             raise EvaluationInputMissing("cp_09 requires exactly one oral_region box")

@@ -11,6 +11,7 @@ from medical_evaluation.annotations import BoxPrompt, PointPrompt, VideoAnnotati
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp11 import Cp11FeatureExtractor
 from medical_evaluation.segmentation.base import FrameMasks, SegmentationPrompt
+from medical_evaluation.segmentation.prompt_policy import TextPromptPolicy
 
 
 class FakeSegmenter:
@@ -24,16 +25,20 @@ class FakeSegmenter:
         self.dam_frames = dam_frames
         self.frame_frames = frame_frames
         self.calls: list[set[str]] = []
+        self.recorded_calls: list[
+            tuple[TimeRange, list[SegmentationPrompt], float]
+        ] = []
 
     def track(
         self,
         _video_path: Path,
-        _time_range: TimeRange,
+        time_range: TimeRange,
         prompts: list[SegmentationPrompt],
         sample_fps: float,
     ) -> Iterator[FrameMasks]:
         object_ids = {item.object_id for item in prompts}
         self.calls.append(object_ids)
+        self.recorded_calls.append((time_range, prompts, sample_fps))
         if object_ids == {"rubber_dam"}:
             assert sample_fps == 2
             yield from self.dam_frames
@@ -226,6 +231,58 @@ def test_attempted_stage_extracts_good_final_coverage(tmp_path: Path) -> None:
     assert result.features["final_valid_frame_count"] == 3.0
     assert len(result.evidence) == 3
     assert all((evidence_root / item.overlay_path).is_file() for item in result.evidence)
+
+
+def test_text_policy_needs_no_manual_dam_or_frame_prompts(tmp_path: Path) -> None:
+    dam_region = (slice(10, 30), slice(10, 30))
+    frame_region = (slice(14, 26), slice(14, 26))
+    segmenter = FakeSegmenter(
+        [_mask("rubber_dam", index, dam_region) for index in (10, 20, 30)],
+        [_mask("rubber_dam_frame", index, frame_region) for index in (5, 10, 20, 30)],
+    )
+    annotations = VideoAnnotations(
+        video_id="success",
+        prompts=[
+            BoxPrompt(
+                video_id="success",
+                frame_time_sec=3.0,
+                object_id="nose_region",
+                x1=0.0,
+                y1=0.0,
+                x2=0.2,
+                y2=0.2,
+            )
+        ],
+    )
+    extractor = Cp11FeatureExtractor(
+        segmenter=segmenter,
+        annotations=annotations,
+        evidence_root=tmp_path / "evidence",
+        frame_reference_time_range=TimeRange(start_sec=0.4, end_sec=0.6),
+        min_stage_dam_presence_ratio=0.05,
+        prompt_policy=TextPromptPolicy(),
+    )
+
+    result = extractor.extract(
+        _video(tmp_path / "text.avi", green_stage=True),
+        "cp_11",
+        TimeRange(start_sec=1.0, end_sec=4.0),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["final_valid_frame_count"] == 3.0
+    assert segmenter.calls == [{"rubber_dam"}, {"rubber_dam_frame"}]
+    dam_call, frame_call = segmenter.recorded_calls
+    assert (dam_call[0].start_sec, dam_call[1][0].text) == (
+        1.0,
+        "green dental rubber dam",
+    )
+    assert (frame_call[0].start_sec, frame_call[1][0].text) == (
+        0.4,
+        "white U-shaped dental frame",
+    )
+    assert frame_call[0].end_sec == 4.0
 
 
 def test_final_dam_measurements_exclude_skin_inside_sam_mask(tmp_path: Path) -> None:
