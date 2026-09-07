@@ -14,12 +14,12 @@ import numpy as np
 
 from medical_evaluation.annotations import AnnotationStore
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.presets import PRESETS
 from medical_evaluation.segmentation.base import SegmentationPrompt
 from medical_evaluation.segmentation.sam3_backend import Sam3Backend
 from medical_evaluation.settings import Settings
 from medical_evaluation.storage import atomic_write_json
 from medical_evaluation.video import read_frame, write_sampled_frame_sequence
-from medical_evaluation.web.routes import PRESETS
 
 HEAD_PROMPTS = (
     "dental training mannequin head",

@@ -126,6 +126,15 @@ def test_help_documents_the_server_matrix_command() -> None:
     assert "--probe-multiplex" in help_text
 
 
+def test_prompt_runner_uses_dependency_light_preset_manifest(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    sys.modules.pop("medical_evaluation.web.routes", None)
+    module = _load_script()
+    from medical_evaluation.presets import PRESETS
+
+    assert module.PRESETS is PRESETS
+
+
 def test_rank_candidates_uses_sample_continuity_then_median_score_then_order() -> None:
     module = _load_script()
     candidates = ("first", "second", "third")

@@ -23,17 +23,12 @@ from medical_evaluation.annotations import (
 )
 from medical_evaluation.domain import CheckpointStatus
 from medical_evaluation.jobs import JobManager
+from medical_evaluation.presets import PRESETS
 from medical_evaluation.reporting import EvaluationReport, ReviewAuditEntry
 from medical_evaluation.rubric import Rubric, load_rubric
 from medical_evaluation.settings import Settings
 from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import SUPPORTED_VIDEO_EXTENSIONS
-
-PRESETS = {
-    "success": "橡皮障完整.mp4",
-    "failure": "橡皮障失败.mp4",
-    "clamp_failure": "橡皮障夹子飞了.mp4",
-}
 
 ANNOTATION_GUIDES = {
     "cp_01": {
