@@ -144,11 +144,17 @@ class Sam3Backend:
                         for object_id, mask in zip(object_ids, masks, strict=True)
                         if int(object_id) == selected_id
                     ]
+                    selected_mask = (
+                        selected_masks[0]
+                        if selected_masks
+                        else np.zeros(
+                            (sequence.metadata.height, sequence.metadata.width),
+                            dtype=bool,
+                        )
+                    )
                     raw = {
                         "frame": entry.source_frame_index,
-                        "objects": (
-                            {prompt.object_id: selected_masks[0]} if selected_masks else {}
-                        ),
+                        "objects": {prompt.object_id: selected_mask},
                     }
                     tracked[local_index] = normalize_masks(
                         raw,

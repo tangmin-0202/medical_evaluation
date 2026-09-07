@@ -99,6 +99,25 @@ class BaseStylePredictor(FakeSam3Predictor):
         return super().handle_request(request)
 
 
+class MissingTrackedObjectPredictor(FakeSam3Predictor):
+    def handle_stream_request(self, request: dict[str, object]):
+        self.stream_requests.append(request)
+        yield {
+            "frame_index": 0,
+            "outputs": {
+                "out_obj_ids": np.asarray(self.object_ids),
+                "out_binary_masks": np.ones((1, 20, 40), dtype=bool),
+            },
+        }
+        yield {
+            "frame_index": 1,
+            "outputs": {
+                "out_obj_ids": np.asarray([], dtype=int),
+                "out_binary_masks": np.empty((0, 20, 40), dtype=bool),
+            },
+        }
+
+
 def _text_prompt() -> SegmentationPrompt:
     return SegmentationPrompt(
         object_id="rubber_dam_frame",
@@ -213,6 +232,25 @@ def test_sam3_selects_highest_scored_candidate(tmp_path: Path) -> None:
 
     assert len(frames) == 2
     assert all(frame.masks["rubber_dam_frame"].all() for frame in frames)
+
+
+def test_sam3_represents_tracked_object_absence_with_empty_mask(tmp_path: Path) -> None:
+    predictor = MissingTrackedObjectPredictor()
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    assert frames[0].masks["rubber_dam_frame"].all()
+    assert frames[1].masks["rubber_dam_frame"].shape == (20, 40)
+    assert not frames[1].masks["rubber_dam_frame"].any()
 
 
 def test_sam3_rejects_ambiguous_unscored_candidates(tmp_path: Path) -> None:
