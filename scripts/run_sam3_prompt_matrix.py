@@ -31,6 +31,7 @@ NOSE_PROMPTS = (
     "plastic nose on the dental mannequin face",
     "mannequin nose",
 )
+REQUIRED_VIDEO_IDS = ("success", "failure", "clamp_failure")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,15 +133,48 @@ def exit_status(selected_prompts: Mapping[str, object]) -> int:
     return 0 if selected_prompts.get("accepted") is True else 2
 
 
+def required_samples(video_ids: Sequence[str]) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    provided = set(video_ids)
+    missing = tuple(video_id for video_id in REQUIRED_VIDEO_IDS if video_id not in provided)
+    return (
+        {
+            "head": tuple(
+                f"{video_id}:{stage}"
+                for video_id in REQUIRED_VIDEO_IDS
+                for stage in ("cp_09", "cp_11")
+            ),
+            "nose": tuple(f"{video_id}:cp_11" for video_id in REQUIRED_VIDEO_IDS),
+        },
+        missing,
+    )
+
+
 def handle_multiplex_probe(probe: Callable[[], Mapping[str, object]]) -> dict[str, object]:
     try:
         payload = probe()
         consecutive = 0
-        for object_ids in payload["source_frames"]:
-            if len(set(object_ids)) >= 2:
-                consecutive += 1
-            else:
+        expected_ids: frozenset[int] | None = None
+        previous_index: int | None = None
+        for item in payload["source_frames"]:
+            if not isinstance(item, Mapping):
+                raise TypeError("multiplex probe frame metadata must be a mapping")
+            frame_index = int(item["source_frame_index"])
+            object_ids = frozenset(int(value) for value in item["object_ids"])
+            if len(object_ids) != 2:
                 consecutive = 0
+                expected_ids = None
+                previous_index = None
+                continue
+            if (
+                expected_ids != object_ids
+                or previous_index is None
+                or frame_index != previous_index + 1
+            ):
+                expected_ids = object_ids
+                consecutive = 1
+            else:
+                consecutive += 1
+            previous_index = frame_index
             if consecutive >= 3:
                 return {
                     "supported": True,
@@ -168,12 +202,14 @@ def run_gate(
     read_frame_fn: Callable[[Path, int], np.ndarray] = read_frame,
     git_revision_fn: Callable[[], str] | None = None,
     cuda_peak_mib_fn: Callable[[], float | None] | None = None,
+    frame_score_adapter: Callable[[object, str], float | None] | None = None,
     probe_multiplex: bool = False,
 ) -> int:
     if sample_fps <= 0:
         raise ValueError("sample_fps must be positive")
     git_revision_fn = git_revision_fn or _git_revision
     cuda_peak_mib_fn = cuda_peak_mib_fn or _cuda_peak_allocated_mib
+    frame_score_adapter = frame_score_adapter or extract_frame_score
     output_dir.mkdir(parents=True, exist_ok=False)
     samples = _load_samples(annotations_dir, videos_dir, video_ids)
     backend = backend_factory()  # one loaded model, with a fresh session per prompt trial
@@ -191,16 +227,13 @@ def run_gate(
                     output_dir=output_dir,
                     sample_fps=sample_fps,
                     read_frame_fn=read_frame_fn,
+                    frame_score_adapter=frame_score_adapter,
                 )
             )
 
-    required = {
-        "head": tuple(
-            f"{video_id}:{stage}" for video_id in video_ids for stage in ("cp_09", "cp_11")
-        ),
-        "nose": tuple(f"{video_id}:cp_11" for video_id in video_ids),
-    }
+    required, missing_required_video_ids = required_samples(video_ids)
     selected = select_prompts(rows_by_candidate, required)
+    selected["missing_required_video_ids"] = list(missing_required_video_ids)
     multiplex = None
     if probe_multiplex:
         representative = next(item for item in samples if item["object"] == "head")
@@ -225,6 +258,7 @@ def run_gate(
             "cuda_peak_allocated_mib": cuda_peak_mib_fn(),
             "samples": [_sample_metadata(sample) for sample in samples],
             "rows_by_candidate": dict(rows_by_candidate),
+            "missing_required_video_ids": list(missing_required_video_ids),
             "multiplex_probe": multiplex,
         },
     )
@@ -274,6 +308,7 @@ def _run_sample(
     output_dir: Path,
     sample_fps: float,
     read_frame_fn: Callable[[Path, int], np.ndarray],
+    frame_score_adapter: Callable[[object, str], float | None],
 ) -> list[dict[str, object]]:
     video_id = str(sample["video_id"])
     stage = str(sample["stage"])
@@ -306,7 +341,7 @@ def _run_sample(
                 "frame_index": frame.frame_index,
                 "mask_area_ratio": area_ratio,
                 "dominant_component_ratio": dominant_ratio,
-                "score": None,
+                "score": frame_score_adapter(frame, object_id),
                 "valid": valid,
             }
         )
@@ -325,6 +360,24 @@ def _write_artifacts(directory: Path, name: str, raw: np.ndarray, mask: np.ndarr
         raise OSError(f"could not write overlay {name}")
 
 
+def extract_frame_score(frame: object, object_id: str) -> float | None:
+    """Read optional score metadata without changing the VideoSegmenter contract."""
+    for source in (getattr(frame, "metadata", None), getattr(frame, "scores", None)):
+        if not isinstance(source, Mapping):
+            continue
+        candidate = source.get(object_id)
+        if candidate is None and isinstance(source.get("scores"), Mapping):
+            candidate = source["scores"].get(object_id)
+        if candidate is not None:
+            value = float(candidate)
+            return value if np.isfinite(value) else None
+    value = getattr(frame, "score", None)
+    if value is None:
+        return None
+    numeric = float(value)
+    return numeric if np.isfinite(numeric) else None
+
+
 def _probe_multiplex_session(
     predictor: Any, video_path: Path, time_range: TimeRange, sample_fps: float, output_threshold: float
 ) -> dict[str, object]:
@@ -337,13 +390,16 @@ def _probe_multiplex_session(
             frame = _select_candidate_id(predictor.handle_request({"type": "add_prompt", "session_id": session_id, "frame_index": 0, "text": "thin white U-shaped plastic frame around the mouth", "output_prob_thresh": output_threshold}))
             if head is None or frame is None or head == frame:
                 return {"source_frames": []}
-            source_frames: list[set[int]] = []
+            source_frames: list[dict[str, object]] = []
             for item in predictor.handle_stream_request({"type": "propagate_in_video", "session_id": session_id, "propagation_direction": "both", "start_frame_index": 0, "output_prob_thresh": output_threshold}):
                 source_frames.append(
                     {
-                        int(value)
-                        for value in _as_numpy(item["outputs"]["out_obj_ids"]).reshape(-1)
-                        if int(value) in {head, frame}
+                        "source_frame_index": int(item["frame_index"]),
+                        "object_ids": {
+                            int(value)
+                            for value in _as_numpy(item["outputs"]["out_obj_ids"]).reshape(-1)
+                            if int(value) in {head, frame}
+                        },
                     }
                 )
             return {"source_frames": source_frames}

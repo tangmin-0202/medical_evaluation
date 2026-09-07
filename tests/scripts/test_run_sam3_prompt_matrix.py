@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -99,6 +100,35 @@ def test_rank_candidates_uses_sample_continuity_then_median_score_then_order() -
     }
 
     assert module.rank_candidates(rows, candidates) == ["second", "first", "third"]
+
+
+def test_frame_score_adapter_reads_optional_object_score_metadata() -> None:
+    module = _load_script()
+    frame = SimpleNamespace(metadata={"scores": {"head": 0.82}})
+
+    assert module.extract_frame_score(frame, "head") == 0.82
+
+
+def test_required_samples_remain_global_when_cli_omits_video_ids() -> None:
+    module = _load_script()
+
+    required, missing = module.required_samples(("success",))
+    success_only = {
+        "head": [
+            _row(module, sample=sample, valid=True)
+            for sample in ("success:cp_09", "success:cp_11")
+            for _ in range(3)
+        ],
+        "nose": [
+            _row(module, sample="success:cp_11", valid=True) for _ in range(3)
+        ],
+    }
+
+    assert missing == ("failure", "clamp_failure")
+    assert "failure:cp_09" in required["head"]
+    assert not module.select_prompts(
+        success_only, required, ("head",), ("nose",)
+    )["accepted"]
 
 
 def test_acceptance_requires_every_video_and_required_stage() -> None:
@@ -199,6 +229,51 @@ def test_multiplex_probe_marks_exception_unsupported() -> None:
 def test_multiplex_probe_marks_three_frame_distinct_identity_persistence_supported() -> None:
     module = _load_script()
 
-    result = module.handle_multiplex_probe(lambda: {"source_frames": [{1, 2}, {1, 2}, {1, 2}]})
+    result = module.handle_multiplex_probe(
+        lambda: {
+            "source_frames": [
+                {"source_frame_index": 0, "object_ids": {1, 2}},
+                {"source_frame_index": 1, "object_ids": {1, 2}},
+                {"source_frame_index": 2, "object_ids": {1, 2}},
+            ]
+        }
+    )
 
     assert result == {"supported": True, "result": "two distinct object IDs persisted for 3 consecutive source frames"}
+
+
+def test_multiplex_probe_rejects_duplicate_skipped_changing_merged_and_missing_ids() -> None:
+    module = _load_script()
+    invalid_sequences = (
+        [
+            {"source_frame_index": 0, "object_ids": {1, 2}},
+            {"source_frame_index": 0, "object_ids": {1, 2}},
+            {"source_frame_index": 1, "object_ids": {1, 2}},
+        ],
+        [
+            {"source_frame_index": 0, "object_ids": {1, 2}},
+            {"source_frame_index": 2, "object_ids": {1, 2}},
+            {"source_frame_index": 3, "object_ids": {1, 2}},
+        ],
+        [
+            {"source_frame_index": 0, "object_ids": {1, 2}},
+            {"source_frame_index": 1, "object_ids": {1, 3}},
+            {"source_frame_index": 2, "object_ids": {1, 2}},
+        ],
+        [
+            {"source_frame_index": 0, "object_ids": {1, 2}},
+            {"source_frame_index": 1, "object_ids": {1}},
+            {"source_frame_index": 2, "object_ids": {1, 2}},
+        ],
+        [
+            {"source_frame_index": 0, "object_ids": set()},
+            {"source_frame_index": 1, "object_ids": {1, 2}},
+            {"source_frame_index": 2, "object_ids": {1, 2}},
+        ],
+    )
+
+    for source_frames in invalid_sequences:
+        result = module.handle_multiplex_probe(
+            lambda source_frames=source_frames: {"source_frames": source_frames}
+        )
+        assert result == {"supported": False, "result": "merged or missing object identities"}
