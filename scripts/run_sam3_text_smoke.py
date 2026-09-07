@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--bpe-path", type=Path, required=True)
     parser.add_argument("--device", required=True)
+    parser.add_argument("--output-prob-threshold", type=float, default=0.2)
+    parser.add_argument("--grounding-batch-size", type=int, default=4)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser
 
@@ -35,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
         args.checkpoint,
         bpe_path=args.bpe_path,
         device=args.device,
+        output_prob_threshold=args.output_prob_threshold,
+        grounding_batch_size=args.grounding_batch_size,
     )
     prompt = SegmentationPrompt(
         object_id=args.object_id,
@@ -68,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
             "text": args.text,
             "time_range": {"start_sec": args.start_sec, "end_sec": args.end_sec},
             "sample_fps": args.sample_fps,
+            "output_prob_threshold": args.output_prob_threshold,
+            "grounding_batch_size": args.grounding_batch_size,
             "frame_indices": frame_indices,
             "frame_times_sec": frame_times_sec,
             "nonempty_area_ratios": nonempty_area_ratios,

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -19,8 +20,10 @@ def _load_script():
 
 
 class FakeBackend:
-    def __init__(self, *_args, **_kwargs) -> None:
-        pass
+    init_kwargs: ClassVar[dict[str, object]] = {}
+
+    def __init__(self, *_args, **kwargs) -> None:
+        type(self).init_kwargs = kwargs
 
     def track(self, *_args, **_kwargs):
         for index in (10, 20):
@@ -42,6 +45,8 @@ def _args(tmp_path: Path) -> list[str]:
         "--checkpoint", str(tmp_path / "sam3.pt"),
         "--bpe-path", str(tmp_path / "bpe.gz"),
         "--device", "cuda:0",
+        "--output-prob-threshold", "0.2",
+        "--grounding-batch-size", "4",
         "--output-dir", str(tmp_path / "output"),
     ]
 
@@ -59,6 +64,10 @@ def test_smoke_writes_masks_and_summary(tmp_path: Path, monkeypatch) -> None:
     assert summary["text"] == "white U-shaped dental frame"
     assert summary["frame_indices"] == [10, 20]
     assert summary["nonempty_area_ratios"] == [0.2, 0.2]
+    assert summary["output_prob_threshold"] == 0.2
+    assert summary["grounding_batch_size"] == 4
+    assert FakeBackend.init_kwargs["output_prob_threshold"] == 0.2
+    assert FakeBackend.init_kwargs["grounding_batch_size"] == 4
     assert summary["elapsed_seconds"] >= 0
 
 
