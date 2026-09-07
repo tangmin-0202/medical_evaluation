@@ -34,6 +34,14 @@ def test_settings_resolve_sam3_paths(tmp_path: Path) -> None:
     assert settings.sam3_bpe_path == (
         tmp_path / "external/sam3/assets/bpe.txt.gz"
     ).resolve()
+    assert settings.sam3_grounding_batch_size == 4
+
+
+def test_settings_reject_nonpositive_sam3_grounding_batch_size(tmp_path: Path) -> None:
+    from medical_evaluation.settings import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(project_root=tmp_path, sam3_grounding_batch_size=0)
 
 
 def test_settings_reject_unknown_sam_backend(tmp_path: Path) -> None:

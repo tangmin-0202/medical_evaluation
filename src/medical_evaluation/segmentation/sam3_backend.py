@@ -30,14 +30,18 @@ class Sam3Backend:
         bpe_path: Path | None = None,
         device: str = "cuda:0",
         output_prob_threshold: float = 0.5,
+        grounding_batch_size: int = 4,
         predictor: Any | None = None,
     ) -> None:
         if not 0 <= output_prob_threshold <= 1:
             raise ValueError("output_prob_threshold must be between zero and one")
+        if grounding_batch_size <= 0:
+            raise ValueError("grounding_batch_size must be positive")
         self.checkpoint = checkpoint
         self.bpe_path = bpe_path
         self.device = device
         self.output_prob_threshold = output_prob_threshold
+        self.grounding_batch_size = grounding_batch_size
         if predictor is None:
             try:
                 import torch
@@ -58,6 +62,7 @@ class Sam3Backend:
                 async_loading_frames=False,
             )
         self.predictor = predictor
+        _limit_grounding_batch_size(self.predictor, grounding_batch_size)
         _filter_unsupported_init_state_kwargs(self.predictor)
 
     @property
@@ -201,3 +206,12 @@ def _filter_unsupported_init_state_kwargs(predictor: Any) -> None:
 
     compatible_init_state._medical_eval_filters_kwargs = True  # type: ignore[attr-defined]
     model.init_state = compatible_init_state
+
+
+def _limit_grounding_batch_size(predictor: Any, batch_size: int) -> None:
+    model = getattr(predictor, "model", None)
+    if model is None:
+        return
+    if not hasattr(model, "batched_grounding_batch_size"):
+        raise RuntimeError("SAM3 multiplex model has no grounding batch size setting")
+    model.batched_grounding_batch_size = batch_size

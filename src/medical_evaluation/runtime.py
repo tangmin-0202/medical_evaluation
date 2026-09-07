@@ -61,6 +61,7 @@ def build_analysis_pipeline(
             bpe_path=settings.sam3_bpe_path,
             device=settings.sam_device,
             output_prob_threshold=settings.sam3_output_prob_threshold,
+            grounding_batch_size=settings.sam3_grounding_batch_size,
         )
         prompt_policy = TextPromptPolicy()
 
@@ -79,6 +80,7 @@ def build_analysis_pipeline(
                 {
                     "source_revision": settings.sam3_source_revision,
                     "checkpoint_sha256": settings.sam3_checkpoint_sha256,
+                    "grounding_batch_size": settings.sam3_grounding_batch_size,
                 }
             )
         audited_segmenter = AuditedVideoSegmenter(

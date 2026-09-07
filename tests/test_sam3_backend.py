@@ -66,6 +66,8 @@ class FakeSam3Predictor:
 
 
 class StrictMultiplexModel:
+    batched_grounding_batch_size = 16
+
     def init_state(
         self,
         resource_path: str,
@@ -291,3 +293,20 @@ def test_sam3_filters_base_predictor_kwargs_for_multiplex_init_state(
     )
 
     assert len(frames) == 2
+
+
+def test_sam3_limits_model_grounding_batch_size(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor()
+    predictor.model = type(
+        "FakeMultiplexModel",
+        (),
+        {"batched_grounding_batch_size": 16},
+    )()
+
+    Sam3Backend(
+        tmp_path / "sam3.pt",
+        predictor=predictor,
+        grounding_batch_size=4,
+    )
+
+    assert predictor.model.batched_grounding_batch_size == 4

@@ -93,6 +93,7 @@ def test_runtime_builds_sam3_without_validating_sam2(tmp_path: Path) -> None:
             "sam2_checkpoint_path": tmp_path / "missing-sam2.pt",
             "sam3_checkpoint_path": tmp_path / "sam3.pt",
             "sam3_bpe_path": tmp_path / "bpe.gz",
+            "sam3_grounding_batch_size": 3,
         }
     )
     settings.sam3_checkpoint_path.write_bytes(b"weights")
@@ -110,6 +111,7 @@ def test_runtime_builds_sam3_without_validating_sam2(tmp_path: Path) -> None:
 
     assert calls[0][0] == settings.sam3_checkpoint_path
     assert calls[0][1]["bpe_path"] == settings.sam3_bpe_path
+    assert calls[0][1]["grounding_batch_size"] == 3
     assert extractor.cp09.prompt_policy.__class__.__name__ == "TextPromptPolicy"
 
 
