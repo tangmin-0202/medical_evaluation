@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import SegmentationPrompt, normalize_masks
 from medical_evaluation.segmentation.sam2_backend import Sam2Backend
+from medical_evaluation.video import VideoMetadata, sampled_frame_entries
 from tests.fixtures.make_test_video import make_test_video
 
 
@@ -70,6 +71,22 @@ def test_masks_are_boolean_and_keyed_by_object() -> None:
     assert result.frame_time_sec == 1.5
     assert result.masks["rubber_dam"].dtype == np.bool_
     assert result.masks["rubber_dam"].tolist() == [[False, True]]
+
+
+def test_sampled_frame_entries_keeps_fractional_required_endpoint() -> None:
+    entries = sampled_frame_entries(
+        VideoMetadata(
+            path=Path("video.mp4"), duration_sec=400, fps=10, frame_count=4000,
+            width=10, height=10,
+        ),
+        time_range=TimeRange(start_sec=303.0, end_sec=303.6),
+        sample_fps=2,
+        required_times_sec=[303.6],
+    )
+
+    assert [(item.local_frame_index, item.source_time_sec) for item in entries] == [
+        (0, 303.0), (1, 303.5), (2, 303.6)
+    ]
 
 
 def test_prompt_coordinates_are_normalized() -> None:
