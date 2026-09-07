@@ -34,13 +34,23 @@ def _mask(*, dominant: int = 12, fragmented: int = 0) -> np.ndarray:
     return mask
 
 
-def _row(module, *, sample: str, valid: bool, score: float | None = None) -> dict[str, object]:
+def _row(
+    module,
+    *,
+    sample: str,
+    valid: bool,
+    score: float | None = None,
+    trial_id: str = "trial",
+    sample_position: int | None = None,
+) -> dict[str, object]:
     return {
         "sample_key": sample,
         "video_id": sample.split(":")[0],
         "stage": sample.split(":")[1],
         "valid": valid,
         "score": score,
+        "trial_id": trial_id,
+        "sample_position": sample_position,
     }
 
 
@@ -55,13 +65,47 @@ def test_dominant_component_validation_requires_nonempty_major_component() -> No
 def test_candidate_passes_only_for_three_consecutive_valid_rows() -> None:
     module = _load_script()
 
-    assert module.candidate_passes([_row(module, sample="success:cp_09", valid=True)] * 3)
+    assert module.candidate_passes(
+        [
+            _row(module, sample="success:cp_09", valid=True, sample_position=index)
+            for index in range(3)
+        ]
+    )
     assert not module.candidate_passes(
         [
-            _row(module, sample="success:cp_09", valid=True),
-            _row(module, sample="success:cp_09", valid=False),
-            _row(module, sample="success:cp_09", valid=True),
-            _row(module, sample="success:cp_09", valid=True),
+            _row(module, sample="success:cp_09", valid=True, sample_position=0),
+            _row(module, sample="success:cp_09", valid=False, sample_position=1),
+            _row(module, sample="success:cp_09", valid=True, sample_position=2),
+            _row(module, sample="success:cp_09", valid=True, sample_position=3),
+        ]
+    )
+
+
+def test_candidate_continuity_rejects_duplicate_gap_missing_and_changed_trial() -> None:
+    module = _load_script()
+    invalid_trials = (
+        [0, 0, 1],
+        [0, 2, 3],
+        [None, 1, 2],
+    )
+    for positions in invalid_trials:
+        assert not module.candidate_passes(
+            [
+                _row(module, sample="success:cp_09", valid=True, sample_position=position)
+                for position in positions
+            ]
+        )
+    assert not module.candidate_passes(
+        [
+            _row(module, sample="success:cp_09", valid=True, sample_position=0),
+            _row(
+                module,
+                sample="success:cp_09",
+                valid=True,
+                sample_position=1,
+                trial_id="other",
+            ),
+            _row(module, sample="success:cp_09", valid=True, sample_position=2),
         ]
     )
 
@@ -87,15 +131,15 @@ def test_rank_candidates_uses_sample_continuity_then_median_score_then_order() -
     candidates = ("first", "second", "third")
     rows = {
         "first": [
-            *[_row(module, sample="success:cp_09", valid=True, score=0.2) for _ in range(3)],
-            *[_row(module, sample="success:cp_11", valid=True, score=0.2) for _ in range(3)],
+            *[_row(module, sample="success:cp_09", valid=True, score=0.2, sample_position=index) for index in range(3)],
+            *[_row(module, sample="success:cp_11", valid=True, score=0.2, sample_position=index) for index in range(3)],
         ],
         "second": [
-            *[_row(module, sample="success:cp_09", valid=True, score=0.9) for _ in range(3)],
-            *[_row(module, sample="success:cp_11", valid=True, score=0.9) for _ in range(3)],
+            *[_row(module, sample="success:cp_09", valid=True, score=0.9, sample_position=index) for index in range(3)],
+            *[_row(module, sample="success:cp_11", valid=True, score=0.9, sample_position=index) for index in range(3)],
         ],
         "third": [
-            *[_row(module, sample="success:cp_09", valid=True, score=0.99) for _ in range(3)],
+            *[_row(module, sample="success:cp_09", valid=True, score=0.99, sample_position=index) for index in range(3)],
         ],
     }
 
@@ -115,12 +159,13 @@ def test_required_samples_remain_global_when_cli_omits_video_ids() -> None:
     required, missing = module.required_samples(("success",))
     success_only = {
         "head": [
-            _row(module, sample=sample, valid=True)
+            _row(module, sample=sample, valid=True, sample_position=index)
             for sample in ("success:cp_09", "success:cp_11")
-            for _ in range(3)
+            for index in range(3)
         ],
         "nose": [
-            _row(module, sample="success:cp_11", valid=True) for _ in range(3)
+            _row(module, sample="success:cp_11", valid=True, sample_position=index)
+            for index in range(3)
         ],
     }
 
@@ -142,10 +187,14 @@ def test_acceptance_requires_every_video_and_required_stage() -> None:
     }
     complete = {
         "head-good": [
-            _row(module, sample=sample, valid=True) for sample in required["head"] for _ in range(3)
+            _row(module, sample=sample, valid=True, sample_position=index)
+            for sample in required["head"]
+            for index in range(3)
         ],
         "nose-good": [
-            _row(module, sample=sample, valid=True) for sample in required["nose"] for _ in range(3)
+            _row(module, sample=sample, valid=True, sample_position=index)
+            for sample in required["nose"]
+            for index in range(3)
         ],
     }
 
@@ -212,6 +261,87 @@ def test_run_writes_artifacts_and_returns_zero_for_accepted_matrix(tmp_path: Pat
     assert (artifact_dir / "overlays" / "00000010.png").is_file()
 
 
+def test_run_persists_partial_trial_failure_and_closes_generator(tmp_path: Path) -> None:
+    module = _load_script()
+    annotations = tmp_path / "annotations"
+    annotations.mkdir()
+    for video_id in module.REQUIRED_VIDEO_IDS:
+        (annotations / f"{video_id}.json").write_text(
+            VideoAnnotations(
+                video_id=video_id,
+                steps=[
+                    SegmentAnnotation(
+                        checkpoint_id="cp_09",
+                        time_range=TimeRange(start_sec=1, end_sec=3),
+                        label=CheckpointStatus.CORRECT,
+                        reason="ok",
+                    ),
+                    SegmentAnnotation(
+                        checkpoint_id="cp_11",
+                        time_range=TimeRange(start_sec=4, end_sec=8),
+                        label=CheckpointStatus.CORRECT,
+                        reason="ok",
+                    ),
+                ],
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    for name in module.PRESETS.values():
+        (videos / name).touch()
+    closed = False
+
+    class FailingBackend:
+        model_version = "sam3.1:test"
+
+        def track(self, _path, time_range, prompts, sample_fps):
+            nonlocal closed
+            object_id = prompts[0].object_id
+            try:
+                for index in range(2):
+                    yield FrameMasks(
+                        frame_index=index + 10,
+                        frame_time_sec=time_range.start_sec + index / sample_fps,
+                        masks={object_id: _mask()},
+                    )
+                raise RuntimeError("simulated OOM")
+            finally:
+                closed = True
+
+    output = tmp_path / "failed-output"
+    result = module.run_gate(
+        annotations_dir=annotations,
+        videos_dir=videos,
+        video_ids=module.REQUIRED_VIDEO_IDS,
+        output_dir=output,
+        sample_fps=2,
+        output_threshold=0.2,
+        backend_factory=lambda: FailingBackend(),
+        read_frame_fn=lambda _path, _index: np.zeros((10, 10, 3), dtype=np.uint8),
+        git_revision_fn=lambda: "test-revision",
+        cuda_peak_mib_fn=lambda: 7.5,
+    )
+
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    selected = json.loads((output / "selected_prompts.json").read_text(encoding="utf-8"))
+    failure = summary["failures"][0]
+    assert result == 2
+    assert selected["accepted"] is False
+    assert closed is True
+    assert failure["video"] == "success"
+    assert failure["stage"] == "cp_09"
+    assert failure["object"] == "head"
+    assert failure["prompt"] == module.HEAD_PROMPTS[0]
+    assert failure["exception_type"] == "RuntimeError"
+    assert failure["message"] == "simulated OOM"
+    assert failure["completed_row_count"] == 2
+    assert failure["elapsed_seconds"] >= 0
+    assert failure["cuda_peak_allocated_mib"] == 7.5
+    assert len(summary["rows_by_candidate"][module.HEAD_PROMPTS[0]]) == 2
+    assert (output / "overlays" / "success" / "head" / "dental-training-mannequin-head" / "raw" / "00000010.jpg").is_file()
+
+
 def test_run_returns_two_when_required_prompt_is_not_continuous(tmp_path: Path) -> None:
     module = _load_script()
     rows = {candidate: [] for candidate in (*module.HEAD_PROMPTS, *module.NOSE_PROMPTS)}
@@ -232,9 +362,9 @@ def test_multiplex_probe_marks_three_frame_distinct_identity_persistence_support
     result = module.handle_multiplex_probe(
         lambda: {
             "source_frames": [
-                {"source_frame_index": 0, "object_ids": {1, 2}},
-                {"source_frame_index": 1, "object_ids": {1, 2}},
-                {"source_frame_index": 2, "object_ids": {1, 2}},
+                {"local_sample_index": 0, "object_ids": {1, 2}},
+                {"local_sample_index": 1, "object_ids": {1, 2}},
+                {"local_sample_index": 2, "object_ids": {1, 2}},
             ]
         }
     )
@@ -246,29 +376,29 @@ def test_multiplex_probe_rejects_duplicate_skipped_changing_merged_and_missing_i
     module = _load_script()
     invalid_sequences = (
         [
-            {"source_frame_index": 0, "object_ids": {1, 2}},
-            {"source_frame_index": 0, "object_ids": {1, 2}},
-            {"source_frame_index": 1, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": {1, 2}},
+            {"local_sample_index": 1, "object_ids": {1, 2}},
         ],
         [
-            {"source_frame_index": 0, "object_ids": {1, 2}},
-            {"source_frame_index": 2, "object_ids": {1, 2}},
-            {"source_frame_index": 3, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": {1, 2}},
+            {"local_sample_index": 2, "object_ids": {1, 2}},
+            {"local_sample_index": 3, "object_ids": {1, 2}},
         ],
         [
-            {"source_frame_index": 0, "object_ids": {1, 2}},
-            {"source_frame_index": 1, "object_ids": {1, 3}},
-            {"source_frame_index": 2, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": {1, 2}},
+            {"local_sample_index": 1, "object_ids": {1, 3}},
+            {"local_sample_index": 2, "object_ids": {1, 2}},
         ],
         [
-            {"source_frame_index": 0, "object_ids": {1, 2}},
-            {"source_frame_index": 1, "object_ids": {1}},
-            {"source_frame_index": 2, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": {1, 2}},
+            {"local_sample_index": 1, "object_ids": {1}},
+            {"local_sample_index": 2, "object_ids": {1, 2}},
         ],
         [
-            {"source_frame_index": 0, "object_ids": set()},
-            {"source_frame_index": 1, "object_ids": {1, 2}},
-            {"source_frame_index": 2, "object_ids": {1, 2}},
+            {"local_sample_index": 0, "object_ids": set()},
+            {"local_sample_index": 1, "object_ids": {1, 2}},
+            {"local_sample_index": 2, "object_ids": {1, 2}},
         ],
     )
 

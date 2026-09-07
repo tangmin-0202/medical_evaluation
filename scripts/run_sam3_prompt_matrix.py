@@ -34,6 +34,25 @@ NOSE_PROMPTS = (
 REQUIRED_VIDEO_IDS = ("success", "failure", "clamp_failure")
 
 
+class TrialFailure(RuntimeError):
+    def __init__(
+        self,
+        *,
+        sample: Mapping[str, object],
+        prompt: str,
+        rows: list[dict[str, object]],
+        cause: Exception,
+    ) -> None:
+        super().__init__(str(cause))
+        self.sample = sample
+        self.prompt = prompt
+        self.rows = rows
+        self.cause = cause
+        self.rows_by_candidate: dict[str, list[dict[str, object]]] = {}
+        self.elapsed_seconds = 0.0
+        self.cuda_peak_allocated_mib: float | None = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     settings = Settings()
     parser = argparse.ArgumentParser(
@@ -80,8 +99,28 @@ def mask_measurements(mask: np.ndarray) -> tuple[float, float, bool]:
 
 def candidate_passes(rows: Sequence[Mapping[str, object]], minimum_consecutive: int = 3) -> bool:
     consecutive = 0
+    prior_trial_id: str | None = None
+    prior_position: int | None = None
     for row in rows:
-        consecutive = consecutive + 1 if row.get("valid") is True else 0
+        trial_id = row.get("trial_id")
+        position = row.get("sample_position")
+        if not isinstance(trial_id, str) or not isinstance(position, int):
+            consecutive = 0
+            prior_trial_id = None
+            prior_position = None
+            continue
+        if row.get("valid") is not True:
+            consecutive = 0
+        elif (
+            trial_id == prior_trial_id
+            and prior_position is not None
+            and position == prior_position + 1
+        ):
+            consecutive += 1
+        else:
+            consecutive = 1
+        prior_trial_id = trial_id
+        prior_position = position
         if consecutive >= minimum_consecutive:
             return True
     return False
@@ -158,7 +197,7 @@ def handle_multiplex_probe(probe: Callable[[], Mapping[str, object]]) -> dict[st
         for item in payload["source_frames"]:
             if not isinstance(item, Mapping):
                 raise TypeError("multiplex probe frame metadata must be a mapping")
-            frame_index = int(item["source_frame_index"])
+            frame_index = int(item["local_sample_index"])
             object_ids = frozenset(int(value) for value in item["object_ids"])
             if len(object_ids) != 2:
                 consecutive = 0
@@ -190,7 +229,7 @@ def required_prompt_time(time_range: TimeRange) -> float:
     return time_range.end_sec
 
 
-def run_gate(
+def _run_gate_impl(
     *,
     annotations_dir: Path,
     videos_dir: Path,
@@ -204,11 +243,21 @@ def run_gate(
     cuda_peak_mib_fn: Callable[[], float | None] | None = None,
     frame_score_adapter: Callable[[object, str], float | None] | None = None,
     probe_multiplex: bool = False,
+    grounding_batch_size: int | None = None,
+    checkpoint_path: Path | None = None,
+    sam3_revision_fn: Callable[[], str] | None = None,
 ) -> int:
     if sample_fps <= 0:
         raise ValueError("sample_fps must be positive")
+    if len(video_ids) != len(REQUIRED_VIDEO_IDS) or set(video_ids) != set(
+        REQUIRED_VIDEO_IDS
+    ):
+        raise ValueError(
+            "video_ids must contain success, failure, and clamp_failure exactly once"
+        )
     git_revision_fn = git_revision_fn or _git_revision
     cuda_peak_mib_fn = cuda_peak_mib_fn or _cuda_peak_allocated_mib
+    sam3_revision_fn = sam3_revision_fn or _sam3_revision
     frame_score_adapter = frame_score_adapter or extract_frame_score
     output_dir.mkdir(parents=True, exist_ok=False)
     samples = _load_samples(annotations_dir, videos_dir, video_ids)
@@ -219,8 +268,9 @@ def run_gate(
     for sample in samples:
         candidates = HEAD_PROMPTS if sample["object"] == "head" else NOSE_PROMPTS
         for prompt_text in candidates:
-            rows_by_candidate[prompt_text].extend(
-                _run_sample(
+            try:
+                rows_by_candidate[prompt_text].extend(
+                    _run_sample(
                     backend=backend,
                     sample=sample,
                     prompt_text=prompt_text,
@@ -228,8 +278,14 @@ def run_gate(
                     sample_fps=sample_fps,
                     read_frame_fn=read_frame_fn,
                     frame_score_adapter=frame_score_adapter,
+                    )
                 )
-            )
+            except TrialFailure as exc:
+                rows_by_candidate[prompt_text].extend(exc.rows)
+                exc.rows_by_candidate = dict(rows_by_candidate)
+                exc.elapsed_seconds = time.perf_counter() - started
+                exc.cuda_peak_allocated_mib = cuda_peak_mib_fn()
+                raise
 
     required, missing_required_video_ids = required_samples(video_ids)
     selected = select_prompts(rows_by_candidate, required)
@@ -252,7 +308,11 @@ def run_gate(
         output_dir / "summary.json",
         {
             "output_threshold": output_threshold,
+            "sample_fps": sample_fps,
+            "grounding_batch_size": grounding_batch_size,
+            "checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
             "model_version": backend.model_version,
+            "sam3_source_revision": sam3_revision_fn(),
             "git_revision": git_revision_fn(),
             "elapsed_seconds": time.perf_counter() - started,
             "cuda_peak_allocated_mib": cuda_peak_mib_fn(),
@@ -263,6 +323,55 @@ def run_gate(
         },
     )
     return exit_status(selected)
+
+
+def run_gate(**kwargs: Any) -> int:
+    """Run the gate and persist a failed audit record for any trial/setup exception."""
+    try:
+        return _run_gate_impl(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - experiment failures require an audit artifact
+        output_dir = kwargs["output_dir"]
+        assert isinstance(output_dir, Path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if isinstance(exc, TrialFailure):
+            failure = {
+                "video": exc.sample["video_id"],
+                "stage": exc.sample["stage"],
+                "object": exc.sample["object"],
+                "prompt": exc.prompt,
+                "exception_type": type(exc.cause).__name__,
+                "message": str(exc.cause),
+                "completed_row_count": len(exc.rows),
+                "elapsed_seconds": exc.elapsed_seconds,
+                "cuda_peak_allocated_mib": exc.cuda_peak_allocated_mib,
+            }
+            rows_by_candidate = exc.rows_by_candidate
+        else:
+            failure = {
+                "video": None,
+                "stage": None,
+                "object": None,
+                "prompt": None,
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+                "completed_row_count": 0,
+                "elapsed_seconds": 0.0,
+                "cuda_peak_allocated_mib": None,
+            }
+            rows_by_candidate = {}
+        selected = {
+            "accepted": False,
+            "head_prompt": None,
+            "nose_prompt": None,
+            "session_strategy": "independent",
+            "failures": [failure],
+        }
+        atomic_write_json(output_dir / "selected_prompts.json", selected)
+        atomic_write_json(
+            output_dir / "summary.json",
+            {"accepted": False, "failures": [failure], "rows_by_candidate": rows_by_candidate},
+        )
+        return 2
 
 
 def _load_samples(annotations_dir: Path, videos_dir: Path, video_ids: Sequence[str]) -> list[dict[str, object]]:
@@ -326,26 +435,49 @@ def _run_sample(
         text=prompt_text,
     )
     rows: list[dict[str, object]] = []
-    for frame in backend.track(video_path, time_range, [prompt], sample_fps):
-        mask = np.asarray(frame.masks.get(object_id, np.zeros((1, 1), dtype=bool)), dtype=bool)
-        area_ratio, dominant_ratio, valid = mask_measurements(mask)
-        frame_name = f"{frame.frame_index:08d}"
-        raw = read_frame_fn(video_path, frame.frame_index)
-        _write_artifacts(artifact_dir, frame_name, raw, mask)
-        rows.append(
-            {
-                "sample_key": f"{video_id}:{stage}",
-                "video_id": video_id,
-                "stage": stage,
-                "source_time_sec": frame.frame_time_sec,
-                "frame_index": frame.frame_index,
-                "mask_area_ratio": area_ratio,
-                "dominant_component_ratio": dominant_ratio,
-                "score": frame_score_adapter(frame, object_id),
-                "valid": valid,
-            }
-        )
+    stream = backend.track(video_path, time_range, [prompt], sample_fps)
+    try:
+        for frame in stream:
+            mask = np.asarray(
+                frame.masks.get(object_id, np.zeros((1, 1), dtype=bool)),
+                dtype=bool,
+            )
+            area_ratio, dominant_ratio, valid = mask_measurements(mask)
+            frame_name = f"{frame.frame_index:08d}"
+            raw = read_frame_fn(video_path, frame.frame_index)
+            _write_artifacts(artifact_dir, frame_name, raw, mask)
+            rows.append(
+                {
+                    "sample_key": f"{video_id}:{stage}",
+                    "video_id": video_id,
+                    "stage": stage,
+                    "source_time_sec": frame.frame_time_sec,
+                    "frame_index": frame.frame_index,
+                    "mask_area_ratio": area_ratio,
+                    "dominant_component_ratio": dominant_ratio,
+                    "score": frame_score_adapter(frame, object_id),
+                    "score_source": getattr(frame, "score_sources", {}).get(object_id),
+                    "trial_id": f"{video_id}:{stage}:{object_id}:{_slug(prompt_text)}",
+                    "sample_position": _sample_position(
+                        time_range, sample_fps, frame.frame_time_sec
+                    ),
+                    "valid": valid,
+                }
+            )
+    except Exception as exc:
+        raise TrialFailure(
+            sample=sample, prompt=prompt_text, rows=rows, cause=exc
+        ) from exc
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
     return rows
+
+
+def _sample_position(time_range: TimeRange, sample_fps: float, frame_time_sec: float) -> int:
+    """Index in the expected sampled timeline; duplicate and missing positions stay visible."""
+    return round((frame_time_sec - time_range.start_sec) * sample_fps)
 
 
 def _write_artifacts(directory: Path, name: str, raw: np.ndarray, mask: np.ndarray) -> None:
@@ -394,7 +526,13 @@ def _probe_multiplex_session(
             for item in predictor.handle_stream_request({"type": "propagate_in_video", "session_id": session_id, "propagation_direction": "both", "start_frame_index": 0, "output_prob_thresh": output_threshold}):
                 source_frames.append(
                     {
-                        "source_frame_index": int(item["frame_index"]),
+                        "local_sample_index": int(item["frame_index"]),
+                        "source_frame_index": sequence.entries[
+                            int(item["frame_index"])
+                        ].source_frame_index,
+                        "source_time_sec": sequence.entries[
+                            int(item["frame_index"])
+                        ].source_time_sec,
                         "object_ids": {
                             int(value)
                             for value in _as_numpy(item["outputs"]["out_obj_ids"]).reshape(-1)
@@ -452,6 +590,15 @@ def _cuda_peak_allocated_mib() -> float | None:
     return round(torch.cuda.max_memory_allocated() / (1024 * 1024), 3)
 
 
+def _sam3_revision() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", "external/sam3", "rev-parse", "HEAD"], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return run_gate(
@@ -469,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
             grounding_batch_size=args.grounding_batch_size,
         ),
         probe_multiplex=args.probe_multiplex,
+        grounding_batch_size=args.grounding_batch_size,
+        checkpoint_path=args.checkpoint,
     )
 
 

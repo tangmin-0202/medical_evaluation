@@ -241,6 +241,10 @@ def test_sam3_selects_highest_scored_candidate(tmp_path: Path) -> None:
         {"rubber_dam_frame": 0.9},
         {"rubber_dam_frame": 0.9},
     ]
+    assert [frame.score_sources for frame in frames] == [
+        {"rubber_dam_frame": "discovery"},
+        {"rubber_dam_frame": "discovery"},
+    ]
 
 
 def test_sam3_exposes_selected_object_propagation_score(tmp_path: Path) -> None:
@@ -265,6 +269,10 @@ def test_sam3_exposes_selected_object_propagation_score(tmp_path: Path) -> None:
         {"rubber_dam_frame": 0.8},
         {"rubber_dam_frame": 0.8},
     ]
+    assert [frame.score_sources for frame in frames] == [
+        {"rubber_dam_frame": "propagation"},
+        {"rubber_dam_frame": "propagation"},
+    ]
 
 
 def test_sam3_represents_tracked_object_absence_with_empty_mask(tmp_path: Path) -> None:
@@ -284,6 +292,8 @@ def test_sam3_represents_tracked_object_absence_with_empty_mask(tmp_path: Path) 
     assert frames[0].masks["rubber_dam_frame"].all()
     assert frames[1].masks["rubber_dam_frame"].shape == (20, 40)
     assert not frames[1].masks["rubber_dam_frame"].any()
+    assert frames[1].scores == {}
+    assert frames[1].score_sources == {}
 
 
 def test_sam3_rejects_ambiguous_unscored_candidates(tmp_path: Path) -> None:

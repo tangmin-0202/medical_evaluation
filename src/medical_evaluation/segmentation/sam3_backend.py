@@ -165,12 +165,18 @@ class Sam3Backend:
                         threshold=self.output_prob_threshold,
                         frame_time_sec=entry.source_time_sec,
                     )
-                    # Propagation may omit scores; preserve the selected prompt score then.
+                    if not frame_masks.masks[prompt.object_id].any():
+                        tracked[local_index] = frame_masks
+                        continue
                     score = _candidate_score(outputs, selected_id)
+                    source = "propagation"
                     if score is None:
+                        # Official propagation output omits scores on some revisions.
                         score = selected_prompt_score
+                        source = "discovery"
                     if score is not None:
                         frame_masks.scores[prompt.object_id] = score
+                        frame_masks.score_sources[prompt.object_id] = source
                     tracked[local_index] = frame_masks
                 for local_index in sorted(tracked):
                     yield tracked[local_index]
