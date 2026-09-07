@@ -362,7 +362,7 @@ def _write_artifacts(directory: Path, name: str, raw: np.ndarray, mask: np.ndarr
 
 def extract_frame_score(frame: object, object_id: str) -> float | None:
     """Read optional score metadata without changing the VideoSegmenter contract."""
-    for source in (getattr(frame, "metadata", None), getattr(frame, "scores", None)):
+    for source in (getattr(frame, "scores", None), getattr(frame, "metadata", None)):
         if not isinstance(source, Mapping):
             continue
         candidate = source.get(object_id)

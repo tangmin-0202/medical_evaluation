@@ -49,6 +49,7 @@ class FrameMasks(BaseModel):
     frame_index: int = Field(ge=0)
     frame_time_sec: float = Field(ge=0)
     masks: dict[str, np.ndarray]
+    scores: dict[str, float] = Field(default_factory=dict)
 
 
 class VideoSegmenter(Protocol):

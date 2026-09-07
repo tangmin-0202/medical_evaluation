@@ -102,9 +102,9 @@ def test_rank_candidates_uses_sample_continuity_then_median_score_then_order() -
     assert module.rank_candidates(rows, candidates) == ["second", "first", "third"]
 
 
-def test_frame_score_adapter_reads_optional_object_score_metadata() -> None:
+def test_frame_score_adapter_reads_typed_frame_scores() -> None:
     module = _load_script()
-    frame = SimpleNamespace(metadata={"scores": {"head": 0.82}})
+    frame = SimpleNamespace(scores={"head": 0.82})
 
     assert module.extract_frame_score(frame, "head") == 0.82
 

@@ -18,11 +18,13 @@ class FakeSam3Predictor:
         *,
         object_ids: tuple[int, ...] = (7,),
         scores: tuple[float, ...] | None = None,
+        stream_scores: tuple[float, ...] | None = None,
         fail_stream: bool = False,
         detect_at_frame: int = 0,
     ) -> None:
         self.object_ids = object_ids
         self.scores = scores
+        self.stream_scores = stream_scores
         self.fail_stream = fail_stream
         self.detect_at_frame = detect_at_frame
         self.requests: list[dict[str, object]] = []
@@ -54,14 +56,17 @@ class FakeSam3Predictor:
         start = int(request["start_frame_index"])
         local_indices = [0, 1] if start == 0 else [1, 0]
         for local_index in local_indices:
+            outputs: dict[str, object] = {
+                "out_obj_ids": np.asarray(self.object_ids),
+                "out_binary_masks": np.ones(
+                    (len(self.object_ids), 20, 40), dtype=bool
+                ),
+            }
+            if self.stream_scores is not None:
+                outputs["out_scores"] = np.asarray(self.stream_scores)
             yield {
                 "frame_index": local_index,
-                "outputs": {
-                    "out_obj_ids": np.asarray(self.object_ids),
-                    "out_binary_masks": np.ones(
-                        (len(self.object_ids), 20, 40), dtype=bool
-                    ),
-                },
+                "outputs": outputs,
             }
 
 
@@ -232,6 +237,34 @@ def test_sam3_selects_highest_scored_candidate(tmp_path: Path) -> None:
 
     assert len(frames) == 2
     assert all(frame.masks["rubber_dam_frame"].all() for frame in frames)
+    assert [frame.scores for frame in frames] == [
+        {"rubber_dam_frame": 0.9},
+        {"rubber_dam_frame": 0.9},
+    ]
+
+
+def test_sam3_exposes_selected_object_propagation_score(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(
+        object_ids=(7, 8),
+        scores=(0.2, 0.9),
+        stream_scores=(0.1, 0.8),
+    )
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_text_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    assert [frame.scores for frame in frames] == [
+        {"rubber_dam_frame": 0.8},
+        {"rubber_dam_frame": 0.8},
+    ]
 
 
 def test_sam3_represents_tracked_object_absence_with_empty_mask(tmp_path: Path) -> None:

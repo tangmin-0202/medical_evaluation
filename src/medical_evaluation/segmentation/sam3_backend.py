@@ -100,6 +100,7 @@ class Sam3Backend:
             session_id = str(response["session_id"])
             try:
                 selected_id: int | None = None
+                selected_prompt_score: float | None = None
                 prompt_local_index = 0
                 for candidate_index in range(len(sequence.entries)):
                     prompt_result = self.predictor.handle_request(
@@ -113,6 +114,9 @@ class Sam3Backend:
                     )
                     selected_id = _select_candidate_id(prompt_result)
                     if selected_id is not None:
+                        selected_prompt_score = _candidate_score(
+                            prompt_result["outputs"], selected_id
+                        )
                         prompt_local_index = candidate_index
                         break
                     self.predictor.handle_request(
@@ -156,11 +160,18 @@ class Sam3Backend:
                         "frame": entry.source_frame_index,
                         "objects": {prompt.object_id: selected_mask},
                     }
-                    tracked[local_index] = normalize_masks(
+                    frame_masks = normalize_masks(
                         raw,
                         threshold=self.output_prob_threshold,
                         frame_time_sec=entry.source_time_sec,
                     )
+                    # Propagation may omit scores; preserve the selected prompt score then.
+                    score = _candidate_score(outputs, selected_id)
+                    if score is None:
+                        score = selected_prompt_score
+                    if score is not None:
+                        frame_masks.scores[prompt.object_id] = score
+                    tracked[local_index] = frame_masks
                 for local_index in sorted(tracked):
                     yield tracked[local_index]
             finally:
@@ -186,6 +197,20 @@ def _select_candidate_id(prompt_result: dict[str, object]) -> int | None:
     if scores.size != object_ids.size:
         raise ValueError("SAM3 candidate scores do not match object IDs")
     return int(object_ids[int(np.argmax(scores))])
+
+
+def _candidate_score(outputs: object, object_id: int) -> float | None:
+    if not isinstance(outputs, dict) or "out_scores" not in outputs:
+        return None
+    object_ids = _as_array(outputs.get("out_obj_ids", [])).reshape(-1)
+    scores = _as_array(outputs["out_scores"]).reshape(-1)
+    if scores.size != object_ids.size:
+        raise ValueError("SAM3 candidate scores do not match object IDs")
+    matches = np.flatnonzero(object_ids == object_id)
+    if matches.size != 1:
+        return None
+    score = float(scores[int(matches[0])])
+    return score if np.isfinite(score) else None
 
 
 def _as_array(value: object) -> np.ndarray:
