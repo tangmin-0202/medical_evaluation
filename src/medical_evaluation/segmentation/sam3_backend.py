@@ -165,6 +165,7 @@ class Sam3Backend:
                         threshold=self.output_prob_threshold,
                         frame_time_sec=entry.source_time_sec,
                     )
+                    frame_masks.sample_position = local_index
                     if not frame_masks.masks[prompt.object_id].any():
                         tracked[local_index] = frame_masks
                         continue

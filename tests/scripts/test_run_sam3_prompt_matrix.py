@@ -338,8 +338,31 @@ def test_run_persists_partial_trial_failure_and_closes_generator(tmp_path: Path)
     assert failure["completed_row_count"] == 2
     assert failure["elapsed_seconds"] >= 0
     assert failure["cuda_peak_allocated_mib"] == 7.5
+    for key in (
+        "output_threshold", "sample_fps", "grounding_batch_size", "checkpoint_path",
+        "model_version", "git_revision", "sam3_source_revision", "elapsed_seconds",
+        "cuda_peak_allocated_mib",
+    ):
+        assert key in summary
     assert len(summary["rows_by_candidate"][module.HEAD_PROMPTS[0]]) == 2
     assert (output / "overlays" / "success" / "head" / "dental-training-mannequin-head" / "raw" / "00000010.jpg").is_file()
+
+
+def test_existing_output_is_rejected_without_changing_artifacts(tmp_path: Path) -> None:
+    module = _load_script()
+    output = tmp_path / "existing"
+    output.mkdir()
+    selected = output / "selected_prompts.json"
+    summary = output / "summary.json"
+    artifact = output / "artifact.bin"
+    selected.write_bytes(b"selected-before")
+    summary.write_bytes(b"summary-before")
+    artifact.write_bytes(b"artifact-before")
+
+    assert module.run_gate(output_dir=output) == 2
+    assert selected.read_bytes() == b"selected-before"
+    assert summary.read_bytes() == b"summary-before"
+    assert artifact.read_bytes() == b"artifact-before"
 
 
 def test_run_returns_two_when_required_prompt_is_not_continuous(tmp_path: Path) -> None:

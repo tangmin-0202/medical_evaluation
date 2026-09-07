@@ -51,6 +51,7 @@ class FrameMasks(BaseModel):
     masks: dict[str, np.ndarray]
     scores: dict[str, float] = Field(default_factory=dict)
     score_sources: dict[str, str] = Field(default_factory=dict)
+    sample_position: int | None = Field(default=None, ge=0)
 
 
 class VideoSegmenter(Protocol):

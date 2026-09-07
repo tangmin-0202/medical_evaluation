@@ -259,7 +259,6 @@ def _run_gate_impl(
     cuda_peak_mib_fn = cuda_peak_mib_fn or _cuda_peak_allocated_mib
     sam3_revision_fn = sam3_revision_fn or _sam3_revision
     frame_score_adapter = frame_score_adapter or extract_frame_score
-    output_dir.mkdir(parents=True, exist_ok=False)
     samples = _load_samples(annotations_dir, videos_dir, video_ids)
     backend = backend_factory()  # one loaded model, with a fresh session per prompt trial
     started = time.perf_counter()
@@ -306,16 +305,18 @@ def _run_gate_impl(
     atomic_write_json(output_dir / "selected_prompts.json", selected)
     atomic_write_json(
         output_dir / "summary.json",
-        {
-            "output_threshold": output_threshold,
-            "sample_fps": sample_fps,
-            "grounding_batch_size": grounding_batch_size,
-            "checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
-            "model_version": backend.model_version,
-            "sam3_source_revision": sam3_revision_fn(),
-            "git_revision": git_revision_fn(),
-            "elapsed_seconds": time.perf_counter() - started,
-            "cuda_peak_allocated_mib": cuda_peak_mib_fn(),
+        _common_metadata(
+            output_threshold=output_threshold,
+            sample_fps=sample_fps,
+            grounding_batch_size=grounding_batch_size,
+            checkpoint_path=checkpoint_path,
+            model_version=backend.model_version,
+            git_revision=git_revision_fn(),
+            sam3_source_revision=sam3_revision_fn(),
+            elapsed_seconds=time.perf_counter() - started,
+            cuda_peak_allocated_mib=cuda_peak_mib_fn(),
+        )
+        | {
             "samples": [_sample_metadata(sample) for sample in samples],
             "rows_by_candidate": dict(rows_by_candidate),
             "missing_required_video_ids": list(missing_required_video_ids),
@@ -327,12 +328,16 @@ def _run_gate_impl(
 
 def run_gate(**kwargs: Any) -> int:
     """Run the gate and persist a failed audit record for any trial/setup exception."""
+    output_dir = kwargs.get("output_dir")
+    if not isinstance(output_dir, Path):
+        raise TypeError("output_dir must be a Path")
+    try:
+        output_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return 2
     try:
         return _run_gate_impl(**kwargs)
     except Exception as exc:  # noqa: BLE001 - experiment failures require an audit artifact
-        output_dir = kwargs["output_dir"]
-        assert isinstance(output_dir, Path)
-        output_dir.mkdir(parents=True, exist_ok=True)
         if isinstance(exc, TrialFailure):
             failure = {
                 "video": exc.sample["video_id"],
@@ -369,7 +374,18 @@ def run_gate(**kwargs: Any) -> int:
         atomic_write_json(output_dir / "selected_prompts.json", selected)
         atomic_write_json(
             output_dir / "summary.json",
-            {"accepted": False, "failures": [failure], "rows_by_candidate": rows_by_candidate},
+            _common_metadata(
+                output_threshold=kwargs.get("output_threshold"),
+                sample_fps=kwargs.get("sample_fps"),
+                grounding_batch_size=kwargs.get("grounding_batch_size"),
+                checkpoint_path=kwargs.get("checkpoint_path"),
+                model_version=None,
+                git_revision=None,
+                sam3_source_revision=None,
+                elapsed_seconds=failure["elapsed_seconds"],
+                cuda_peak_allocated_mib=failure["cuda_peak_allocated_mib"],
+            )
+            | {"accepted": False, "failures": [failure], "rows_by_candidate": rows_by_candidate},
         )
         return 2
 
@@ -458,8 +474,10 @@ def _run_sample(
                     "score": frame_score_adapter(frame, object_id),
                     "score_source": getattr(frame, "score_sources", {}).get(object_id),
                     "trial_id": f"{video_id}:{stage}:{object_id}:{_slug(prompt_text)}",
-                    "sample_position": _sample_position(
-                        time_range, sample_fps, frame.frame_time_sec
+                    "sample_position": (
+                        frame.sample_position
+                        if frame.sample_position is not None
+                        else _sample_position(time_range, sample_fps, frame.frame_time_sec)
                     ),
                     "valid": valid,
                 }
@@ -475,9 +493,41 @@ def _run_sample(
     return rows
 
 
+def _common_metadata(
+    *,
+    output_threshold: float | None,
+    sample_fps: float | None,
+    grounding_batch_size: int | None,
+    checkpoint_path: Path | None,
+    model_version: str | None,
+    git_revision: str | None,
+    sam3_source_revision: str | None,
+    elapsed_seconds: float,
+    cuda_peak_allocated_mib: float | None,
+) -> dict[str, object]:
+    return {
+        "output_threshold": output_threshold,
+        "sample_fps": sample_fps,
+        "grounding_batch_size": grounding_batch_size,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path else None,
+        "model_version": model_version,
+        "git_revision": git_revision,
+        "sam3_source_revision": sam3_source_revision,
+        "elapsed_seconds": elapsed_seconds,
+        "cuda_peak_allocated_mib": cuda_peak_allocated_mib,
+    }
+
+
 def _sample_position(time_range: TimeRange, sample_fps: float, frame_time_sec: float) -> int:
     """Index in the expected sampled timeline; duplicate and missing positions stay visible."""
-    return round((frame_time_sec - time_range.start_sec) * sample_fps)
+    times: list[float] = []
+    current = time_range.start_sec
+    while current < time_range.end_sec - 1e-9:
+        times.append(current)
+        current += 1.0 / sample_fps
+    if not any(abs(item - time_range.end_sec) < 1e-9 for item in times):
+        times.append(time_range.end_sec)
+    return min(range(len(times)), key=lambda index: abs(times[index] - frame_time_sec))
 
 
 def _write_artifacts(directory: Path, name: str, raw: np.ndarray, mask: np.ndarray) -> None:
