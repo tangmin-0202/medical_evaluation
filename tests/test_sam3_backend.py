@@ -139,7 +139,6 @@ def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> No
             "session_id": "session-1",
             "propagation_direction": "both",
             "start_frame_index": 0,
-            "max_frame_num_to_track": 2,
             "output_prob_thresh": 0.5,
         }
     ]

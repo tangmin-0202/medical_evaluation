@@ -127,7 +127,6 @@ class Sam3Backend:
                         "session_id": session_id,
                         "propagation_direction": "both",
                         "start_frame_index": prompt_local_index,
-                        "max_frame_num_to_track": len(sequence.entries),
                         "output_prob_thresh": self.output_prob_threshold,
                     }
                 )
