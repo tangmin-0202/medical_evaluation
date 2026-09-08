@@ -143,6 +143,7 @@ def test_cp11_head_relative_requires_frame_coverage_and_clear_nose() -> None:
         "min_stage_dam_presence_ratio": 0.05,
         "min_final_dam_presence_ratio": 0.5,
         "min_expected_frame_dam_coverage_ratio": 0.9,
+        "max_visible_frame_ratio": 0.2,
         "max_nose_overlap": 0.02,
     }
     features = {
@@ -151,12 +152,13 @@ def test_cp11_head_relative_requires_frame_coverage_and_clear_nose() -> None:
         "head_registration_reliable": True,
         "frame_reference_available": True,
         "expected_frame_dam_coverage_ratio": 0.95,
+        "visible_frame_ratio": 0.05,
         "nose_overlap": 0.0,
         "visible_frame_area_ratio": 0.05,
     }
 
     passing = judge_cp11(features, thresholds)
-    failing = judge_cp11(features | {"expected_frame_dam_coverage_ratio": 0.7}, thresholds)
+    failing = judge_cp11(features | {"visible_frame_ratio": 0.7}, thresholds)
 
     assert passing.status.value == "correct"
     assert passing.matched_rules == ["frame_covered", "nose_clear"]

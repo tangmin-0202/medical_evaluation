@@ -268,6 +268,7 @@ class Cp11FeatureExtractor:
             "head_valid_count": 0.0,
             "frame_reference_available": False,
             "expected_frame_dam_coverage_ratio": None,
+            "visible_frame_ratio": None,
             "nose_overlap": None,
             "visible_frame_area_ratio": None,
             "final_valid_frame_count": 0.0,
@@ -309,8 +310,10 @@ class Cp11FeatureExtractor:
         )
         dam_by_index = {item.frame_index: item for item in dam_frames}
         polygon = self._template_nose_polygon(anchor_head.shape)
+        anchor_lab = cv2.cvtColor(anchor_image, cv2.COLOR_BGR2LAB)
+        reference_lab = np.median(anchor_lab[anchor_frame], axis=0).astype(float)
         measurements: list[
-            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float]
+            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float, float]
         ] = []
         reliable_count = 0
         rejected_count = 0
@@ -371,6 +374,13 @@ class Cp11FeatureExtractor:
             nose_area = max(1, int(nose_mask.sum()))
             coverage = float(np.count_nonzero(dam & projected_frame) / frame_area)
             nose_overlap = float(np.count_nonzero(dam & nose_mask.astype(bool)) / nose_area)
+            visible_frame = visible_reference_mask(
+                image,
+                projected_frame,
+                reference_lab,
+                max_lab_distance=self.frame_appearance_max_lab_distance,
+            )
+            visible_ratio = float(visible_frame.sum() / frame_area)
             measurements.append(
                 (
                     head_item,
@@ -379,6 +389,7 @@ class Cp11FeatureExtractor:
                     nose_mask.astype(bool),
                     coverage,
                     nose_overlap,
+                    visible_ratio,
                 )
             )
         empty["head_valid_count"] = float(reliable_count)
@@ -396,12 +407,14 @@ class Cp11FeatureExtractor:
             return ExtractedEvidence(features=empty, evidence=[])
         coverage = float(np.median([item[4] for item in measurements]))
         nose_overlap = float(np.median([item[5] for item in measurements]))
+        visible_ratio = float(np.median([item[6] for item in measurements]))
         evidence = self._write_head_relative_evidence(video_path, measurements)
         return ExtractedEvidence(
             features={
                 **empty,
                 "head_registration_reliable": True,
                 "expected_frame_dam_coverage_ratio": coverage,
+                "visible_frame_ratio": visible_ratio,
                 "nose_overlap": nose_overlap,
                 "visible_frame_area_ratio": 1.0 - coverage,
             },
@@ -422,13 +435,21 @@ class Cp11FeatureExtractor:
         self,
         video_path: Path,
         measurements: list[
-            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float]
+            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float, float]
         ],
     ) -> list[EvidenceItem]:
         selected = sorted({0, len(measurements) // 2, len(measurements) - 1})
         evidence: list[EvidenceItem] = []
         for position in selected:
-            item, dam, projected_frame, nose, _coverage, _nose_overlap = measurements[position]
+            (
+                item,
+                dam,
+                projected_frame,
+                nose,
+                _coverage,
+                _nose_overlap,
+                _visible_ratio,
+            ) = measurements[position]
             canvas = read_frame(video_path, item.frame_index).copy()
             for mask, color, thickness in (
                 (dam, (0, 255, 0), 2),

@@ -70,6 +70,7 @@ def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
         "max_nose_overlap": 0.02,
         "max_visible_frame_area_ratio": 0.005,
         "min_expected_frame_dam_coverage_ratio": 0.70,
+        "max_visible_frame_ratio": 0.20,
     }
 
 

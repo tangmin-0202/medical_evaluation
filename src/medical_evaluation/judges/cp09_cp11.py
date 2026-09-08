@@ -214,8 +214,9 @@ def _judge_cp11_head_relative(
             reason="无法可靠地将 CP09 支架和鼻部模板映射到 CP11。",
         )
     coverage = features.get("expected_frame_dam_coverage_ratio")
+    visible_frame = features.get("visible_frame_ratio")
     nose_overlap = features.get("nose_overlap")
-    if coverage is None or nose_overlap is None:
+    if coverage is None or visible_frame is None or nose_overlap is None:
         return needs_review(
             "cp_11",
             features,
@@ -223,7 +224,7 @@ def _judge_cp11_head_relative(
             reason="支架覆盖或鼻部无遮挡证据不足。",
         )
     failed: list[str] = []
-    if float(coverage) < thresholds["min_expected_frame_dam_coverage_ratio"]:
+    if float(visible_frame) > thresholds["max_visible_frame_ratio"]:
         failed.append("frame_covered")
     if float(nose_overlap) > thresholds["max_nose_overlap"]:
         failed.append("nose_clear")
