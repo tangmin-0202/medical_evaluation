@@ -132,6 +132,15 @@ def _text_prompt() -> SegmentationPrompt:
     )
 
 
+def _box_prompt() -> SegmentationPrompt:
+    return SegmentationPrompt(
+        object_id="target_tooth",
+        kind="box",
+        frame_time_sec=1.0,
+        coordinates=[0.25, 0.20, 0.75, 0.80],
+    )
+
+
 def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> None:
     predictor = FakeSam3Predictor()
     video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
@@ -175,7 +184,7 @@ def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> No
 @pytest.mark.parametrize("prompts", [[], [_text_prompt(), _text_prompt()]])
 def test_sam3_requires_exactly_one_prompt(tmp_path: Path, prompts) -> None:
     backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())
-    with pytest.raises(ValueError, match="exactly one text prompt"):
+    with pytest.raises(ValueError, match="exactly one text or box prompt"):
         list(
             backend.track(
                 tmp_path / "unused.mp4",
@@ -186,7 +195,7 @@ def test_sam3_requires_exactly_one_prompt(tmp_path: Path, prompts) -> None:
         )
 
 
-def test_sam3_rejects_non_text_prompt(tmp_path: Path) -> None:
+def test_sam3_rejects_point_prompt(tmp_path: Path) -> None:
     prompt = SegmentationPrompt(
         object_id="rubber_dam_frame",
         kind="point",
@@ -194,7 +203,7 @@ def test_sam3_rejects_non_text_prompt(tmp_path: Path) -> None:
         coordinates=[0.5, 0.5],
     )
     backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())
-    with pytest.raises(ValueError, match="exactly one text prompt"):
+    with pytest.raises(ValueError, match="exactly one text or box prompt"):
         list(
             backend.track(
                 tmp_path / "unused.mp4",
@@ -203,6 +212,36 @@ def test_sam3_rejects_non_text_prompt(tmp_path: Path) -> None:
                 sample_fps=1,
             )
         )
+
+
+def test_sam3_uses_automatic_box_prompt_and_tracks_both_directions(
+    tmp_path: Path,
+) -> None:
+    predictor = FakeSam3Predictor()
+    video = make_test_video(tmp_path / "video.mp4", fps=10, seconds=3, size=(40, 20))
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    frames = list(
+        backend.track(
+            video,
+            TimeRange(start_sec=1, end_sec=3),
+            [_box_prompt()],
+            sample_fps=1,
+        )
+    )
+
+    assert predictor.requests[1] == {
+        "type": "add_prompt",
+        "session_id": "session-1",
+        "frame_index": 0,
+        "bounding_boxes": [[0.25, 0.2, 0.5, 0.6000000000000001]],
+        "bounding_box_labels": [1],
+        "output_prob_thresh": 0.5,
+    }
+    assert predictor.stream_requests[0]["start_frame_index"] == 0
+    assert predictor.stream_requests[0]["propagation_direction"] == "both"
+    assert len(frames) == 2
+    assert all(set(frame.masks) == {"target_tooth"} for frame in frames)
 
 
 def test_sam3_returns_no_frames_when_text_finds_no_candidate(tmp_path: Path) -> None:

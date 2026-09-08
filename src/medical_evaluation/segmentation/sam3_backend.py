@@ -76,8 +76,10 @@ class Sam3Backend:
         prompts: list[SegmentationPrompt],
         sample_fps: float,
     ) -> Iterator[FrameMasks]:
-        if len(prompts) != 1 or prompts[0].kind != "text" or not prompts[0].text:
-            raise ValueError("SAM3 text mode requires exactly one text prompt")
+        if len(prompts) != 1 or prompts[0].kind not in {"text", "box"}:
+            raise ValueError("SAM3 requires exactly one text or box prompt")
+        if prompts[0].kind == "text" and not prompts[0].text:
+            raise ValueError("SAM3 text prompt requires non-empty text")
         if sample_fps <= 0:
             raise ValueError("sample_fps must be positive")
 
@@ -102,13 +104,44 @@ class Sam3Backend:
                 selected_id: int | None = None
                 selected_prompt_score: float | None = None
                 prompt_local_index = 0
-                for candidate_index in range(len(sequence.entries)):
+                if prompt.kind == "text":
+                    for candidate_index in range(len(sequence.entries)):
+                        prompt_result = self.predictor.handle_request(
+                            {
+                                "type": "add_prompt",
+                                "session_id": session_id,
+                                "frame_index": candidate_index,
+                                "text": prompt.text,
+                                "output_prob_thresh": self.output_prob_threshold,
+                            }
+                        )
+                        selected_id = _select_candidate_id(prompt_result)
+                        if selected_id is not None:
+                            selected_prompt_score = _candidate_score(
+                                prompt_result["outputs"], selected_id
+                            )
+                            prompt_local_index = candidate_index
+                            break
+                        self.predictor.handle_request(
+                            {"type": "reset_session", "session_id": session_id}
+                        )
+                else:
+                    prompt_local_index = min(
+                        range(len(sequence.entries)),
+                        key=lambda index: abs(
+                            sequence.entries[index].source_time_sec
+                            - prompt.frame_time_sec
+                        ),
+                    )
+                    assert prompt.coordinates is not None
+                    x1, y1, x2, y2 = prompt.coordinates
                     prompt_result = self.predictor.handle_request(
                         {
                             "type": "add_prompt",
                             "session_id": session_id,
-                            "frame_index": candidate_index,
-                            "text": prompt.text,
+                            "frame_index": prompt_local_index,
+                            "bounding_boxes": [[x1, y1, x2 - x1, y2 - y1]],
+                            "bounding_box_labels": [1],
                             "output_prob_thresh": self.output_prob_threshold,
                         }
                     )
@@ -117,11 +150,6 @@ class Sam3Backend:
                         selected_prompt_score = _candidate_score(
                             prompt_result["outputs"], selected_id
                         )
-                        prompt_local_index = candidate_index
-                        break
-                    self.predictor.handle_request(
-                        {"type": "reset_session", "session_id": session_id}
-                    )
                 if selected_id is None:
                     return
 
