@@ -133,6 +133,39 @@ def test_search_region_expands_with_image_size_across_changing_visible_fragments
     assert result.match_count >= 8
 
 
+def test_large_images_are_downsampled_without_changing_full_resolution_transform() -> None:
+    reference, reference_mask, target, target_mask, expected = _textured_pair()
+    reference = cv2.resize(reference, (1280, 960), interpolation=cv2.INTER_LINEAR)
+    target = cv2.resize(target, (1280, 960), interpolation=cv2.INTER_LINEAR)
+    reference_mask = cv2.resize(
+        reference_mask.astype(np.uint8), (1280, 960), interpolation=cv2.INTER_NEAREST
+    ).astype(bool)
+    target_mask = cv2.resize(
+        target_mask.astype(np.uint8), (1280, 960), interpolation=cv2.INTER_NEAREST
+    ).astype(bool)
+    expected = expected.copy()
+    expected[:, 2] *= 4.0
+
+    result = estimate_similarity_registration(
+        reference,
+        reference_mask,
+        target,
+        target_mask,
+        RegistrationLimits(
+            min_matches=8,
+            min_inliers=6,
+            min_mask_iou=0.70,
+            analysis_max_width=640,
+        ),
+    )
+
+    probe = np.asarray([[400.0, 320.0], [620.0, 500.0], [880.0, 680.0]])
+    assert result.accepted, result.reason
+    assert transform_points(probe, result.matrix) == pytest.approx(
+        transform_points(probe, expected), abs=4.0
+    )
+
+
 @pytest.mark.parametrize(
     ("current", "expected"),
     [

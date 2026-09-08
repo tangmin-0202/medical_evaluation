@@ -74,6 +74,21 @@ def has_consecutive_acceptance(
     return False
 
 
+def select_tail_rows(
+    rows: Sequence[Mapping[str, object]], max_frames_per_sample: int
+) -> list[Mapping[str, object]]:
+    if max_frames_per_sample < 3:
+        raise ValueError("max_frames_per_sample must be at least 3")
+    grouped: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["sample_key"])].append(row)
+    selected: list[Mapping[str, object]] = []
+    for values in grouped.values():
+        ordered = sorted(values, key=lambda item: int(item["sample_position"]))
+        selected.extend(ordered[-max_frames_per_sample:])
+    return selected
+
+
 def _image_path(root: Path, kind: str, frame_index: int) -> Path:
     for suffix in (".png", ".jpg", ".jpeg"):
         candidate = root / kind / f"{frame_index:08d}{suffix}"
@@ -140,6 +155,7 @@ def run_gate(
     template_payload: Mapping[str, object],
     *,
     minimum_consecutive: int = 3,
+    max_frames_per_sample: int = 15,
     limits: RegistrationLimits | None = None,
 ) -> int:
     if output.exists():
@@ -162,7 +178,8 @@ def run_gate(
         nose_polygon = _polygon_pixels(template, reference_mask.shape)
         rows: list[dict[str, object]] = []
         previous_by_sample: dict[str, np.ndarray] = {}
-        for source_row in candidates[prompt]:
+        source_rows = select_tail_rows(candidates[prompt], max_frames_per_sample)
+        for source_row in source_rows:
             if source_row.get("valid") is not True:
                 continue
             sample_key = str(source_row["sample_key"])
@@ -253,6 +270,7 @@ def run_gate(
                 "source_model_version": source_summary.get("model_version"),
                 "template": template,
                 "minimum_consecutive": minimum_consecutive,
+                "max_frames_per_sample": max_frames_per_sample,
                 "samples": samples,
                 "rows": rows,
             },
@@ -277,6 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--template", type=Path, required=True)
     parser.add_argument("--minimum-consecutive", type=int, default=3)
+    parser.add_argument("--max-frames-per-sample", type=int, default=15)
     return parser
 
 
@@ -288,6 +307,7 @@ def main() -> int:
         args.output,
         payload,
         minimum_consecutive=args.minimum_consecutive,
+        max_frames_per_sample=args.max_frames_per_sample,
     )
 
 

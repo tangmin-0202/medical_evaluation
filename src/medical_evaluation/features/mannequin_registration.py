@@ -20,6 +20,7 @@ class RegistrationLimits:
     max_scale: float = 1.60
     max_residual_px: float = 5.0
     search_dilation_diagonal_ratio: float = 0.08
+    analysis_max_width: int = 960
 
 
 @dataclass(frozen=True)
@@ -96,17 +97,39 @@ def estimate_similarity_registration(
     limits: RegistrationLimits | None = None,
 ) -> RegistrationResult:
     limits = limits or RegistrationLimits()
-    reference = np.asarray(reference_bgr)
-    target = np.asarray(target_bgr)
-    ref_mask = np.asarray(reference_mask, dtype=bool)
-    dst_mask = np.asarray(target_mask, dtype=bool)
-    if reference.shape != target.shape or reference.ndim != 3:
+    reference_full = np.asarray(reference_bgr)
+    target_full = np.asarray(target_bgr)
+    ref_mask_full = np.asarray(reference_mask, dtype=bool)
+    dst_mask_full = np.asarray(target_mask, dtype=bool)
+    if reference_full.shape != target_full.shape or reference_full.ndim != 3:
         raise ValueError("reference and target images must share HxWxC shape")
-    if ref_mask.shape != reference.shape[:2] or dst_mask.shape != target.shape[:2]:
+    if (
+        ref_mask_full.shape != reference_full.shape[:2]
+        or dst_mask_full.shape != target_full.shape[:2]
+    ):
         raise ValueError("masks must match image height and width")
 
     if not 0 <= limits.search_dilation_diagonal_ratio <= 0.5:
         raise ValueError("search_dilation_diagonal_ratio must be within [0, 0.5]")
+    if limits.analysis_max_width <= 0:
+        raise ValueError("analysis_max_width must be positive")
+    analysis_scale = min(1.0, limits.analysis_max_width / reference_full.shape[1])
+    if analysis_scale < 1.0:
+        analysis_size = (
+            limits.analysis_max_width,
+            max(1, round(reference_full.shape[0] * analysis_scale)),
+        )
+        reference = cv2.resize(reference_full, analysis_size, interpolation=cv2.INTER_AREA)
+        target = cv2.resize(target_full, analysis_size, interpolation=cv2.INTER_AREA)
+        ref_mask = cv2.resize(
+            ref_mask_full.astype(np.uint8), analysis_size, interpolation=cv2.INTER_NEAREST
+        ).astype(bool)
+        dst_mask = cv2.resize(
+            dst_mask_full.astype(np.uint8), analysis_size, interpolation=cv2.INTER_NEAREST
+        ).astype(bool)
+    else:
+        reference, target = reference_full, target_full
+        ref_mask, dst_mask = ref_mask_full, dst_mask_full
     detector = cv2.SIFT_create(nfeatures=1500, contrastThreshold=0.01)
     radius = max(
         1,
@@ -170,8 +193,13 @@ def estimate_similarity_registration(
         if inlier_count
         else float("inf")
     )
-    projected_mask = warp_mask(ref_mask, matrix, output_shape=dst_mask.shape)
-    mask_iou = _mask_iou(projected_mask, dst_mask)
+    if analysis_scale < 1.0:
+        matrix[:, 2] /= analysis_scale
+        residual_px /= analysis_scale
+    projected_mask = warp_mask(
+        ref_mask_full, matrix, output_shape=dst_mask_full.shape
+    )
+    mask_iou = _mask_iou(projected_mask, dst_mask_full)
     metrics = {
         "matrix": matrix,
         "match_count": len(matches),

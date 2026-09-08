@@ -45,6 +45,22 @@ def test_consecutive_gate_requires_adjacent_positions_and_continuity() -> None:
     assert not module.has_consecutive_acceptance(rows, minimum=3)
 
 
+def test_tail_sampling_caps_each_stage_without_breaking_adjacency() -> None:
+    module = _load_script()
+    rows = [
+        {"sample_key": "success:cp_09", "sample_position": position}
+        for position in range(10)
+    ] + [
+        {"sample_key": "success:cp_11", "sample_position": position}
+        for position in range(6)
+    ]
+
+    selected = module.select_tail_rows(rows, max_frames_per_sample=4)
+
+    assert [row["sample_position"] for row in selected if row["sample_key"] == "success:cp_09"] == [6, 7, 8, 9]
+    assert [row["sample_position"] for row in selected if row["sample_key"] == "success:cp_11"] == [2, 3, 4, 5]
+
+
 def test_gate_reuses_saved_raw_masks_and_writes_auditable_overlays(tmp_path: Path) -> None:
     module = _load_script()
     source = tmp_path / "source"
