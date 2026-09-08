@@ -246,3 +246,86 @@ def registration_is_continuous(
         and abs(scale - 1.0) <= max_scale_delta
         and translation_ratio <= max_translation_diagonal_ratio
     )
+
+
+def estimate_static_scene_registration(
+    reference_bgr: np.ndarray,
+    reference_head_mask: np.ndarray,
+    target_bgr: np.ndarray,
+    target_head_mask: np.ndarray,
+) -> RegistrationResult:
+    """Register a fixed camera scene, then verify the transform against the head masks."""
+    reference = np.asarray(reference_bgr)
+    target = np.asarray(target_bgr)
+    if reference.shape != target.shape:
+        raise ValueError("fixed-scene images must share a shape")
+    full_mask = np.ones(reference.shape[:2], dtype=bool)
+    limits = RegistrationLimits(
+        min_matches=20,
+        min_inliers=12,
+        min_inlier_ratio=0.45,
+        min_mask_iou=0.85,
+        min_scale=0.92,
+        max_scale=1.08,
+        max_residual_px=4.0,
+        search_dilation_diagonal_ratio=0.0,
+    )
+    result = estimate_similarity_registration(
+        reference,
+        full_mask,
+        target,
+        full_mask,
+        limits,
+    )
+    if not result.accepted:
+        return result
+    height, width = reference.shape[:2]
+    center = np.asarray([[width / 2.0, height / 2.0]])
+    moved_center = transform_points(center, result.matrix)[0]
+    translation_ratio = float(
+        np.linalg.norm(moved_center - center[0]) / np.hypot(width, height)
+    )
+    projected_head = warp_mask(
+        reference_head_mask,
+        result.matrix,
+        output_shape=target.shape[:2],
+    )
+    head_iou = _mask_iou(projected_head, np.asarray(target_head_mask, dtype=bool))
+    if abs(result.angle_deg) > 5.0 or translation_ratio > 0.05:
+        return RegistrationResult(
+            False,
+            "scene_motion_out_of_range",
+            matrix=result.matrix,
+            match_count=result.match_count,
+            inlier_count=result.inlier_count,
+            inlier_ratio=result.inlier_ratio,
+            mask_iou=head_iou,
+            residual_px=result.residual_px,
+            scale=result.scale,
+            angle_deg=result.angle_deg,
+        )
+    if head_iou < 0.05:
+        return RegistrationResult(
+            False,
+            "low_head_overlap",
+            matrix=result.matrix,
+            match_count=result.match_count,
+            inlier_count=result.inlier_count,
+            inlier_ratio=result.inlier_ratio,
+            mask_iou=head_iou,
+            residual_px=result.residual_px,
+            scale=result.scale,
+            angle_deg=result.angle_deg,
+        )
+    return RegistrationResult(
+        True,
+        None,
+        matrix=result.matrix,
+        match_count=result.match_count,
+        inlier_count=result.inlier_count,
+        inlier_ratio=result.inlier_ratio,
+        mask_iou=head_iou,
+        residual_px=result.residual_px,
+        scale=result.scale,
+        angle_deg=result.angle_deg,
+    )

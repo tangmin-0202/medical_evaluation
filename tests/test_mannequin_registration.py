@@ -8,11 +8,28 @@ from medical_evaluation.features.mannequin_registration import (
     RegistrationLimits,
     compose_similarity,
     estimate_similarity_registration,
+    estimate_static_scene_registration,
     invert_similarity,
     registration_is_continuous,
     transform_points,
     warp_mask,
 )
+
+
+def test_static_scene_fallback_registers_texture_despite_head_occlusion() -> None:
+    rng = np.random.default_rng(7)
+    image = rng.integers(0, 256, (180, 240, 3), dtype=np.uint8)
+    reference_head = np.zeros((180, 240), bool)
+    target_head = np.zeros((180, 240), bool)
+    reference_head[35:145, 40:180] = True
+    target_head[55:165, 80:220] = True
+
+    result = estimate_static_scene_registration(
+        image, reference_head, image.copy(), target_head
+    )
+
+    assert result.accepted is True
+    assert result.mask_iou > 0.2
 
 
 def _similarity(

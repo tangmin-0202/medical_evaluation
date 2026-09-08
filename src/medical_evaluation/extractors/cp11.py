@@ -17,6 +17,7 @@ from medical_evaluation.features.appearance import (
 from medical_evaluation.features.frame_reference import FrameReferenceStore
 from medical_evaluation.features.mannequin_registration import (
     estimate_similarity_registration,
+    estimate_static_scene_registration,
     invert_similarity,
     transform_points,
     warp_mask,
@@ -337,6 +338,13 @@ class Cp11FeatureExtractor:
                 anchor_image,
                 anchor_head,
             )
+            if not registration.accepted:
+                registration = estimate_static_scene_registration(
+                    image,
+                    np.asarray(head_mask, dtype=bool),
+                    anchor_image,
+                    anchor_head,
+                )
             if not registration.accepted:
                 rejected_count += 1
                 low_mask_overlap_count += int(registration.reason == "low_mask_overlap")
