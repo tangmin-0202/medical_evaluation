@@ -44,7 +44,8 @@ def _judge_cp09_head_relative(
     features: dict[str, float | bool | None],
     thresholds: dict[str, float],
 ) -> JudgeDecision:
-    if features.get("head_registration_reliable") is not True:
+    head_count = float(features.get("head_valid_count") or 0.0)
+    if head_count <= 0.0:
         return needs_review(
             "cp_09",
             features,
@@ -58,6 +59,13 @@ def _judge_cp09_head_relative(
             reason_code="frame_not_observed",
             reason="本阶段未观察到支架，安装未完成。",
             suggestion="完成支架安装，并在阶段结束前保持支架在位。",
+        )
+    if features.get("head_registration_reliable") is not True:
+        return needs_review(
+            "cp_09",
+            features,
+            reason_code="unreliable_head_registration",
+            reason="无法可靠建立头模参照坐标。",
         )
     if features.get("frame_present_at_end") is not True:
         return incorrect(

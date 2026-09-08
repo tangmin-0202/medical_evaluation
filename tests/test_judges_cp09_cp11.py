@@ -17,6 +17,7 @@ HEAD_THRESHOLDS = {
 def _head_cp09(**updates: float | bool | None) -> dict[str, float | bool | None]:
     features: dict[str, float | bool | None] = {
         "head_registration_reliable": True,
+        "head_valid_count": 8.0,
         "frame_valid_count": 8.0,
         "frame_presence_ratio": 0.8,
         "frame_present_at_end": True,
@@ -32,7 +33,14 @@ def _head_cp09(**updates: float | bool | None) -> dict[str, float | bool | None]
 
 
 def test_cp09_head_relative_distinguishes_not_attempted_and_failed_installation() -> None:
-    absent = judge_cp09(_head_cp09(frame_valid_count=0.0), HEAD_THRESHOLDS)
+    absent = judge_cp09(
+        _head_cp09(
+            head_registration_reliable=False,
+            head_valid_count=2.0,
+            frame_valid_count=0.0,
+        ),
+        HEAD_THRESHOLDS,
+    )
     lost = judge_cp09(_head_cp09(frame_present_at_end=False), HEAD_THRESHOLDS)
 
     assert (absent.status.value, absent.reason_code) == ("incomplete", "frame_not_observed")
