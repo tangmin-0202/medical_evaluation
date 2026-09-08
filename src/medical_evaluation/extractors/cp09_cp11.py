@@ -9,6 +9,7 @@ from medical_evaluation.pipeline import EvaluationInputMissing, ExtractedEvidenc
 from medical_evaluation.segmentation.prompt_policy import (
     AnnotationPromptPolicy,
     Cp09Cp11PromptPolicy,
+    TextPromptPolicy,
 )
 
 
@@ -72,6 +73,8 @@ class Cp09Cp11FeatureExtractor:
         )
 
     def _validate_cp09_inputs(self, time_range: TimeRange) -> None:
+        if isinstance(self.prompt_policy, TextPromptPolicy):
+            return
         start = time_range.start_sec - self.prompt_boundary_tolerance_sec
         end = time_range.end_sec + self.prompt_boundary_tolerance_sec
         try:

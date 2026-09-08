@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     sam3_bpe_path: Path = Path(
         "external/sam3/sam3/assets/bpe_simple_vocab_16e6.txt.gz"
     )
+    mannequin_template_path: Path = Path(
+        "config/mannequin_template.registration-gate.v1.json"
+    )
     sam3_output_prob_threshold: float = Field(default=0.2, ge=0, le=1)
     sam3_grounding_batch_size: int = Field(default=4, gt=0)
     sam3_source_revision: str = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
@@ -61,4 +64,8 @@ class Settings(BaseSettings):
             ).resolve()
         if not self.sam3_bpe_path.is_absolute():
             self.sam3_bpe_path = (self.project_root / self.sam3_bpe_path).resolve()
+        if not self.mannequin_template_path.is_absolute():
+            self.mannequin_template_path = (
+                self.project_root / self.mannequin_template_path
+            ).resolve()
         return self

@@ -47,6 +47,11 @@ def make_settings(tmp_path: Path, *, pipeline_mode: str = "real") -> Settings:
         sam_backend="sam2",
         sam2_checkpoint_path=checkpoint,
         sam2_model_config="configs/sam2.1/sam2.1_hiera_l.yaml",
+        mannequin_template_path=(
+            Path(__file__).parents[1]
+            / "config"
+            / "mannequin_template.registration-gate.v1.json"
+        ),
         vlm_base_url="http://qwen.local/v1",
         vlm_model="Qwen-Test",
     )

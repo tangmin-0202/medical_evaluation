@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -64,6 +65,13 @@ def build_analysis_pipeline(
             grounding_batch_size=settings.sam3_grounding_batch_size,
         )
         prompt_policy = TextPromptPolicy()
+    template: dict[str, object] = {}
+    if settings.sam_backend == "sam3":
+        if not settings.mannequin_template_path.is_file():
+            raise ValueError(
+                f"mannequin template is missing: {settings.mannequin_template_path}"
+            )
+        template = json.loads(settings.mannequin_template_path.read_text(encoding="utf-8"))
 
     def extractor_factory(job: JobRecord) -> FeatureExtractor:
         annotations = annotation_store.load_segments(job.video_id)
@@ -93,6 +101,7 @@ def build_analysis_pipeline(
             annotations=annotations,
             evidence_root=evidence_root,
             prompt_policy=prompt_policy,
+            template=template,
         )
         cp11_rule = rules["cp_11"]
         cp11 = Cp11FeatureExtractor(
@@ -107,6 +116,7 @@ def build_analysis_pipeline(
                 "min_final_dam_presence_ratio"
             ],
             prompt_policy=prompt_policy,
+            template=template,
         )
         return Cp09Cp11FeatureExtractor(
             cp09=cp09,

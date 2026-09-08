@@ -9,9 +9,18 @@ from medical_evaluation.segmentation.prompts import prompts_for_object
 
 FRAME_TEXT_PROMPT = "thin white U-shaped plastic frame around the mouth"
 DAM_TEXT_PROMPT = "green dental rubber dam"
+HEAD_TEXT_PROMPT = "dental training mannequin head"
 
 
 class Cp09Cp11PromptPolicy(Protocol):
+    def head_prompts(
+        self,
+        annotations: VideoAnnotations,
+        time_range: TimeRange,
+        *,
+        checkpoint_id: str,
+    ) -> list[SegmentationPrompt]: ...
+
     def frame_prompts(
         self,
         annotations: VideoAnnotations,
@@ -31,6 +40,20 @@ class Cp09Cp11PromptPolicy(Protocol):
 
 
 class AnnotationPromptPolicy:
+    def head_prompts(
+        self,
+        annotations: VideoAnnotations,
+        time_range: TimeRange,
+        *,
+        checkpoint_id: str,
+    ) -> list[SegmentationPrompt]:
+        return prompts_for_object(
+            annotations,
+            "mannequin_head",
+            time_range,
+            checkpoint_id=checkpoint_id,
+        )
+
     def frame_prompts(
         self,
         annotations: VideoAnnotations,
@@ -68,6 +91,22 @@ class AnnotationPromptPolicy:
 
 
 class TextPromptPolicy:
+    def head_prompts(
+        self,
+        _annotations: VideoAnnotations,
+        time_range: TimeRange,
+        *,
+        checkpoint_id: str,
+    ) -> list[SegmentationPrompt]:
+        return [
+            SegmentationPrompt(
+                object_id="mannequin_head",
+                kind="text",
+                frame_time_sec=time_range.start_sec,
+                text=HEAD_TEXT_PROMPT,
+            )
+        ]
+
     def frame_prompts(
         self,
         _annotations: VideoAnnotations,

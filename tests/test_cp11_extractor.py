@@ -271,18 +271,9 @@ def test_text_policy_needs_no_manual_dam_or_frame_prompts(tmp_path: Path) -> Non
         analysis_width=1280,
     )
 
-    assert result.features["final_valid_frame_count"] == 3.0
-    assert segmenter.calls == [{"rubber_dam"}, {"rubber_dam_frame"}]
-    dam_call, frame_call = segmenter.recorded_calls
-    assert (dam_call[0].start_sec, dam_call[1][0].text) == (
-        1.0,
-        "green dental rubber dam",
-    )
-    assert (frame_call[0].start_sec, frame_call[1][0].text) == (
-        0.4,
-        "thin white U-shaped plastic frame around the mouth",
-    )
-    assert frame_call[0].end_sec == 4.0
+    assert result.features["frame_reference_available"] is False
+    assert result.features["final_valid_frame_count"] == 0.0
+    assert segmenter.calls == []
 
 
 def test_final_dam_measurements_exclude_skin_inside_sam_mask(tmp_path: Path) -> None:

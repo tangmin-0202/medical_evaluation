@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import cv2
@@ -13,12 +14,19 @@ from medical_evaluation.features.appearance import (
     green_dam_mask,
     visible_reference_mask,
 )
+from medical_evaluation.features.frame_reference import FrameReferenceStore
+from medical_evaluation.features.mannequin_registration import (
+    estimate_similarity_registration,
+    transform_points,
+    warp_mask,
+)
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import FrameMasks, VideoSegmenter
 from medical_evaluation.segmentation.prompt_policy import (
     AnnotationPromptPolicy,
     Cp09Cp11PromptPolicy,
+    TextPromptPolicy,
 )
 from medical_evaluation.storage import safe_child
 from medical_evaluation.video import read_frame, sample_frames
@@ -41,6 +49,7 @@ class Cp11FeatureExtractor:
         min_stage_dam_presence_ratio: float,
         min_final_dam_presence_ratio: float = 0.5,
         prompt_policy: Cp09Cp11PromptPolicy | None = None,
+        template: Mapping[str, object] | None = None,
     ) -> None:
         if not 0 <= min_stage_dam_presence_ratio <= 1:
             raise ValueError("min_stage_dam_presence_ratio must be normalized")
@@ -53,6 +62,8 @@ class Cp11FeatureExtractor:
         self.min_stage_dam_presence_ratio = min_stage_dam_presence_ratio
         self.min_final_dam_presence_ratio = min_final_dam_presence_ratio
         self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
+        self.template = dict(template or {})
+        self.reference_store = FrameReferenceStore(evidence_root)
 
     @property
     def model_version(self) -> str:
@@ -127,6 +138,17 @@ class Cp11FeatureExtractor:
             or final_presence < self.min_final_dam_presence_ratio
         ):
             return ExtractedEvidence(features=empty_features, evidence=[])
+
+        if isinstance(self.prompt_policy, TextPromptPolicy):
+            return self._extract_head_relative_final(
+                video_path,
+                checkpoint_id,
+                time_range,
+                final_start_sec=final_start_sec,
+                dense_fps=dense_fps,
+                presence=presence,
+                final_presence=final_presence,
+            )
 
         final_range = TimeRange(
             start_sec=final_start_sec,
@@ -225,6 +247,173 @@ class Cp11FeatureExtractor:
             },
             evidence=evidence,
         )
+
+    def _extract_head_relative_final(
+        self,
+        video_path: Path,
+        checkpoint_id: str,
+        time_range: TimeRange,
+        *,
+        final_start_sec: float,
+        dense_fps: float,
+        presence: float,
+        final_presence: float,
+    ) -> ExtractedEvidence:
+        empty: dict[str, float | bool | None] = {
+            "dam_stage_presence_ratio": presence,
+            "dam_final_presence_ratio": final_presence,
+            "head_registration_reliable": False,
+            "head_valid_count": 0.0,
+            "frame_reference_available": False,
+            "expected_frame_dam_coverage_ratio": None,
+            "nose_overlap": None,
+            "visible_frame_area_ratio": None,
+            "final_valid_frame_count": 0.0,
+        }
+        reference = self.reference_store.load()
+        if reference is None:
+            return ExtractedEvidence(features=empty, evidence=[])
+        empty["frame_reference_available"] = True
+        try:
+            anchor_image, anchor_head, anchor_frame = self.reference_store.read_artifacts(
+                reference
+            )
+        except ValueError:
+            return ExtractedEvidence(features=empty, evidence=[])
+        final_range = TimeRange(start_sec=final_start_sec, end_sec=time_range.end_sec)
+        head_frames = list(
+            self.segmenter.track(
+                video_path,
+                final_range,
+                self.prompt_policy.head_prompts(
+                    self.annotations, final_range, checkpoint_id=checkpoint_id
+                ),
+                sample_fps=dense_fps,
+            )
+        )
+        dam_frames = list(
+            self.segmenter.track(
+                video_path,
+                final_range,
+                self.prompt_policy.dam_prompts(
+                    self.annotations, final_range, checkpoint_id=checkpoint_id
+                ),
+                sample_fps=dense_fps,
+            )
+        )
+        dam_by_index = {item.frame_index: item for item in dam_frames}
+        polygon = self._template_nose_polygon(anchor_head.shape)
+        measurements: list[
+            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float]
+        ] = []
+        reliable_count = 0
+        for head_item in head_frames:
+            head_mask = head_item.masks.get("mannequin_head")
+            dam_item = dam_by_index.get(head_item.frame_index)
+            dam_mask = dam_item.masks.get("rubber_dam") if dam_item is not None else None
+            if head_mask is None or dam_mask is None:
+                continue
+            image = read_frame(video_path, head_item.frame_index)
+            registration = estimate_similarity_registration(
+                anchor_image,
+                anchor_head,
+                image,
+                np.asarray(head_mask, dtype=bool),
+            )
+            if not registration.accepted:
+                continue
+            reliable_count += 1
+            projected_frame = warp_mask(
+                anchor_frame,
+                registration.matrix,
+                output_shape=np.asarray(dam_mask).shape,
+            )
+            projected_nose_points = transform_points(polygon, registration.matrix)
+            nose_mask = np.zeros_like(projected_frame, dtype=np.uint8)
+            cv2.fillPoly(
+                nose_mask,
+                [np.rint(projected_nose_points).astype(np.int32)],
+                1,
+            )
+            dam = np.asarray(dam_mask, dtype=bool) & green_dam_mask(image)
+            frame_area = max(1, int(projected_frame.sum()))
+            nose_area = max(1, int(nose_mask.sum()))
+            coverage = float(np.count_nonzero(dam & projected_frame) / frame_area)
+            nose_overlap = float(np.count_nonzero(dam & nose_mask.astype(bool)) / nose_area)
+            measurements.append(
+                (
+                    head_item,
+                    dam,
+                    projected_frame,
+                    nose_mask.astype(bool),
+                    coverage,
+                    nose_overlap,
+                )
+            )
+        empty["head_valid_count"] = float(reliable_count)
+        empty["head_registration_reliable"] = reliable_count >= self.minimum_final_frames
+        empty["final_valid_frame_count"] = float(len(measurements))
+        if len(measurements) < self.minimum_final_frames:
+            return ExtractedEvidence(features=empty, evidence=[])
+        coverage = float(np.median([item[4] for item in measurements]))
+        nose_overlap = float(np.median([item[5] for item in measurements]))
+        evidence = self._write_head_relative_evidence(video_path, measurements)
+        return ExtractedEvidence(
+            features={
+                **empty,
+                "head_registration_reliable": True,
+                "expected_frame_dam_coverage_ratio": coverage,
+                "nose_overlap": nose_overlap,
+                "visible_frame_area_ratio": 1.0 - coverage,
+            },
+            evidence=evidence,
+        )
+
+    def _template_nose_polygon(self, shape: tuple[int, int]) -> np.ndarray:
+        polygon = self.template.get("nose_polygon_normalized")
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            raise ValueError("mannequin template requires nose_polygon_normalized")
+        height, width = shape
+        return np.asarray(
+            [[float(point[0]) * width, float(point[1]) * height] for point in polygon],
+            dtype=np.float64,
+        )
+
+    def _write_head_relative_evidence(
+        self,
+        video_path: Path,
+        measurements: list[
+            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float]
+        ],
+    ) -> list[EvidenceItem]:
+        selected = sorted({0, len(measurements) // 2, len(measurements) - 1})
+        evidence: list[EvidenceItem] = []
+        for position in selected:
+            item, dam, projected_frame, nose, _coverage, _nose_overlap = measurements[position]
+            canvas = read_frame(video_path, item.frame_index).copy()
+            for mask, color, thickness in (
+                (dam, (0, 255, 0), 2),
+                (projected_frame, (255, 255, 255), 3),
+                (nose, (0, 220, 255), 3),
+            ):
+                contours, _ = cv2.findContours(
+                    mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(canvas, contours, -1, color, thickness)
+            output = safe_child(
+                self.evidence_root, f"cp_11/overlays/{item.frame_index:08d}.jpg"
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(output), canvas):
+                raise OSError(f"could not write evidence overlay: {output}")
+            evidence.append(
+                EvidenceItem(
+                    time_sec=item.frame_time_sec,
+                    overlay_path=output.relative_to(self.evidence_root).as_posix(),
+                    rule="cp09_frame_covered_and_template_nose_clear",
+                )
+            )
+        return evidence
 
     def _nose_box(self, final_range: TimeRange) -> tuple[float, float, float, float]:
         candidates = [

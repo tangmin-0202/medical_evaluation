@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import cv2
@@ -7,9 +8,15 @@ import numpy as np
 
 from medical_evaluation.annotations import BoxPrompt, VideoAnnotations
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.features.frame_reference import FrameReference, FrameReferenceStore
 from medical_evaluation.features.geometry import (
     relative_bbox_center_offset_to_box,
     write_reference_overlay,
+)
+from medical_evaluation.features.mannequin_registration import (
+    estimate_similarity_registration,
+    invert_similarity,
+    warp_mask,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
@@ -17,6 +24,7 @@ from medical_evaluation.segmentation.base import FrameMasks, VideoSegmenter
 from medical_evaluation.segmentation.prompt_policy import (
     AnnotationPromptPolicy,
     Cp09Cp11PromptPolicy,
+    TextPromptPolicy,
 )
 from medical_evaluation.storage import safe_child
 from medical_evaluation.video import read_frame
@@ -33,11 +41,14 @@ class Cp09FeatureExtractor:
         annotations: VideoAnnotations,
         evidence_root: Path,
         prompt_policy: Cp09Cp11PromptPolicy | None = None,
+        template: Mapping[str, object] | None = None,
     ) -> None:
         self.segmenter = segmenter
         self.annotations = annotations
         self.evidence_root = evidence_root
         self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
+        self.template = dict(template or {})
+        self.reference_store = FrameReferenceStore(evidence_root)
 
     @property
     def model_version(self) -> str:
@@ -56,6 +67,11 @@ class Cp09FeatureExtractor:
             raise ValueError("Cp09FeatureExtractor is CP09-only")
         if analysis_width <= 0:
             raise ValueError("analysis_width must be positive")
+
+        if isinstance(self.prompt_policy, TextPromptPolicy):
+            return self._extract_head_relative(
+                video_path, checkpoint_id, time_range, dense_fps=dense_fps
+            )
 
         frame_prompts = self.prompt_policy.frame_prompts(
             self.annotations,
@@ -138,6 +154,242 @@ class Cp09FeatureExtractor:
             },
             evidence=evidence,
         )
+
+    def _extract_head_relative(
+        self,
+        video_path: Path,
+        checkpoint_id: str,
+        time_range: TimeRange,
+        *,
+        dense_fps: float,
+    ) -> ExtractedEvidence:
+        head_frames = list(
+            self.segmenter.track(
+                video_path,
+                time_range,
+                self.prompt_policy.head_prompts(
+                    self.annotations, time_range, checkpoint_id=checkpoint_id
+                ),
+                sample_fps=dense_fps,
+            )
+        )
+        frame_frames = list(
+            self.segmenter.track(
+                video_path,
+                time_range,
+                self.prompt_policy.frame_prompts(
+                    self.annotations, time_range, checkpoint_id=checkpoint_id
+                ),
+                sample_fps=dense_fps,
+            )
+        )
+        heads = [
+            item
+            for item in head_frames
+            if (mask := item.masks.get("mannequin_head")) is not None
+            and np.asarray(mask, dtype=bool).any()
+        ]
+        empty: dict[str, float | bool | None] = {
+            "head_registration_reliable": False,
+            "head_valid_count": float(len(heads)),
+            "frame_presence_ratio": 0.0,
+            "frame_valid_count": 0.0,
+            "frame_present_at_end": False,
+            "frame_stable_duration_sec": 0.0,
+            "frame_center_x_ratio": None,
+            "frame_center_y_ratio": None,
+            "frame_scale_ratio": None,
+            "frame_angle_deg": None,
+            "head_template_compatible": False,
+        }
+        if len(heads) < self.minimum_valid_frames:
+            return ExtractedEvidence(features=empty, evidence=[])
+
+        anchor_item = heads[-1]
+        anchor_head = np.asarray(anchor_item.masks["mannequin_head"], dtype=bool)
+        anchor_image = read_frame(video_path, anchor_item.frame_index)
+        frames_by_index = {item.frame_index: item for item in frame_frames}
+        mapped: list[tuple[FrameMasks, np.ndarray]] = []
+        reliable_count = 0
+        for head_item in heads:
+            head_mask = np.asarray(head_item.masks["mannequin_head"], dtype=bool)
+            image = read_frame(video_path, head_item.frame_index)
+            if head_item.frame_index == anchor_item.frame_index:
+                registration_ok = True
+                matrix = np.asarray([[1, 0, 0], [0, 1, 0]], dtype=float)
+            else:
+                registration = estimate_similarity_registration(
+                    anchor_image, anchor_head, image, head_mask
+                )
+                registration_ok = registration.accepted
+                matrix = registration.matrix
+            if not registration_ok:
+                continue
+            reliable_count += 1
+            frame_item = frames_by_index.get(head_item.frame_index)
+            frame_mask = (
+                frame_item.masks.get("rubber_dam_frame")
+                if frame_item is not None
+                else None
+            )
+            if frame_mask is None or not np.asarray(frame_mask, dtype=bool).any():
+                continue
+            mapped_mask = warp_mask(
+                np.asarray(frame_mask, dtype=bool),
+                invert_similarity(matrix),
+                output_shape=anchor_head.shape,
+            )
+            if mapped_mask.any():
+                mapped.append((head_item, mapped_mask))
+
+        head_reliable = reliable_count >= self.minimum_valid_frames
+        presence_ratio = float(len(mapped) / reliable_count) if reliable_count else 0.0
+        final_cutoff = time_range.end_sec - 2.0
+        final_head_indices = {
+            item.frame_index for item in heads if item.frame_time_sec >= final_cutoff
+        }
+        final_mapped = [item for item in mapped if item[0].frame_index in final_head_indices]
+        present_at_end = bool(final_mapped) and len(final_mapped) >= max(
+            1, min(self.minimum_valid_frames, len(final_head_indices))
+        )
+        stable = self._stable_tail(final_mapped or mapped, anchor_head)
+        template_reference = self.template.get("reference", {})
+        template_compatible = bool(
+            isinstance(template_reference, Mapping)
+            and template_reference.get("video_id") == self.annotations.video_id
+        )
+        features = dict(empty)
+        features.update(
+            {
+                "head_registration_reliable": head_reliable,
+                "head_valid_count": float(reliable_count),
+                "frame_presence_ratio": presence_ratio,
+                "frame_valid_count": float(len(mapped)),
+                "frame_present_at_end": present_at_end,
+                "head_template_compatible": template_compatible,
+            }
+        )
+        evidence: list[EvidenceItem] = []
+        if stable is not None:
+            stable_items, median_mask, metrics = stable
+            duration = stable_items[-1][0].frame_time_sec - stable_items[0][0].frame_time_sec
+            features.update(
+                {
+                    "frame_stable_duration_sec": float(max(0.0, duration)),
+                    **metrics,
+                }
+            )
+            reference = FrameReference(
+                schema_version=1,
+                video_id=self.annotations.video_id,
+                anchor_frame_index=anchor_item.frame_index,
+                anchor_time_sec=anchor_item.frame_time_sec,
+                anchor_image_path="cp_09/reference/anchor.jpg",
+                anchor_head_mask_path="cp_09/reference/head.png",
+                frame_mask_path="cp_09/reference/frame.png",
+                frame_center_x_ratio=float(metrics["frame_center_x_ratio"]),
+                frame_center_y_ratio=float(metrics["frame_center_y_ratio"]),
+                frame_scale_ratio=float(metrics["frame_scale_ratio"]),
+                frame_angle_deg=float(metrics["frame_angle_deg"]),
+                stable_duration_sec=float(max(0.0, duration)),
+                template_id=str(self.template.get("template_id", "unconfigured")),
+                template_compatible=template_compatible,
+            )
+            self.reference_store.save(
+                reference,
+                anchor_image=anchor_image,
+                anchor_head_mask=anchor_head,
+                frame_mask=median_mask,
+            )
+            evidence = self._write_head_relative_evidence(
+                video_path, stable_items, anchor_head
+            )
+        return ExtractedEvidence(features=features, evidence=evidence)
+
+    @staticmethod
+    def _frame_geometry(mask: np.ndarray, head_mask: np.ndarray) -> dict[str, float]:
+        ys, xs = np.nonzero(mask)
+        head_ys, head_xs = np.nonzero(head_mask)
+        if not len(xs) or not len(head_xs):
+            raise ValueError("frame and head masks must be non-empty")
+        points = np.column_stack((xs, ys)).astype(np.float32)
+        (_cx, _cy), (width, height), angle = cv2.minAreaRect(points)
+        if width < height:
+            angle += 90.0
+        head_width = max(1.0, float(head_xs.max() - head_xs.min() + 1))
+        head_height = max(1.0, float(head_ys.max() - head_ys.min() + 1))
+        return {
+            "frame_center_x_ratio": float((np.median(xs) - head_xs.min()) / head_width),
+            "frame_center_y_ratio": float((np.median(ys) - head_ys.min()) / head_height),
+            "frame_scale_ratio": float(np.sqrt(mask.sum() / max(1, head_mask.sum()))),
+            "frame_angle_deg": float(angle),
+        }
+
+    def _stable_tail(
+        self,
+        values: list[tuple[FrameMasks, np.ndarray]],
+        head_mask: np.ndarray,
+    ) -> tuple[list[tuple[FrameMasks, np.ndarray]], np.ndarray, dict[str, float]] | None:
+        if len(values) < self.minimum_valid_frames:
+            return None
+        geometries = [self._frame_geometry(mask, head_mask) for _item, mask in values]
+        center = np.asarray(
+            [[g["frame_center_x_ratio"], g["frame_center_y_ratio"]] for g in geometries]
+        )
+        scale = np.asarray([g["frame_scale_ratio"] for g in geometries])
+        angle = np.asarray([g["frame_angle_deg"] for g in geometries])
+        median_center = np.median(center, axis=0)
+        median_scale = float(np.median(scale))
+        median_angle = float(np.median(angle))
+        keep = (
+            (np.linalg.norm(center - median_center, axis=1) <= 0.05)
+            & (np.abs(scale - median_scale) <= 0.12)
+            & (np.abs(angle - median_angle) <= 12.0)
+        )
+        stable_values = [value for value, accepted in zip(values, keep, strict=True) if accepted]
+        if len(stable_values) < self.minimum_valid_frames:
+            return None
+        median_mask = np.mean(
+            [mask.astype(np.float32) for _item, mask in stable_values], axis=0
+        ) >= 0.5
+        return stable_values, median_mask, self._frame_geometry(median_mask, head_mask)
+
+    def _write_head_relative_evidence(
+        self,
+        video_path: Path,
+        values: list[tuple[FrameMasks, np.ndarray]],
+        anchor_head: np.ndarray,
+    ) -> list[EvidenceItem]:
+        selected = sorted({0, len(values) // 2, len(values) - 1})
+        evidence: list[EvidenceItem] = []
+        for position in selected:
+            item, mapped_frame = values[position]
+            image = read_frame(video_path, item.frame_index)
+            if image.shape[:2] != anchor_head.shape:
+                continue
+            canvas = image.copy()
+            for mask, color, thickness in (
+                (anchor_head, (0, 255, 0), 2),
+                (mapped_frame, (255, 255, 255), 3),
+            ):
+                contours, _ = cv2.findContours(
+                    mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                cv2.drawContours(canvas, contours, -1, color, thickness)
+            output = safe_child(
+                self.evidence_root, f"cp_09/overlays/{item.frame_index:08d}.jpg"
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(output), canvas):
+                raise OSError(f"could not write evidence overlay: {output}")
+            evidence.append(
+                EvidenceItem(
+                    time_sec=item.frame_time_sec,
+                    overlay_path=output.relative_to(self.evidence_root).as_posix(),
+                    rule="frame_installed_stably_relative_to_mannequin",
+                )
+            )
+        return evidence
 
     def _oral_reference_box(
         self,

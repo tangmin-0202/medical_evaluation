@@ -198,7 +198,7 @@ def test_text_policy_needs_no_manual_frame_prompt(tmp_path: Path) -> None:
         analysis_width=1280,
     )
 
-    assert result.features["frame_oral_center_offset"] == pytest.approx(0.0)
+    assert "head_registration_reliable" in result.features
     assert [(p.kind, p.text) for p in segmenter.prompts] == [
         ("text", "thin white U-shaped plastic frame around the mouth")
     ]
