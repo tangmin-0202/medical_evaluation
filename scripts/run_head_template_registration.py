@@ -11,6 +11,7 @@ import numpy as np
 
 from medical_evaluation.features.mannequin_registration import (
     RegistrationLimits,
+    compose_similarity,
     estimate_similarity_registration,
     registration_is_continuous,
     transform_points,
@@ -89,6 +90,40 @@ def select_tail_rows(
     return selected
 
 
+def select_sample_anchors(
+    rows: Sequence[Mapping[str, object]], reference: Mapping[str, object]
+) -> dict[str, Mapping[str, object]]:
+    reference_key = f"{reference['video_id']}:{reference['stage']}"
+    grouped: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["sample_key"])].append(row)
+    anchors: dict[str, Mapping[str, object]] = {}
+    for sample_key, values in grouped.items():
+        ordered = sorted(values, key=lambda item: int(item["sample_position"]))
+        if sample_key == reference_key:
+            anchors[sample_key] = next(
+                item
+                for item in ordered
+                if int(item["frame_index"]) == int(reference["frame_index"])
+            )
+        else:
+            anchors[sample_key] = ordered[-1]
+    return anchors
+
+
+def gate_accepts(
+    samples: Mapping[str, Mapping[str, object]],
+    required_template_samples: Sequence[str],
+) -> bool:
+    return bool(samples) and all(
+        item.get("accepted") is True for item in samples.values()
+    ) and all(
+        sample_key in samples
+        and samples[sample_key].get("template_compatible") is True
+        for sample_key in required_template_samples
+    )
+
+
 def _image_path(root: Path, kind: str, frame_index: int) -> Path:
     for suffix in (".png", ".jpg", ".jpeg"):
         candidate = root / kind / f"{frame_index:08d}{suffix}"
@@ -125,7 +160,7 @@ def _write_overlay(
     output_path: Path,
     image: np.ndarray,
     target_mask: np.ndarray,
-    mapped_nose: np.ndarray,
+    mapped_nose: np.ndarray | None,
     *,
     accepted: bool,
     reason: str | None,
@@ -137,7 +172,14 @@ def _write_overlay(
         target_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
     cv2.drawContours(canvas, contours, -1, (0, 255, 0), 3)
-    cv2.polylines(canvas, [np.rint(mapped_nose).astype(np.int32)], True, (0, 220, 255), 4)
+    if mapped_nose is not None:
+        cv2.polylines(
+            canvas,
+            [np.rint(mapped_nose).astype(np.int32)],
+            True,
+            (0, 220, 255),
+            4,
+        )
     label = (
         f"accepted iou={mask_iou:.3f} residual={residual_px:.2f}px"
         if accepted
@@ -178,18 +220,39 @@ def run_gate(
         nose_polygon = _polygon_pixels(template, reference_mask.shape)
         rows: list[dict[str, object]] = []
         previous_by_sample: dict[str, np.ndarray] = {}
-        source_rows = select_tail_rows(candidates[prompt], max_frames_per_sample)
+        valid_rows = [row for row in candidates[prompt] if row.get("valid") is True]
+        source_rows = select_tail_rows(valid_rows, max_frames_per_sample)
+        anchors = select_sample_anchors(source_rows, reference)
+        anchor_context: dict[
+            str, tuple[np.ndarray, np.ndarray, object]
+        ] = {}
+        for sample_key, anchor_row in anchors.items():
+            anchor_root = _trial_root(source, str(anchor_row["video_id"]), prompt)
+            anchor_image, anchor_mask = _read_pair(
+                anchor_root, int(anchor_row["frame_index"])
+            )
+            template_registration = estimate_similarity_registration(
+                reference_image,
+                reference_mask,
+                anchor_image,
+                anchor_mask,
+                limits,
+            )
+            anchor_context[sample_key] = (
+                anchor_image,
+                anchor_mask,
+                template_registration,
+            )
         for source_row in source_rows:
-            if source_row.get("valid") is not True:
-                continue
             sample_key = str(source_row["sample_key"])
             video_id = str(source_row["video_id"])
             frame_index = int(source_row["frame_index"])
             target_root = _trial_root(source, video_id, prompt)
             target_image, target_mask = _read_pair(target_root, frame_index)
+            anchor_image, anchor_mask, template_registration = anchor_context[sample_key]
             result = estimate_similarity_registration(
-                reference_image,
-                reference_mask,
+                anchor_image,
+                anchor_mask,
                 target_image,
                 target_mask,
                 limits,
@@ -208,7 +271,17 @@ def run_gate(
             )
             if result.accepted:
                 previous_by_sample[sample_key] = result.matrix
-            mapped_nose = transform_points(nose_polygon, result.matrix)
+            template_compatible = bool(template_registration.accepted)
+            template_to_target = (
+                compose_similarity(result.matrix, template_registration.matrix)
+                if result.accepted and template_compatible
+                else None
+            )
+            mapped_nose = (
+                transform_points(nose_polygon, template_to_target)
+                if template_to_target is not None
+                else None
+            )
             overlay_path = (
                 output
                 / "overlays"
@@ -244,7 +317,11 @@ def run_gate(
                     "residual_px": result.residual_px,
                     "scale": result.scale,
                     "angle_deg": result.angle_deg,
-                    "mapped_nose_polygon": mapped_nose.tolist(),
+                    "template_compatible": template_compatible,
+                    "template_reason": template_registration.reason,
+                    "mapped_nose_polygon": (
+                        mapped_nose.tolist() if mapped_nose is not None else None
+                    ),
                     "overlay_path": str(overlay_path),
                 }
             )
@@ -254,13 +331,26 @@ def run_gate(
         samples = {
             key: {
                 "accepted": has_consecutive_acceptance(value, minimum_consecutive),
+                "template_compatible": bool(
+                    anchor_context[key][2].accepted
+                ),
+                "template_reason": anchor_context[key][2].reason,
                 "frame_count": len(value),
                 "accepted_frame_count": sum(row["accepted"] is True for row in value),
                 "continuous_frame_count": sum(row["continuous"] is True for row in value),
             }
             for key, value in grouped.items()
         }
-        accepted = bool(samples) and all(item["accepted"] for item in samples.values())
+        required_template_samples = template.get(
+            "required_template_samples",
+            [f"{reference['video_id']}:{reference['stage']}"],
+        )
+        if not isinstance(required_template_samples, Sequence) or isinstance(
+            required_template_samples, (str, bytes)
+        ):
+            raise TypeError("required_template_samples must be a sequence")
+        required_template_samples = [str(item) for item in required_template_samples]
+        accepted = gate_accepts(samples, required_template_samples)
         atomic_write_json(
             output / "summary.json",
             {
@@ -271,6 +361,7 @@ def run_gate(
                 "template": template,
                 "minimum_consecutive": minimum_consecutive,
                 "max_frames_per_sample": max_frames_per_sample,
+                "required_template_samples": required_template_samples,
                 "samples": samples,
                 "rows": rows,
             },

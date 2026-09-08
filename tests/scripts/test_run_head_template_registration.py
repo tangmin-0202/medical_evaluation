@@ -61,6 +61,34 @@ def test_tail_sampling_caps_each_stage_without_breaking_adjacency() -> None:
     assert [row["sample_position"] for row in selected if row["sample_key"] == "success:cp_11"] == [2, 3, 4, 5]
 
 
+def test_each_stage_uses_its_own_tail_anchor_except_the_canonical_stage() -> None:
+    module = _load_script()
+    rows = [
+        {"sample_key": "success:cp_09", "sample_position": 4, "frame_index": 40},
+        {"sample_key": "success:cp_09", "sample_position": 5, "frame_index": 50},
+        {"sample_key": "success:cp_11", "sample_position": 8, "frame_index": 80},
+        {"sample_key": "success:cp_11", "sample_position": 9, "frame_index": 90},
+    ]
+    reference = {"video_id": "success", "stage": "cp_11", "frame_index": 80}
+
+    anchors = module.select_sample_anchors(rows, reference)
+
+    assert anchors["success:cp_09"]["frame_index"] == 50
+    assert anchors["success:cp_11"]["frame_index"] == 80
+
+
+def test_overall_gate_requires_template_compatibility_only_for_declared_samples() -> None:
+    module = _load_script()
+    samples = {
+        "success:cp_09": {"accepted": True, "template_compatible": True},
+        "success:cp_11": {"accepted": True, "template_compatible": True},
+        "failure:cp_09": {"accepted": True, "template_compatible": False},
+    }
+
+    assert module.gate_accepts(samples, ["success:cp_09", "success:cp_11"])
+    assert not module.gate_accepts(samples, ["failure:cp_09"])
+
+
 def test_gate_reuses_saved_raw_masks_and_writes_auditable_overlays(tmp_path: Path) -> None:
     module = _load_script()
     source = tmp_path / "source"

@@ -14,6 +14,10 @@
     [0.3281, 0.9990],
     [0.2755, 0.9990]
   ],
+  "required_template_samples": [
+    "success:cp_09",
+    "success:cp_11"
+  ],
   "provenance": {
     "source": "user-confirmed nose region in success CP11 final frame",
     "sam3_run": "head-nose-prompt-gate-897484d",
