@@ -249,10 +249,15 @@ class Cp09FeatureExtractor:
             item.frame_index for item in heads if item.frame_time_sec >= final_cutoff
         }
         final_mapped = [item for item in mapped if item[0].frame_index in final_head_indices]
-        present_at_end = bool(final_mapped) and len(final_mapped) >= max(
-            1, min(self.minimum_valid_frames, len(final_head_indices))
+        last_head_index = max(heads, key=lambda item: item.frame_time_sec).frame_index
+        present_at_end = any(
+            item.frame_index == last_head_index for item, _mask in final_mapped
         )
-        stable = self._stable_tail(final_mapped or mapped, anchor_head)
+        stable = self._stable_tail(
+            final_mapped or mapped,
+            anchor_head,
+            max_gap_sec=1.5 / dense_fps,
+        )
         template_reference = self.template.get("reference", {})
         template_compatible = bool(
             isinstance(template_reference, Mapping)
@@ -333,24 +338,45 @@ class Cp09FeatureExtractor:
         self,
         values: list[tuple[FrameMasks, np.ndarray]],
         head_mask: np.ndarray,
+        *,
+        max_gap_sec: float,
     ) -> tuple[list[tuple[FrameMasks, np.ndarray]], np.ndarray, dict[str, float]] | None:
         if len(values) < self.minimum_valid_frames:
             return None
-        geometries = [self._frame_geometry(mask, head_mask) for _item, mask in values]
-        center = np.asarray(
-            [[g["frame_center_x_ratio"], g["frame_center_y_ratio"]] for g in geometries]
-        )
-        scale = np.asarray([g["frame_scale_ratio"] for g in geometries])
-        angle = np.asarray([g["frame_angle_deg"] for g in geometries])
-        median_center = np.median(center, axis=0)
-        median_scale = float(np.median(scale))
-        median_angle = float(np.median(angle))
-        keep = (
-            (np.linalg.norm(center - median_center, axis=1) <= 0.05)
-            & (np.abs(scale - median_scale) <= 0.12)
-            & (np.abs(angle - median_angle) <= 12.0)
-        )
-        stable_values = [value for value, accepted in zip(values, keep, strict=True) if accepted]
+        ordered = sorted(values, key=lambda value: value[0].frame_time_sec)
+        contiguous = [ordered[-1]]
+        for value in reversed(ordered[:-1]):
+            if contiguous[0][0].frame_time_sec - value[0].frame_time_sec > max_gap_sec:
+                break
+            contiguous.insert(0, value)
+        geometries = [
+            self._frame_geometry(mask, head_mask) for _item, mask in contiguous
+        ]
+        final_geometry = geometries[-1]
+        stable_values = [contiguous[-1]]
+        for value, geometry in reversed(
+            list(zip(contiguous[:-1], geometries[:-1], strict=True))
+        ):
+            center_delta = np.hypot(
+                geometry["frame_center_x_ratio"]
+                - final_geometry["frame_center_x_ratio"],
+                geometry["frame_center_y_ratio"]
+                - final_geometry["frame_center_y_ratio"],
+            )
+            if (
+                center_delta > 0.05
+                or abs(
+                    geometry["frame_scale_ratio"]
+                    - final_geometry["frame_scale_ratio"]
+                )
+                > 0.12
+                or abs(
+                    geometry["frame_angle_deg"] - final_geometry["frame_angle_deg"]
+                )
+                > 12.0
+            ):
+                break
+            stable_values.insert(0, value)
         if len(stable_values) < self.minimum_valid_frames:
             return None
         median_mask = np.mean(

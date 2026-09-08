@@ -308,3 +308,24 @@ def test_rejects_other_checkpoints(tmp_path: Path) -> None:
             dense_fps=2,
             analysis_width=1280,
         )
+
+
+def test_stable_tail_does_not_bridge_missing_samples(tmp_path: Path) -> None:
+    frame_mask, head_mask = _masks()
+    extractor = Cp09FeatureExtractor(
+        segmenter=FakeSegmenter([]),
+        annotations=_annotations(),
+        evidence_root=tmp_path,
+    )
+    values = [
+        (_frame(index, frame_mask, None), frame_mask)
+        for index in (5, 10, 30, 35)
+    ]
+
+    stable = extractor._stable_tail(
+        values,
+        head_mask,
+        max_gap_sec=0.6,
+    )
+
+    assert stable is None
