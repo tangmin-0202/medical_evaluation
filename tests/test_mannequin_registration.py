@@ -108,6 +108,31 @@ def test_registration_rejects_textureless_evidence() -> None:
     assert result.reason == "insufficient_feature_matches"
 
 
+def test_search_region_expands_with_image_size_across_changing_visible_fragments() -> None:
+    reference, full_mask, target, _target_mask, expected = _textured_pair()
+    reference_mask = np.zeros_like(full_mask)
+    reference_mask[45:105, 55:255] = full_mask[45:105, 55:255]
+    transformed_full = warp_mask(full_mask, expected, output_shape=full_mask.shape)
+    target_mask = np.zeros_like(full_mask)
+    target_mask[145:220, 55:285] = transformed_full[145:220, 55:285]
+
+    result = estimate_similarity_registration(
+        reference,
+        reference_mask,
+        target,
+        target_mask,
+        RegistrationLimits(
+            min_matches=8,
+            min_inliers=6,
+            min_mask_iou=0.0,
+            search_dilation_diagonal_ratio=0.18,
+        ),
+    )
+
+    assert result.accepted, result.reason
+    assert result.match_count >= 8
+
+
 @pytest.mark.parametrize(
     ("current", "expected"),
     [

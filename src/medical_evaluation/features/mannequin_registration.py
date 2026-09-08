@@ -19,6 +19,7 @@ class RegistrationLimits:
     min_scale: float = 0.60
     max_scale: float = 1.60
     max_residual_px: float = 5.0
+    search_dilation_diagonal_ratio: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -104,8 +105,16 @@ def estimate_similarity_registration(
     if ref_mask.shape != reference.shape[:2] or dst_mask.shape != target.shape[:2]:
         raise ValueError("masks must match image height and width")
 
+    if not 0 <= limits.search_dilation_diagonal_ratio <= 0.5:
+        raise ValueError("search_dilation_diagonal_ratio must be within [0, 0.5]")
     detector = cv2.SIFT_create(nfeatures=1500, contrastThreshold=0.01)
-    kernel = np.ones((15, 15), dtype=np.uint8)
+    radius = max(
+        1,
+        round(np.hypot(*reference.shape[:2]) * limits.search_dilation_diagonal_ratio),
+    )
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)
+    )
     ref_search = cv2.dilate(ref_mask.astype(np.uint8) * 255, kernel)
     dst_search = cv2.dilate(dst_mask.astype(np.uint8) * 255, kernel)
     ref_gray = cv2.cvtColor(reference, cv2.COLOR_BGR2GRAY)
