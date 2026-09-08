@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "template_id": "dental-mannequin-success-cp11-v1",
+  "head_prompt": "dental training mannequin head",
+  "reference": {
+    "video_id": "success",
+    "stage": "cp_11",
+    "frame_index": 12903,
+    "source_time_sec": 258.0
+  },
+  "nose_polygon_normalized": [
+    [0.2755, 0.8824],
+    [0.3281, 0.8824],
+    [0.3281, 0.9990],
+    [0.2755, 0.9990]
+  ],
+  "provenance": {
+    "source": "user-confirmed nose region in success CP11 final frame",
+    "sam3_run": "head-nose-prompt-gate-897484d",
+    "sam3_revision": "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7",
+    "weight_sha256": "0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6"
+  },
+  "demo_only": true
+}
