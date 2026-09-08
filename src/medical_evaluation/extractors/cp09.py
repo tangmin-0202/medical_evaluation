@@ -272,7 +272,11 @@ class Cp09FeatureExtractor:
         evidence: list[EvidenceItem] = []
         if stable is not None:
             stable_items, median_mask, metrics = stable
-            duration = stable_items[-1][0].frame_time_sec - stable_items[0][0].frame_time_sec
+            duration = (
+                stable_items[-1][0].frame_time_sec
+                - stable_items[0][0].frame_time_sec
+                + 1.0 / dense_fps
+            )
             features.update(
                 {
                     "frame_stable_duration_sec": float(max(0.0, duration)),

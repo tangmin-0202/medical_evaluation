@@ -17,6 +17,7 @@ from medical_evaluation.features.appearance import (
 from medical_evaluation.features.frame_reference import FrameReferenceStore
 from medical_evaluation.features.mannequin_registration import (
     estimate_similarity_registration,
+    invert_similarity,
     transform_points,
     warp_mask,
 )
@@ -315,20 +316,21 @@ class Cp11FeatureExtractor:
                 continue
             image = read_frame(video_path, head_item.frame_index)
             registration = estimate_similarity_registration(
-                anchor_image,
-                anchor_head,
                 image,
                 np.asarray(head_mask, dtype=bool),
+                anchor_image,
+                anchor_head,
             )
             if not registration.accepted:
                 continue
+            anchor_to_current = invert_similarity(registration.matrix)
             reliable_count += 1
             projected_frame = warp_mask(
                 anchor_frame,
-                registration.matrix,
+                anchor_to_current,
                 output_shape=np.asarray(dam_mask).shape,
             )
-            projected_nose_points = transform_points(polygon, registration.matrix)
+            projected_nose_points = transform_points(polygon, anchor_to_current)
             nose_mask = np.zeros_like(projected_frame, dtype=np.uint8)
             cv2.fillPoly(
                 nose_mask,

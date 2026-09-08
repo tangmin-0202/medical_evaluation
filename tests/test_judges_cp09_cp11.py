@@ -3,7 +3,7 @@ from __future__ import annotations
 from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp11
 
 HEAD_THRESHOLDS = {
-    "min_frame_stable_duration_sec": 2.0,
+    "min_frame_stable_duration_sec": 1.0,
     "min_frame_center_x_ratio": 0.0,
     "max_frame_center_x_ratio": 1.0,
     "min_frame_center_y_ratio": 0.0,
