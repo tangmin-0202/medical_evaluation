@@ -416,7 +416,6 @@ class Cp11FeatureExtractor:
                 "expected_frame_dam_coverage_ratio": coverage,
                 "visible_frame_ratio": visible_ratio,
                 "nose_overlap": nose_overlap,
-                "visible_frame_area_ratio": 1.0 - coverage,
             },
             evidence=evidence,
         )

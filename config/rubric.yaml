@@ -152,13 +152,13 @@ checkpoints:
   thresholds:
     max_oral_center_offset: 0.50
     min_frame_stable_duration_sec: 1.0
-    min_frame_center_x_ratio: 0.0
-    max_frame_center_x_ratio: 1.0
+    min_frame_center_x_ratio: 0.55
+    max_frame_center_x_ratio: 0.85
     min_frame_center_y_ratio: 0.0
-    max_frame_center_y_ratio: 1.0
-    min_frame_scale_ratio: 0.01
-    max_frame_scale_ratio: 1.0
-    max_abs_frame_angle_deg: 90.0
+    max_frame_center_y_ratio: 0.30
+    min_frame_scale_ratio: 0.40
+    max_frame_scale_ratio: 0.80
+    max_abs_frame_angle_deg: 50.0
 - id: cp_10
   name: 牙线协助橡皮布就位
   criteria:
