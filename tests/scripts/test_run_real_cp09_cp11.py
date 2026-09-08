@@ -7,6 +7,9 @@ def test_real_runner_has_exact_three_demo_inputs() -> None:
         "failure": "橡皮障失败.mp4",
         "clamp_failure": "橡皮障夹子飞了.mp4",
     }
-    args = build_parser().parse_args(["--video-id", "success", "--no-commentary"])
+    args = build_parser().parse_args(
+        ["--video-id", "success", "--no-commentary", "--only", "cp_11"]
+    )
     assert args.video_id == "success"
     assert args.no_commentary is True
+    assert args.only == "cp_11"

@@ -270,6 +270,10 @@ class Cp11FeatureExtractor:
             "nose_overlap": None,
             "visible_frame_area_ratio": None,
             "final_valid_frame_count": 0.0,
+            "head_registration_candidate_count": 0.0,
+            "head_registration_rejected_count": 0.0,
+            "head_registration_low_mask_overlap_count": 0.0,
+            "head_registration_low_match_count": 0.0,
         }
         reference = self.reference_store.load()
         if reference is None:
@@ -308,6 +312,9 @@ class Cp11FeatureExtractor:
             tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float]
         ] = []
         reliable_count = 0
+        rejected_count = 0
+        low_mask_overlap_count = 0
+        low_match_count = 0
         for head_item in head_frames:
             head_mask = head_item.masks.get("mannequin_head")
             dam_item = dam_by_index.get(head_item.frame_index)
@@ -315,6 +322,15 @@ class Cp11FeatureExtractor:
             if head_mask is None or dam_mask is None:
                 continue
             image = read_frame(video_path, head_item.frame_index)
+            debug_head = safe_child(
+                self.evidence_root,
+                f"cp_11/debug/head/{head_item.frame_index:08d}.png",
+            )
+            debug_head.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(
+                str(debug_head), np.asarray(head_mask, dtype=np.uint8) * 255
+            ):
+                raise OSError(f"could not write CP11 debug head mask: {debug_head}")
             registration = estimate_similarity_registration(
                 image,
                 np.asarray(head_mask, dtype=bool),
@@ -322,6 +338,11 @@ class Cp11FeatureExtractor:
                 anchor_head,
             )
             if not registration.accepted:
+                rejected_count += 1
+                low_mask_overlap_count += int(registration.reason == "low_mask_overlap")
+                low_match_count += int(
+                    registration.reason == "insufficient_feature_matches"
+                )
                 continue
             anchor_to_current = invert_similarity(registration.matrix)
             reliable_count += 1
@@ -353,6 +374,14 @@ class Cp11FeatureExtractor:
                 )
             )
         empty["head_valid_count"] = float(reliable_count)
+        empty["head_registration_candidate_count"] = float(
+            reliable_count + rejected_count
+        )
+        empty["head_registration_rejected_count"] = float(rejected_count)
+        empty["head_registration_low_mask_overlap_count"] = float(
+            low_mask_overlap_count
+        )
+        empty["head_registration_low_match_count"] = float(low_match_count)
         empty["head_registration_reliable"] = reliable_count >= self.minimum_final_frames
         empty["final_valid_frame_count"] = float(len(measurements))
         if len(measurements) < self.minimum_final_frames:

@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-id", choices=tuple(VIDEO_FILENAMES), required=True)
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--no-commentary", action="store_true")
+    parser.add_argument("--only", choices=("cp_09", "cp_11"), default=None)
     return parser
 
 
@@ -30,6 +31,8 @@ def main() -> int:
     pipeline = build_analysis_pipeline(settings)
     if args.no_commentary:
         pipeline.commentary_provider = None
+    if args.only:
+        pipeline.enabled_checkpoint_ids = frozenset({args.only})
     job = JobRecord(
         id=args.job_id or f"sam3-{args.video_id}-{uuid4().hex[:12]}",
         video_id=args.video_id,
