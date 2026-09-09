@@ -145,6 +145,26 @@ def template_fallback(reason_code: str) -> VlmReview:
             "支架位置未达到居中要求。",
             "检查支架四周张力后重新调整至中央。",
         ),
+        "frame_not_observed": (
+            "本阶段未观察到支架，安装没有完成。",
+            "完成支架安装，并在阶段结束前保持支架在位。",
+        ),
+        "frame_missing_at_stage_end": (
+            "支架曾出现，但阶段结束时未保持在位。",
+            "重新安装并固定支架，确认阶段结束时仍稳定在位。",
+        ),
+        "frame_not_stabilized": (
+            "支架在阶段结束前未形成足够长的稳定状态。",
+            "调整支架后短暂停留，确认位置不再持续变化。",
+        ),
+        "dental_floss_not_observed": (
+            "本阶段未观察到牙线，牙线辅助就位没有完成。",
+            "使用牙线依次通过目标牙两侧接触区。",
+        ),
+        "floss_contact_incomplete": (
+            "牙线已出现，但没有可靠通过目标牙两侧接触区。",
+            "重新让牙线分别通过目标牙两侧接触区。",
+        ),
         "unreliable_stage_presence": (
             "无法可靠确认本阶段是否出现橡皮布。",
             "请检查阶段时间范围和视频清晰度。",
@@ -166,8 +186,8 @@ def template_fallback(reason_code: str) -> VlmReview:
             "请补充能够同时观察这些区域的清晰末尾证据。",
         ),
         "final_position_incorrect": (
-            "橡皮布最终位置未同时满足规则要求。",
-            "重新调整游离缘，保证口鼻无遮挡并充分撑开。",
+            "末尾仍可见裸露白色支架，或橡皮布遮挡鼻部。",
+            "调整橡皮布覆盖裸露支架，并保持鼻部无遮挡。",
         ),
     }
     reason, suggestion = templates.get(

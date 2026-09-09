@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from medical_evaluation.vlm.client import QwenVlmClient
+from medical_evaluation.vlm.client import QwenVlmClient, template_fallback
 from medical_evaluation.vlm.schemas import VlmReviewRequest
 
 
@@ -17,6 +17,15 @@ def make_review_request() -> VlmReviewRequest:
         reason_code="frame_not_centered_on_oral_region",
         features={"frame_oral_center_offset": 0.2},
     )
+
+
+def test_fallback_messages_match_current_cp09_cp10_cp11_rules() -> None:
+    assert "稳定" in template_fallback("frame_not_stabilized").reason_zh
+    assert "牙线" in template_fallback("dental_floss_not_observed").reason_zh
+    cp11 = template_fallback("final_position_incorrect")
+    assert "白色支架" in cp11.reason_zh
+    assert "鼻部" in cp11.reason_zh
+    assert "口鼻" not in cp11.reason_zh + cp11.suggestion_zh
 
 
 def test_valid_structured_response_is_returned_without_score_override() -> None:
