@@ -150,7 +150,7 @@ def test_cp11_text_mode_requires_no_visible_white_frame_and_clear_nose() -> None
     thresholds = {
         "min_stage_dam_presence_ratio": 0.05,
         "min_final_dam_presence_ratio": 0.5,
-        "max_visible_frame_ratio": 0.2,
+        "max_visible_frame_ratio": 0.01,
         "max_nose_overlap": 0.02,
     }
     features = {
@@ -163,8 +163,8 @@ def test_cp11_text_mode_requires_no_visible_white_frame_and_clear_nose() -> None
         "visible_frame_area_ratio": 0.05,
     }
 
-    passing = judge_cp11(features, thresholds)
-    failing = judge_cp11(features | {"visible_frame_ratio": 0.7}, thresholds)
+    passing = judge_cp11(features | {"visible_frame_ratio": 0.0}, thresholds)
+    failing = judge_cp11(features, thresholds)
 
     assert passing.status.value == "correct"
     assert passing.matched_rules == ["frame_covered", "nose_clear"]
@@ -178,7 +178,7 @@ def test_cp11_text_mode_does_not_require_cp09_frame_coverage() -> None:
     thresholds = {
         "min_stage_dam_presence_ratio": 0.05,
         "min_final_dam_presence_ratio": 0.5,
-        "max_visible_frame_ratio": 0.2,
+        "max_visible_frame_ratio": 0.01,
         "max_nose_overlap": 0.02,
     }
     features = {

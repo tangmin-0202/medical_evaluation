@@ -193,4 +193,4 @@ checkpoints:
     max_nose_overlap: 0.02
     max_visible_frame_area_ratio: 0.005
     min_expected_frame_dam_coverage_ratio: 0.70
-    max_visible_frame_ratio: 0.20
+    max_visible_frame_ratio: 0.01

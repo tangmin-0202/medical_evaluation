@@ -98,12 +98,18 @@ def visible_white_frame_near_dam_edge(
     if minimum_component_area_ratio <= 0:
         raise ValueError("minimum_component_area_ratio must be positive")
     height, width = dam.shape
+    contours, _ = cv2.findContours(
+        dam.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    exterior = np.zeros_like(dam, dtype=np.uint8)
+    cv2.drawContours(exterior, contours, -1, 1, cv2.FILLED)
+    dam_exterior = exterior.astype(bool)
     radius = max(2, round(min(height, width) * boundary_width_ratio))
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
     )
-    dilated = cv2.dilate(dam.astype(np.uint8), kernel).astype(bool)
-    eroded = cv2.erode(dam.astype(np.uint8), kernel).astype(bool)
+    dilated = cv2.dilate(dam_exterior.astype(np.uint8), kernel).astype(bool)
+    eroded = cv2.erode(dam_exterior.astype(np.uint8), kernel).astype(bool)
     search_band = dilated & ~eroded
 
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)

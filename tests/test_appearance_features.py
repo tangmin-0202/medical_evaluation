@@ -103,3 +103,17 @@ def test_white_frame_search_returns_empty_when_only_teeth_are_white() -> None:
     visible, _search_band = visible_white_frame_near_dam_edge(image, dam)
 
     assert not visible.any()
+
+
+def test_white_frame_search_ignores_white_tooth_hole_inside_dam_mask() -> None:
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    dam = np.zeros((100, 100), dtype=bool)
+    dam[15:85, 15:85] = True
+    dam[45:55, 45:55] = False
+    image[dam] = (30, 170, 90)
+    image[45:55, 45:55] = 240
+
+    visible, search_band = visible_white_frame_near_dam_edge(image, dam)
+
+    assert not search_band[50, 50]
+    assert not visible.any()
