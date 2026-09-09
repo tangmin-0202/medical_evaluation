@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     project_root: Path = Field(default_factory=Path.cwd)
     data_dir: Path = Path("data")
-    videos_dir: Path = Path("橡皮障视频/橡皮障视频")
+    videos_dir: Path = Path("videos")
     rubric_path: Path = Path("config/rubric.yaml")
     model_config_path: Path = Path("config/models.yaml")
     max_upload_mb: int = Field(default=2048, gt=0)

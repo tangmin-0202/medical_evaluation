@@ -20,6 +20,14 @@ def test_settings_resolve_relative_paths_under_project_root(tmp_path: Path) -> N
     assert settings.sam2_checkpoint_path == (tmp_path / "models/sam2.pt").resolve()
 
 
+def test_settings_default_to_repository_videos_directory(tmp_path: Path) -> None:
+    from medical_evaluation.settings import Settings
+
+    settings = Settings(project_root=tmp_path)
+
+    assert settings.videos_dir == (tmp_path / "videos").resolve()
+
+
 def test_settings_resolve_sam3_paths(tmp_path: Path) -> None:
     from medical_evaluation.settings import Settings
 
