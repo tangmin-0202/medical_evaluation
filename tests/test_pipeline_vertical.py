@@ -134,6 +134,17 @@ class FakeReviewer:
         )
 
 
+class UncertainReviewer(FakeReviewer):
+    def review(self, request):
+        review = super().review(request)
+        return review.model_copy(
+            update={
+                "semantic_status": "uncertain",
+                "reason_zh": "无法确认确定性结论。",
+            }
+        )
+
+
 def make_pipeline(
     tmp_path: Path,
     *,
@@ -265,3 +276,18 @@ def test_commentary_provider_failure_uses_template_and_still_writes_report(
     assert report.checkpoints[8].ai_commentary is not None
     assert report.checkpoints[8].ai_commentary.source == "template_fallback"
     assert (tmp_path / "jobs" / "job-1" / "report.json").is_file()
+
+
+def test_uncertain_commentary_cannot_replace_deterministic_explanation(
+    tmp_path: Path,
+) -> None:
+    pipeline, _, _ = make_pipeline(tmp_path, reviewer=UncertainReviewer())
+
+    report = pipeline.run(make_job(tmp_path))
+
+    assert report.checkpoints[8].status.value == "correct"
+    assert report.checkpoints[8].ai_commentary is not None
+    assert report.checkpoints[8].ai_commentary.source == "template_fallback"
+    assert report.checkpoints[8].ai_commentary.reason_zh == (
+        "现有证据支持确定性规则的通过结论。"
+    )

@@ -222,9 +222,14 @@ class AnalysisPipeline:
             ],
         )
         try:
-            return self.commentary_provider.review(request)
+            review = self.commentary_provider.review(request)
         except RuntimeError:
             return template_fallback(result.reason_code)
+        if result.status is not CheckpointStatus.NEEDS_REVIEW and (
+            review.semantic_status != "supports"
+        ):
+            return template_fallback(result.reason_code)
+        return review
 
     @staticmethod
     def _overall_feedback(results: list[CheckpointResult]) -> str:
