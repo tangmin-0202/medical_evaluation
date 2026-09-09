@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp11
+from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp10, judge_cp11
 
 HEAD_THRESHOLDS = {
     "min_frame_stable_duration_sec": 1.0,
@@ -146,11 +146,10 @@ def test_cp11_passes_only_when_all_final_criteria_pass() -> None:
     assert failing.status.value == "incorrect"
 
 
-def test_cp11_head_relative_requires_frame_coverage_and_clear_nose() -> None:
+def test_cp11_text_mode_requires_no_visible_white_frame_and_clear_nose() -> None:
     thresholds = {
         "min_stage_dam_presence_ratio": 0.05,
         "min_final_dam_presence_ratio": 0.5,
-        "min_expected_frame_dam_coverage_ratio": 0.9,
         "max_visible_frame_ratio": 0.2,
         "max_nose_overlap": 0.02,
     }
@@ -158,8 +157,7 @@ def test_cp11_head_relative_requires_frame_coverage_and_clear_nose() -> None:
         "dam_stage_presence_ratio": 1.0,
         "dam_final_presence_ratio": 1.0,
         "head_registration_reliable": True,
-        "frame_reference_available": True,
-        "expected_frame_dam_coverage_ratio": 0.95,
+        "direct_white_frame_search": True,
         "visible_frame_ratio": 0.05,
         "nose_overlap": 0.0,
         "visible_frame_area_ratio": 0.05,
@@ -173,4 +171,77 @@ def test_cp11_head_relative_requires_frame_coverage_and_clear_nose() -> None:
     assert (failing.status.value, failing.reason_code) == (
         "incorrect",
         "final_position_incorrect",
+    )
+
+
+def test_cp11_text_mode_does_not_require_cp09_frame_coverage() -> None:
+    thresholds = {
+        "min_stage_dam_presence_ratio": 0.05,
+        "min_final_dam_presence_ratio": 0.5,
+        "max_visible_frame_ratio": 0.2,
+        "max_nose_overlap": 0.02,
+    }
+    features = {
+        "dam_stage_presence_ratio": 1.0,
+        "dam_final_presence_ratio": 1.0,
+        "direct_white_frame_search": True,
+        "head_registration_reliable": True,
+        "visible_frame_ratio": 0.0,
+        "nose_overlap": 0.0,
+    }
+
+    decision = judge_cp11(features, thresholds)
+
+    assert decision.status.value == "correct"
+    assert decision.reason_code == "criteria_satisfied"
+
+
+def test_cp10_without_floss_is_incomplete() -> None:
+    decision = judge_cp10(
+        {
+            "tooth_anchor_reliable": True,
+            "floss_observed_frame_count": 0.0,
+            "upper_contact_frame_count": 0.0,
+            "lower_contact_frame_count": 0.0,
+        },
+        {"min_contact_frames_per_side": 2.0},
+    )
+
+    assert (decision.status.value, decision.reason_code) == (
+        "incomplete",
+        "dental_floss_not_observed",
+    )
+
+
+def test_cp10_one_sided_contact_is_incorrect() -> None:
+    decision = judge_cp10(
+        {
+            "tooth_anchor_reliable": True,
+            "floss_observed_frame_count": 4.0,
+            "upper_contact_frame_count": 3.0,
+            "lower_contact_frame_count": 0.0,
+        },
+        {"min_contact_frames_per_side": 2.0},
+    )
+
+    assert (decision.status.value, decision.reason_code) == (
+        "incorrect",
+        "floss_contact_incomplete",
+    )
+
+
+def test_cp10_two_sided_contact_is_correct() -> None:
+    decision = judge_cp10(
+        {
+            "tooth_anchor_reliable": True,
+            "floss_observed_frame_count": 8.0,
+            "upper_contact_frame_count": 2.0,
+            "lower_contact_frame_count": 3.0,
+        },
+        {"min_contact_frames_per_side": 2.0},
+    )
+
+    assert (decision.status.value, decision.reason_code) == (
+        "correct",
+        "criteria_satisfied",
     )

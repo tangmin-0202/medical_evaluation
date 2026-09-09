@@ -167,23 +167,22 @@ checkpoints:
   judge_type: hybrid
   required_objects:
   - target_tooth
-  - adjacent_tooth
   - dental_floss
   reference_time:
     start_sec: 200.0
     end_sec: 211.0
-  thresholds: {}
+  thresholds:
+    min_contact_frames_per_side: 2.0
 - id: cp_11
   name: 调整橡皮布至完全就位。
   criteria:
   - 鼻部无遮挡
-  - 橡皮布覆盖 CP09 记录的实际支架区域
+  - 末尾未发现裸露白色支架
   weight: 0.09090909090909091
   judge_type: geometry
   required_objects:
   - rubber_dam
   - nose_region
-  - rubber_dam_frame
   reference_time:
     start_sec: 217.0
     end_sec: 258.0

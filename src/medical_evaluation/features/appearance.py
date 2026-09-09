@@ -83,6 +83,51 @@ def visible_reference_mask(
     return candidate & (distance <= max_lab_distance)
 
 
+def visible_white_frame_near_dam_edge(
+    frame_bgr: np.ndarray,
+    dam_mask: np.ndarray,
+    *,
+    boundary_width_ratio: float = 0.015,
+    minimum_component_area_ratio: float = 0.00005,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Find non-border white components in a narrow band around the dam edge."""
+
+    dam = _region(frame_bgr, dam_mask)
+    if not 0 < boundary_width_ratio < 0.5:
+        raise ValueError("boundary_width_ratio must be between zero and 0.5")
+    if minimum_component_area_ratio <= 0:
+        raise ValueError("minimum_component_area_ratio must be positive")
+    height, width = dam.shape
+    radius = max(2, round(min(height, width) * boundary_width_ratio))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
+    )
+    dilated = cv2.dilate(dam.astype(np.uint8), kernel).astype(bool)
+    eroded = cv2.erode(dam.astype(np.uint8), kernel).astype(bool)
+    search_band = dilated & ~eroded
+
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    white = (hsv[..., 1] <= 70) & (hsv[..., 2] >= 160)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        white.astype(np.uint8), 8
+    )
+    visible = np.zeros_like(dam)
+    minimum_area = max(1, round(height * width * minimum_component_area_ratio))
+    for label in range(1, count):
+        x, y, component_width, component_height, area = map(int, stats[label])
+        touches_border = (
+            x == 0
+            or y == 0
+            or x + component_width >= width
+            or y + component_height >= height
+        )
+        if touches_border or area < minimum_area:
+            continue
+        component = labels == label
+        visible |= component & search_band
+    return visible, search_band
+
+
 def color_ratio_hsv(
     frame_bgr: np.ndarray,
     mask: np.ndarray,

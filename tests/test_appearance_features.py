@@ -10,6 +10,7 @@ from medical_evaluation.features.appearance import (
     green_dam_mask,
     visible_reference_area_ratio,
     visible_reference_mask,
+    visible_white_frame_near_dam_edge,
 )
 
 
@@ -64,3 +65,41 @@ def test_green_covered_frame_candidate_is_not_visible_white_frame() -> None:
         reference_lab,
         max_lab_distance=10,
     ).any()
+
+
+def test_white_frame_search_uses_outer_dam_edge_and_excludes_teeth_and_gloves() -> None:
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    dam = np.zeros((100, 100), dtype=bool)
+    dam[20:80, 20:80] = True
+    image[dam] = (30, 170, 90)
+
+    # Central white teeth are inside the dam and must not count as exposed frame.
+    image[45:55, 45:55] = 240
+    # A white glove entering from the image edge must also be ignored.
+    image[20:35, :25] = 240
+    # A thin white strip beside the outer dam edge is the exposed-frame candidate.
+    image[17:20, 35:70] = 240
+
+    visible, search_band = visible_white_frame_near_dam_edge(
+        image,
+        dam,
+        boundary_width_ratio=0.05,
+        minimum_component_area_ratio=0.0005,
+    )
+
+    assert search_band[18, 50]
+    assert visible[18, 50]
+    assert not visible[50, 50]
+    assert not visible[25, 0]
+
+
+def test_white_frame_search_returns_empty_when_only_teeth_are_white() -> None:
+    image = np.zeros((100, 100, 3), dtype=np.uint8)
+    dam = np.zeros((100, 100), dtype=bool)
+    dam[15:85, 15:85] = True
+    image[dam] = (30, 170, 90)
+    image[45:55, 45:55] = 240
+
+    visible, _search_band = visible_white_frame_near_dam_edge(image, dam)
+
+    assert not visible.any()

@@ -88,7 +88,9 @@ class AnalysisPipeline:
         fallback_dense_fps: float = 1,
         fallback_analysis_width: int = 960,
         minimum_alignment_confidence: float = 0.5,
-        enabled_checkpoint_ids: frozenset[str] = frozenset({"cp_09", "cp_11"}),
+        enabled_checkpoint_ids: frozenset[str] = frozenset(
+            {"cp_09", "cp_10", "cp_11"}
+        ),
         commentary_provider: CommentaryProvider | None = None,
     ) -> None:
         if (extractor is None) == (extractor_factory is None):
@@ -187,7 +189,7 @@ class AnalysisPipeline:
             checkpoints=results,
             audit=RunAudit(
                 rubric_version=self.rubric.version,
-                model_versions={"pipeline": "vertical-cp09-cp11"},
+                model_versions={"pipeline": "vertical-cp09-cp10-cp11"},
                 started_at=started,
                 completed_at=completed,
                 runtime_sec=(completed - started).total_seconds(),

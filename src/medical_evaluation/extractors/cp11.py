@@ -13,6 +13,7 @@ from medical_evaluation.features.appearance import (
     green_dam_area_ratio,
     green_dam_mask,
     visible_reference_mask,
+    visible_white_frame_near_dam_edge,
 )
 from medical_evaluation.features.frame_reference import FrameReferenceStore
 from medical_evaluation.features.mannequin_registration import (
@@ -20,7 +21,6 @@ from medical_evaluation.features.mannequin_registration import (
     estimate_static_scene_registration,
     invert_similarity,
     transform_points,
-    warp_mask,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
@@ -271,6 +271,7 @@ class Cp11FeatureExtractor:
             "visible_frame_ratio": None,
             "nose_overlap": None,
             "visible_frame_area_ratio": None,
+            "direct_white_frame_search": True,
             "final_valid_frame_count": 0.0,
             "head_registration_candidate_count": 0.0,
             "head_registration_rejected_count": 0.0,
@@ -282,7 +283,7 @@ class Cp11FeatureExtractor:
             return ExtractedEvidence(features=empty, evidence=[])
         empty["frame_reference_available"] = True
         try:
-            anchor_image, anchor_head, anchor_frame = self.reference_store.read_artifacts(
+            anchor_image, anchor_head, _anchor_frame = self.reference_store.read_artifacts(
                 reference
             )
         except ValueError:
@@ -310,10 +311,16 @@ class Cp11FeatureExtractor:
         )
         dam_by_index = {item.frame_index: item for item in dam_frames}
         polygon = self._template_nose_polygon(anchor_head.shape)
-        anchor_lab = cv2.cvtColor(anchor_image, cv2.COLOR_BGR2LAB)
-        reference_lab = np.median(anchor_lab[anchor_frame], axis=0).astype(float)
         measurements: list[
-            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float, float]
+            tuple[
+                FrameMasks,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                float,
+                float,
+            ]
         ] = []
         reliable_count = 0
         rejected_count = 0
@@ -357,37 +364,29 @@ class Cp11FeatureExtractor:
                 continue
             anchor_to_current = invert_similarity(registration.matrix)
             reliable_count += 1
-            projected_frame = warp_mask(
-                anchor_frame,
-                anchor_to_current,
-                output_shape=np.asarray(dam_mask).shape,
-            )
             projected_nose_points = transform_points(polygon, anchor_to_current)
-            nose_mask = np.zeros_like(projected_frame, dtype=np.uint8)
+            nose_mask = np.zeros(np.asarray(dam_mask).shape, dtype=np.uint8)
             cv2.fillPoly(
                 nose_mask,
                 [np.rint(projected_nose_points).astype(np.int32)],
                 1,
             )
             dam = np.asarray(dam_mask, dtype=bool) & green_dam_mask(image)
-            frame_area = max(1, int(projected_frame.sum()))
             nose_area = max(1, int(nose_mask.sum()))
-            coverage = float(np.count_nonzero(dam & projected_frame) / frame_area)
             nose_overlap = float(np.count_nonzero(dam & nose_mask.astype(bool)) / nose_area)
-            visible_frame = visible_reference_mask(
-                image,
-                projected_frame,
-                reference_lab,
-                max_lab_distance=self.frame_appearance_max_lab_distance,
+            visible_frame, search_band = visible_white_frame_near_dam_edge(
+                image, dam
             )
-            visible_ratio = float(visible_frame.sum() / frame_area)
+            visible_ratio = float(
+                visible_frame.sum() / max(1, int(search_band.sum()))
+            )
             measurements.append(
                 (
                     head_item,
                     dam,
-                    projected_frame,
+                    search_band,
                     nose_mask.astype(bool),
-                    coverage,
+                    visible_frame,
                     nose_overlap,
                     visible_ratio,
                 )
@@ -405,7 +404,6 @@ class Cp11FeatureExtractor:
         empty["final_valid_frame_count"] = float(len(measurements))
         if len(measurements) < self.minimum_final_frames:
             return ExtractedEvidence(features=empty, evidence=[])
-        coverage = float(np.median([item[4] for item in measurements]))
         nose_overlap = float(np.median([item[5] for item in measurements]))
         visible_ratio = float(np.median([item[6] for item in measurements]))
         evidence = self._write_head_relative_evidence(video_path, measurements)
@@ -413,8 +411,11 @@ class Cp11FeatureExtractor:
             features={
                 **empty,
                 "head_registration_reliable": True,
-                "expected_frame_dam_coverage_ratio": coverage,
+                "direct_white_frame_search": True,
                 "visible_frame_ratio": visible_ratio,
+                "visible_frame_area_ratio": float(
+                    np.median([item[4].mean() for item in measurements])
+                ),
                 "nose_overlap": nose_overlap,
             },
             evidence=evidence,
@@ -434,7 +435,15 @@ class Cp11FeatureExtractor:
         self,
         video_path: Path,
         measurements: list[
-            tuple[FrameMasks, np.ndarray, np.ndarray, np.ndarray, float, float, float]
+            tuple[
+                FrameMasks,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                float,
+                float,
+            ]
         ],
     ) -> list[EvidenceItem]:
         selected = sorted({0, len(measurements) // 2, len(measurements) - 1})
@@ -443,17 +452,18 @@ class Cp11FeatureExtractor:
             (
                 item,
                 dam,
-                projected_frame,
+                search_band,
                 nose,
-                _coverage,
+                visible_frame,
                 _nose_overlap,
                 _visible_ratio,
             ) = measurements[position]
             canvas = read_frame(video_path, item.frame_index).copy()
             for mask, color, thickness in (
                 (dam, (0, 255, 0), 2),
-                (projected_frame, (255, 255, 255), 3),
+                (search_band, (255, 255, 0), 1),
                 (nose, (0, 220, 255), 3),
+                (visible_frame, (0, 0, 255), 3),
             ):
                 contours, _ = cv2.findContours(
                     mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -469,7 +479,7 @@ class Cp11FeatureExtractor:
                 EvidenceItem(
                     time_sec=item.frame_time_sec,
                     overlay_path=output.relative_to(self.evidence_root).as_posix(),
-                    rule="cp09_frame_covered_and_template_nose_clear",
+                    rule="no_visible_white_frame_near_dam_edge_and_nose_clear",
                 )
             )
         return evidence

@@ -7,6 +7,7 @@ from typing import Any
 from medical_evaluation.annotations import AnnotationStore
 from medical_evaluation.extractors.cp09 import Cp09FeatureExtractor
 from medical_evaluation.extractors.cp09_cp11 import Cp09Cp11FeatureExtractor
+from medical_evaluation.extractors.cp10 import Cp10FeatureExtractor
 from medical_evaluation.extractors.cp11 import Cp11FeatureExtractor
 from medical_evaluation.jobs import JobRecord
 from medical_evaluation.pipeline import AnalysisPipeline, ConfidenceProvider, FeatureExtractor
@@ -118,8 +119,10 @@ def build_analysis_pipeline(
             prompt_policy=prompt_policy,
             template=template,
         )
+        cp10 = Cp10FeatureExtractor(evidence_root=evidence_root)
         return Cp09Cp11FeatureExtractor(
             cp09=cp09,
+            cp10=cp10,
             cp11=cp11,
             annotations=annotations,
             prompt_policy=prompt_policy,

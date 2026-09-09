@@ -35,18 +35,24 @@ class Cp09Cp11FeatureExtractor:
         self,
         *,
         cp09: CheckpointExtractor,
+        cp10: CheckpointExtractor | None = None,
         cp11: CheckpointExtractor,
         annotations: VideoAnnotations,
         prompt_policy: Cp09Cp11PromptPolicy | None = None,
     ) -> None:
         self.cp09 = cp09
+        self.cp10 = cp10
         self.cp11 = cp11
         self.annotations = annotations
         self.prompt_policy = prompt_policy or AnnotationPromptPolicy()
 
     @property
     def model_version(self) -> str:
-        return f"cp09={self.cp09.model_version};cp11={self.cp11.model_version}"
+        cp10_version = self.cp10.model_version if self.cp10 is not None else "disabled"
+        return (
+            f"cp09={self.cp09.model_version};"
+            f"cp10={cp10_version};cp11={self.cp11.model_version}"
+        )
 
     def extract(
         self,
@@ -60,6 +66,8 @@ class Cp09Cp11FeatureExtractor:
         if checkpoint_id == "cp_09":
             self._validate_cp09_inputs(time_range)
             delegate = self.cp09
+        elif checkpoint_id == "cp_10" and self.cp10 is not None:
+            delegate = self.cp10
         elif checkpoint_id == "cp_11":
             delegate = self.cp11
         else:

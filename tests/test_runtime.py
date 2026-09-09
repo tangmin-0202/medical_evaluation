@@ -71,6 +71,7 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
 
     assert isinstance(extractor, Cp09Cp11FeatureExtractor)
     assert extractor.cp09.evidence_root == settings.data_dir / "jobs" / "job-1"
+    assert extractor.cp10.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp11.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert pipeline.commentary_provider.model == "Qwen-Test"
     assert backend_calls == [

@@ -34,6 +34,15 @@ class FakeExtractor:
             raise RuntimeError("CUDA out of memory")
         if checkpoint_id == "cp_09":
             return ExtractedEvidence(features={"frame_oral_center_offset": 0.03})
+        if checkpoint_id == "cp_10":
+            return ExtractedEvidence(
+                features={
+                    "tooth_anchor_reliable": True,
+                    "floss_observed_frame_count": 4.0,
+                    "upper_contact_frame_count": 2.0,
+                    "lower_contact_frame_count": 2.0,
+                }
+            )
         return ExtractedEvidence(
             features={
                 "dam_stage_presence_ratio": 0.5,
@@ -154,19 +163,20 @@ def make_job(tmp_path: Path) -> JobRecord:
     return JobRecord(id="job-1", video_id="success", video_path=str(video))
 
 
-def test_pipeline_writes_two_real_decisions_and_nine_review_results(tmp_path: Path) -> None:
+def test_pipeline_writes_three_real_decisions_and_eight_review_results(tmp_path: Path) -> None:
     pipeline, extractor, _ = make_pipeline(tmp_path)
 
     report = pipeline.run(make_job(tmp_path))
 
     assert len(report.checkpoints) == 11
     assert report.checkpoints[8].status.value == "correct"
+    assert report.checkpoints[9].status.value == "correct"
     assert report.checkpoints[10].status.value == "correct"
     assert report.checkpoints[0].status.value == "needs_review"
     assert report.checkpoints[0].reason_code == "automatic_evaluation_not_implemented"
     assert report.checkpoints[0].included_in_provisional_score is False
-    assert report.summary.evaluated_count == 2
-    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_11"]
+    assert report.summary.evaluated_count == 3
+    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_10", "cp_11"]
     stored = json.loads((tmp_path / "jobs" / "job-1" / "report.json").read_text("utf-8"))
     assert len(stored["checkpoints"]) == 11
 
@@ -190,6 +200,7 @@ def test_low_alignment_confidence_pauses_checkpoint(tmp_path: Path) -> None:
     assert all(item.status.value == "needs_review" for item in report.checkpoints)
     assert report.checkpoints[0].reason_code == "automatic_evaluation_not_implemented"
     assert report.checkpoints[8].reason_code == "low_step_alignment_confidence"
+    assert report.checkpoints[9].reason_code == "low_step_alignment_confidence"
     assert report.checkpoints[10].reason_code == "low_step_alignment_confidence"
     assert extractor.calls == []
 
@@ -202,8 +213,8 @@ def test_missing_cp09_input_excludes_cp09_but_still_runs_cp11(tmp_path: Path) ->
     assert report.checkpoints[8].reason_code == "automatic_evaluation_input_missing"
     assert report.checkpoints[8].included_in_provisional_score is False
     assert report.checkpoints[10].included_in_provisional_score is True
-    assert report.summary.evaluated_count == 1
-    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_11"]
+    assert report.summary.evaluated_count == 2
+    assert [call[0] for call in extractor.calls] == ["cp_09", "cp_10", "cp_11"]
 
 
 def test_commentary_is_attached_without_mutating_deterministic_decision(tmp_path: Path) -> None:
@@ -213,7 +224,11 @@ def test_commentary_is_attached_without_mutating_deterministic_decision(tmp_path
     report = pipeline.run(make_job(tmp_path))
 
     cp09 = report.checkpoints[8]
-    assert [request.checkpoint_id for request in reviewer.requests] == ["cp_09", "cp_11"]
+    assert [request.checkpoint_id for request in reviewer.requests] == [
+        "cp_09",
+        "cp_10",
+        "cp_11",
+    ]
     assert reviewer.requests[0].deterministic_status == "correct"
     assert cp09.status.value == "correct"
     assert cp09.reason_code == "criteria_satisfied"

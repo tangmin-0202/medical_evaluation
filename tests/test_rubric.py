@@ -62,7 +62,7 @@ def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
     rubric = load_rubric(Path("config/rubric.yaml"))
     cp11 = next(cp for cp in rubric.checkpoints if cp.id == "cp_11")
 
-    assert cp11.required_objects == ["rubber_dam", "nose_region", "rubber_dam_frame"]
+    assert cp11.required_objects == ["rubber_dam", "nose_region"]
     assert cp11.thresholds == {
         "min_stage_dam_presence_ratio": 0.05,
         "min_final_dam_presence_ratio": 0.5,
@@ -72,6 +72,16 @@ def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
         "min_expected_frame_dam_coverage_ratio": 0.70,
         "max_visible_frame_ratio": 0.20,
     }
+
+
+def test_cp10_defines_temporal_contact_threshold() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp10 = next(cp for cp in rubric.checkpoints if cp.id == "cp_10")
+
+    assert cp10.required_objects == ["target_tooth", "dental_floss"]
+    assert cp10.thresholds == {"min_contact_frames_per_side": 2.0}
 
 
 def test_parse_time_range_converts_excel_text_to_seconds() -> None:

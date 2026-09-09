@@ -82,8 +82,18 @@ CASES = [
     (judge_cp09, {"frame_oral_center_offset": 0.03}, {"frame_oral_center_offset": 0.6}),
     (
         judge_cp10,
-        {"mesial_crossing": True, "distal_crossing": True},
-        {"mesial_crossing": True, "distal_crossing": False},
+        {
+            "tooth_anchor_reliable": True,
+            "floss_observed_frame_count": 4.0,
+            "upper_contact_frame_count": 2.0,
+            "lower_contact_frame_count": 2.0,
+        },
+        {
+            "tooth_anchor_reliable": True,
+            "floss_observed_frame_count": 4.0,
+            "upper_contact_frame_count": 2.0,
+            "lower_contact_frame_count": 0.0,
+        },
     ),
     (
         judge_cp11,

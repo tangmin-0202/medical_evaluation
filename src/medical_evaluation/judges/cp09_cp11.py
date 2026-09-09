@@ -3,7 +3,6 @@ from __future__ import annotations
 from medical_evaluation.judges.base import (
     JudgeDecision,
     correct,
-    decide_boolean_rules,
     incomplete,
     incorrect,
     needs_review,
@@ -167,6 +166,8 @@ def judge_cp11(
             matched_rules=["dam_present_at_end"],
             suggestion="重新完成末尾调整，确保橡皮布最终保持撑开并覆盖支架。",
         )
+    if features.get("direct_white_frame_search") is True:
+        return _judge_cp11_direct_white(features, thresholds)
     if "expected_frame_dam_coverage_ratio" in features:
         return _judge_cp11_head_relative(features, thresholds)
     dam_area = features.get("dam_area_ratio")
@@ -200,6 +201,48 @@ def judge_cp11(
         features,
         matched_rules=["dam_area_sufficient", "nose_clear", "frame_covered"],
         reason="橡皮布未遮挡口鼻，且已充分撑开至支架。",
+    )
+
+
+def _judge_cp11_direct_white(
+    features: dict[str, float | bool | None],
+    thresholds: dict[str, float],
+) -> JudgeDecision:
+    if features.get("head_registration_reliable") is not True:
+        return needs_review(
+            "cp_11",
+            features,
+            reason_code="unreliable_head_registration",
+            reason="无法可靠定位鼻部参考区域。",
+        )
+    visible_frame = features.get("visible_frame_ratio")
+    nose_overlap = features.get("nose_overlap")
+    if visible_frame is None or nose_overlap is None:
+        return needs_review(
+            "cp_11",
+            features,
+            reason_code="missing_required_evidence",
+            reason="裸露白色支架或鼻部无遮挡证据不足。",
+        )
+    failed: list[str] = []
+    if float(visible_frame) > thresholds["max_visible_frame_ratio"]:
+        failed.append("frame_covered")
+    if float(nose_overlap) > thresholds["max_nose_overlap"]:
+        failed.append("nose_clear")
+    if failed:
+        return incorrect(
+            "cp_11",
+            features,
+            reason_code="final_position_incorrect",
+            reason="末尾仍可见白色支架，或橡皮布遮挡鼻部。",
+            matched_rules=failed,
+            suggestion="继续调整橡皮布，使白色支架不再裸露，并保持鼻部无遮挡。",
+        )
+    return correct(
+        "cp_11",
+        features,
+        matched_rules=["frame_covered", "nose_clear"],
+        reason="未发现裸露白色支架，且鼻部无遮挡。",
     )
 
 
@@ -255,15 +298,48 @@ def _judge_cp11_head_relative(
 
 def judge_cp10(
     features: dict[str, float | bool | None],
-    _thresholds: dict[str, float],
+    thresholds: dict[str, float],
 ) -> JudgeDecision:
-    return decide_boolean_rules(
+    observed = float(features.get("floss_observed_frame_count") or 0.0)
+    if observed <= 0:
+        return incomplete(
+            "cp_10",
+            features,
+            reason_code="dental_floss_not_observed",
+            reason="本阶段未观察到牙线，牙线辅助就位未完成。",
+            suggestion="使用牙线依次通过目标牙近中和远中接触区。",
+        )
+    if features.get("tooth_anchor_reliable") is not True:
+        return needs_review(
+            "cp_10",
+            features,
+            reason_code="unreliable_tooth_reference",
+            reason="观察到细线，但无法可靠建立目标牙参考区域。",
+        )
+    minimum = thresholds["min_contact_frames_per_side"]
+    upper = float(features.get("upper_contact_frame_count") or 0.0)
+    lower = float(features.get("lower_contact_frame_count") or 0.0)
+    if upper < minimum or lower < minimum:
+        return incorrect(
+            "cp_10",
+            features,
+            reason_code="floss_contact_incomplete",
+            reason="牙线已出现，但没有可靠通过目标牙两侧接触区。",
+            matched_rules=[
+                name
+                for name, passed in (
+                    ("upper_contact_crossed", upper >= minimum),
+                    ("lower_contact_crossed", lower >= minimum),
+                )
+                if not passed
+            ],
+            suggestion="分别将牙线通过目标牙两侧接触区，并保留清楚的穿越过程。",
+        )
+    return correct(
         "cp_10",
         features,
-        {
-            "mesial_crossing": "mesial_contact_crossed",
-            "distal_crossing": "distal_contact_crossed",
-        },
+        matched_rules=["upper_contact_crossed", "lower_contact_crossed"],
+        reason="牙线已分别通过目标牙两侧接触区。",
     )
 
 
