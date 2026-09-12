@@ -1,0 +1,176 @@
+# CP08 SAM3 视觉评价设计
+
+## 1. 范围与目标
+
+CP08“橡皮布就位”本轮只评价三个已确认条件：
+
+1. CP08 阶段出现并确认使用的是钝头器具，而不是尖锐探针。
+2. CP09 末尾视野最清晰时，橡皮障夹左右翼部完整露出。
+3. 左右翼部小孔内都呈现与同帧橡皮布一致的绿色，而不是任何其他颜色。
+
+本轮不把“橡皮布孔缘包裹牙颈”作为独立必过条件。目标牙仍需分割，但只用于定位障夹和左右翼部。若以后恢复牙颈包裹判定，应单独设计、校准和验收，不能隐含在本轮特征中。
+
+CP08 借用 CP09 末尾画面检查最终状态，但不依赖 CP09 的 Judge 结果。CP09 支架评分与 CP08 评分保持相互独立。
+
+## 2. 总体数据流
+
+```text
+CP08 全阶段稀疏扫描
+→ SAM3 发现器具候选
+→ 候选附近短窗口密集分割
+→ 钝头/尖锐/不可靠分类
+
+CP09 最后三秒
+→ SAM3 独立分割目标牙、橡皮障夹、橡皮布
+→ 判断橡皮布是否真实在位
+→ 判断左右翼部是否完整露出
+→ 在原始分辨率翼部 ROI 中定位小孔并判定同源绿色
+
+两组确定性特征
+→ CP08 Judge
+→ 状态、原因码、数值特征和证据图
+```
+
+SAM3/OpenCV 只提供掩膜和数值特征；确定性 Judge 是状态、原因码和分数的唯一来源；Qwen 只解释既有结论。
+
+## 3. 第一阶段：SAM3 可行性门槛
+
+在接入完整 CP08 pipeline 前，先对 success 视频完成两项真实 GPU prompt gate。
+
+### 3.1 钝头器具 gate
+
+- 在 CP08 标注时间范围内扫描器具。
+- 分别尝试钝头牙科器具和尖锐探针语义，不把单个文本 prompt 的类别名称当作最终证明。
+- 找到候选后只在候选附近建立短时间窗口，以更高采样率获取清晰尖端；不对整个 CP08 做全程密集追踪。
+- 阳性证据允许提前结束：取得足够清晰、连续的器具掩膜即可。
+- 阴性结论必须覆盖整个 CP08 扫描窗口，避免漏掉短暂出现的器具。
+
+通过门槛：至少一组连续有效帧中的器具主体和末端没有明显断裂或身份漂移，并能保留用于尖端形态分析的原始分辨率裁剪。
+
+### 3.2 橡皮障夹 gate
+
+- 在 CP09 最后三秒独立分割完整橡皮障夹。
+- 目标不是只找到金属区域，而是确认掩膜是否稳定覆盖障夹主体及左右两个翼部。
+- 同时独立分割目标牙和橡皮布；不同对象使用独立 SAM3 会话，避免 multiplex 身份合并。
+- 橡皮布分割能力已经在现有链路验证，本 gate 重点验证障夹及其翼部。
+
+通过门槛：至少三个清晰末尾帧中，障夹身份一致，左右翼部轮廓均被保留，并能生成原始分辨率翼部 ROI。
+
+若任一 gate 失败，先保存 prompt、掩膜、overlay 和失败类型，再调整提示或自动 box 策略；不先实现依赖不可靠掩膜的 Judge。
+
+## 4. CP08 器具提取
+
+### 4.1 搜索策略
+
+CP08 全阶段使用较低采样率做完整覆盖。首次发现候选后，以该时刻为中心扩大一个短窗口并提高采样率，由 SAM3 双向传播获得连续掩膜。只要取得足够清晰的尖端证据即可停止阳性搜索。
+
+这一区分保证：
+
+- 找到清晰钝头器具时不浪费时间全程追踪；
+- 没找到器具时仍扫描整个阶段，阴性结论有完整覆盖。
+
+### 4.2 钝头判定特征
+
+从 SAM3 器具掩膜和对应原图裁剪中提取：
+
+- `instrument_observed_frame_count`
+- `instrument_clear_frame_count`
+- `tip_width_ratio`
+- `tip_roundness`
+- `tip_sharpness`
+- `tip_taper_ratio`
+- `instrument_type_reliable`
+- `blunt_instrument_observed`
+- `sharp_probe_observed`
+
+SAM3 的语义提示提供候选；末端宽度、圆度、尖锐度、渐缩程度和跨帧一致性共同形成确定性类别特征。尖端被手遮挡、运动模糊或掩膜断裂时，不强行分类。
+
+## 5. CP09 末尾最终状态提取
+
+### 5.1 橡皮布存在性
+
+先判断橡皮布是否真实在位，再处理翼部和小孔：
+
+- SAM3 提供橡皮布掩膜；
+- OpenCV 绿色区域检测提供独立交叉验证；
+- 目标牙或障夹必须清晰可见，以排除整幅画面被遮挡。
+
+若 SAM3 和颜色检测都确认目标区域没有橡皮布，则这是 CP08 最终状态失败，不是视觉证据不足。若颜色检测显示明显绿色而 SAM3 没有掩膜，则标记为分割不可靠。
+
+### 5.2 左右翼部完整露出
+
+以目标牙作为局部坐标锚点，从完整障夹掩膜中划分左翼和右翼，计算：
+
+- `left_wing_complete`
+- `right_wing_complete`
+- `left_wing_visible_ratio`
+- `right_wing_visible_ratio`
+- `left_wing_dam_overlap_ratio`
+- `right_wing_dam_overlap_ratio`
+- `final_state_valid_frame_count`
+
+至少三个清晰帧的结果一致。清晰画面中任一翼缺失、轮廓不完整或仍被橡皮布覆盖，均视为失败；持续遮挡或掩膜不可靠时进入复核。
+
+### 5.3 极小翼孔定位与颜色
+
+翼孔很小，不直接依赖 SAM3 文本提示进行独立分割。SAM3 先限定障夹和左右翼部，然后：
+
+1. 从原始分辨率帧裁剪左右翼部 ROI；
+2. 依据目标牙/障夹进行多帧配准；
+3. 使用多帧中位聚合降低运动模糊和金属高光；
+4. 在翼部掩膜内部检测小型圆孔；
+5. 向孔洞内部收缩取样，排除银色孔壁；
+6. 将孔内颜色与同帧 SAM3 橡皮布掩膜内的颜色分布比较。
+
+不用固定的单一“绿色 HSV”值，而使用同帧橡皮布作为自适应颜色参照。白色、黑色、深色、肤色、金属反光或任何与橡皮布颜色不一致的像素都归入非橡皮布颜色。
+
+每侧输出：
+
+- `left_wing_hole_detected` / `right_wing_hole_detected`
+- `left_wing_hole_dam_color_ratio` / `right_wing_hole_dam_color_ratio`
+- `left_wing_hole_non_dam_color_ratio` / `right_wing_hole_non_dam_color_ratio`
+- `left_wing_hole_valid_frame_count` / `right_wing_hole_valid_frame_count`
+
+现有 `max_green_wing_hole_ratio` 语义方向错误，应替换为逐孔的最小同源橡皮布颜色比例、最大非橡皮布颜色比例和最小有效帧数。数值阈值由真实输出校准，不在设计阶段猜定。
+
+## 6. CP08 Judge 状态机
+
+按以下顺序判定：
+
+1. CP08 全阶段没有观察到器具：`incomplete/cp08_not_performed`。
+2. 有器具候选但尖端始终不可辨认：`needs_review/unreliable_instrument_tip`。
+3. 明确使用尖锐探针：`incorrect/sharp_probe_used`。
+4. 已确认钝头器具，但 CP09 末尾目标区域持续不可见：`needs_review/final_state_unobservable`。
+5. CP09 末尾确认橡皮布未在位：`incorrect/rubber_dam_not_positioned`。
+6. 橡皮布颜色证据与 SAM3 掩膜冲突：`needs_review/rubber_dam_segmentation_unreliable`。
+7. 任一翼未完整露出：`incorrect/clamp_wing_not_fully_visible`。
+8. 任一翼孔清晰可见但内部不是橡皮布同源绿色：`incorrect/non_dam_color_under_wing_hole`。
+9. 只能可靠定位一个翼孔或孔内读色不可靠：`needs_review/unreliable_wing_hole_color`。
+10. 钝头器具、橡皮布在位、两翼完整露出、两孔同源绿色全部满足：`correct/criteria_satisfied`。
+
+完全未执行和执行失败必须区分：没有器具操作证据为 `incomplete`；已经使用钝头器具但最终橡皮布未就位为 `incorrect`。
+
+## 7. 证据与审计
+
+保存以下可查看输出：
+
+- `cp_08/action/`：SAM3 器具掩膜、尖端位置、尖端放大图和形态数值；
+- `cp_08/final/`：来自 CP09 末尾的目标牙、障夹、橡皮布掩膜；
+- 左右翼部轮廓、完整性和橡皮布覆盖 overlay；
+- 两个翼孔的位置、内部取样区域、同源绿色像素和非橡皮布颜色像素；
+- prompt、采样时间、有效帧数、阈值、特征和原因码。
+
+CP08 报告中的跨阶段证据保留真实 CP09 时间戳，并使用明确的 evidence rule 标识其来自 CP09 末尾验证窗口。
+
+## 8. 测试与真实验收
+
+严格执行失败测试到最小实现：
+
+1. 合成掩膜单元测试覆盖钝头、尖锐、模糊尖端、双翼完整、单翼缺失、双孔绿色、单孔非绿色和孔不可见。
+2. pipeline 测试验证 CP08 提取器同时请求 CP08 搜索窗口与 CP09 末尾窗口，但 CP08 Judge 不依赖 CP09 分数。
+3. Windows 聚焦测试、完整 pytest 和 `ruff check --no-cache src tests`。
+4. 服务器运行 SAM3 prompt gate，动态选择空闲 GPU，不终止其他用户进程。
+5. gate 通过后运行 success、failure、clamp_failure 三个真实样例。
+6. 人工检查分割图和 overlay，报告每个样例的数值特征、状态、原因码和证据路径。
+
+三个样例只能证明 Demo 链路可运行，不能声称准确率、临床有效性或泛化能力。
