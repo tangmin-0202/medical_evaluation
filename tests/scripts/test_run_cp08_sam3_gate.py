@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -10,7 +11,6 @@ import numpy as np
 import pytest
 
 from medical_evaluation.segmentation.base import FrameMasks
-
 
 SCRIPT_PATH = Path(__file__).parents[2] / "scripts" / "run_cp08_sam3_gate.py"
 
@@ -303,3 +303,79 @@ def test_run_gate_refuses_non_empty_output_directory(tmp_path: Path) -> None:
             read_frame_fn=lambda _path, _index: np.zeros((24, 24, 3), dtype=np.uint8),
             sample_frames_fn=_fake_sample_frames,
         )
+
+
+def test_parser_has_stable_sam3_defaults(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+
+    args = gate.build_parser().parse_args(
+        ["--video-id", "success", "--output-dir", str(tmp_path / "gate")]
+    )
+
+    assert args.annotations == Path("data/annotations")
+    assert args.videos == Path("videos")
+    assert args.sam3_root == Path("external/sam3")
+    assert args.threshold == pytest.approx(0.2)
+    assert args.grounding_batch_size == 4
+    assert args.device == "cuda:0"
+
+
+def test_sha256_file_returns_full_digest(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    payload = b"checkpoint fixture"
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_bytes(payload)
+
+    assert gate.sha256_file(checkpoint) == hashlib.sha256(payload).hexdigest()
+
+
+def test_git_output_serializes_command_failure() -> None:
+    gate = _load_gate_module()
+
+    assert gate.git_output("definitely-not-a-git-subcommand") == "unknown"
+
+
+def test_run_cli_records_backend_failure_without_cuda(tmp_path: Path) -> None:
+    gate = _load_gate_module()
+    annotations = tmp_path / "annotations"
+    annotations.mkdir()
+    _write_annotation(annotations / "success.json")
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    (videos / "橡皮障完整.mp4").write_bytes(b"fixture")
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    sam3_root = tmp_path / "sam3"
+    sam3_root.mkdir()
+    output = tmp_path / "failed-gate"
+
+    def fail_backend(_args):
+        raise RuntimeError("simulated model load failure")
+
+    exit_code = gate.run_cli(
+        [
+            "--video-id",
+            "success",
+            "--annotations",
+            str(annotations),
+            "--videos",
+            str(videos),
+            "--output-dir",
+            str(output),
+            "--checkpoint",
+            str(checkpoint),
+            "--sam3-root",
+            str(sam3_root),
+        ],
+        backend_factory=fail_backend,
+        cuda_memory_fn=lambda: {"allocated_mib": None, "reserved_mib": None},
+    )
+
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert summary["status"] == "failed"
+    assert summary["error_type"] == "RuntimeError"
+    assert summary["error_message"] == "simulated model load failure"
+    assert summary["provenance"]["checkpoint_sha256"] == hashlib.sha256(
+        b"checkpoint"
+    ).hexdigest()

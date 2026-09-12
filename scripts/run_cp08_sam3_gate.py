@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
+import os
+import subprocess
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,10 +15,12 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.presets import PRESETS
 from medical_evaluation.segmentation.base import FrameMasks, SegmentationPrompt
+from medical_evaluation.segmentation.sam3_backend import Sam3Backend
+from medical_evaluation.settings import Settings
 from medical_evaluation.storage import atomic_write_json
 from medical_evaluation.video import SampledFrame, read_frame, sample_frames
-
 
 PROMPT_CANDIDATES: dict[str, tuple[str, ...]] = {
     "blunt_instrument": (
@@ -47,6 +54,30 @@ MIN_MASK_AREA_PX = 64
 class GateWindows:
     cp08: tuple[float, float]
     cp09_tail: tuple[float, float]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    settings = Settings()
+    parser = argparse.ArgumentParser(
+        description="Run the text-only SAM3 feasibility gate for CP08 inputs."
+    )
+    parser.add_argument("--video-id", choices=tuple(PRESETS), required=True)
+    parser.add_argument("--annotations", type=Path, default=Path("data/annotations"))
+    parser.add_argument("--videos", type=Path, default=Path("videos"))
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, default=settings.sam3_checkpoint_path)
+    parser.add_argument("--sam3-root", type=Path, default=Path("external/sam3"))
+    parser.add_argument("--bpe-path", type=Path, default=settings.sam3_bpe_path)
+    parser.add_argument(
+        "--threshold", type=float, default=settings.sam3_output_prob_threshold
+    )
+    parser.add_argument(
+        "--grounding-batch-size",
+        type=int,
+        default=settings.sam3_grounding_batch_size,
+    )
+    parser.add_argument("--device", default=settings.sam_device)
+    return parser
 
 
 def load_gate_windows(annotation_path: Path) -> GateWindows:
@@ -388,3 +419,131 @@ def run_gate(
     atomic_write_json(output_dir / "manual_review.json", manual_review)
     atomic_write_json(output_dir / "summary.json", summary)
     return summary
+
+
+def sha256_file(path: Path) -> str:
+    if not path.is_file():
+        return "missing"
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def cuda_peak_memory() -> dict[str, float | None]:
+    try:
+        import torch
+    except ImportError:
+        return {"allocated_mib": None, "reserved_mib": None}
+    if not torch.cuda.is_available():
+        return {"allocated_mib": None, "reserved_mib": None}
+    scale = 1024 * 1024
+    return {
+        "allocated_mib": round(torch.cuda.max_memory_allocated() / scale, 3),
+        "reserved_mib": round(torch.cuda.max_memory_reserved() / scale, 3),
+    }
+
+
+def _reset_cuda_peak_memory() -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+
+def _build_backend(args: argparse.Namespace) -> Sam3Backend:
+    return Sam3Backend(
+        args.checkpoint,
+        bpe_path=args.bpe_path,
+        device=args.device,
+        output_prob_threshold=args.threshold,
+        grounding_batch_size=args.grounding_batch_size,
+    )
+
+
+def run_cli(
+    argv: list[str] | None = None,
+    *,
+    backend_factory: Callable[[argparse.Namespace], Any] = _build_backend,
+    cuda_memory_fn: Callable[[], dict[str, float | None]] = cuda_peak_memory,
+) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        _prepare_output(args.output_dir)
+    except FileExistsError:
+        return 2
+    started = time.perf_counter()
+    annotation_path = args.annotations / f"{args.video_id}.json"
+    video_path = args.videos / PRESETS[args.video_id]
+    provenance = {
+        "git_head": git_output("rev-parse", "HEAD"),
+        "sam3_revision": git_output("-C", str(args.sam3_root), "rev-parse", "HEAD"),
+        "checkpoint_sha256": sha256_file(args.checkpoint),
+        "checkpoint_path": str(args.checkpoint),
+        "bpe_path": str(args.bpe_path),
+        "device": args.device,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "threshold": args.threshold,
+        "grounding_batch_size": args.grounding_batch_size,
+    }
+    _reset_cuda_peak_memory()
+    try:
+        if not annotation_path.is_file():
+            raise FileNotFoundError(f"annotation not found: {annotation_path}")
+        if not video_path.is_file():
+            raise FileNotFoundError(f"video not found: {video_path}")
+        backend = backend_factory(args)
+        summary = run_gate(
+            segmenter=backend,
+            video_path=video_path,
+            annotation_path=annotation_path,
+            output_dir=args.output_dir,
+        )
+        summary["video_id"] = args.video_id
+        summary["provenance"] = provenance
+        summary["elapsed_seconds"] = time.perf_counter() - started
+        summary["cuda_peak_memory"] = cuda_memory_fn()
+        atomic_write_json(args.output_dir / "summary.json", summary)
+        return 0 if summary["automatic_gate_passed"] else 2
+    except Exception as exc:  # noqa: BLE001 - failures must remain auditable
+        failure = {
+            "status": "failed",
+            "video_id": args.video_id,
+            "video_path": str(video_path),
+            "annotation_path": str(annotation_path),
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "elapsed_seconds": time.perf_counter() - started,
+            "cuda_peak_memory": cuda_memory_fn(),
+            "provenance": provenance,
+        }
+        atomic_write_json(args.output_dir / "summary.json", failure)
+        atomic_write_json(
+            args.output_dir / "selected_prompts.json",
+            {"session_strategy": "independent", "objects": {}, "status": "failed"},
+        )
+        return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_cli(argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
