@@ -19,6 +19,8 @@
 - A gate result is not a clinical accuracy claim. It only establishes whether the present SAM3 model and prompts provide usable masks on the available Demo videos.
 - All four positive objects must be run in independent SAM3 sessions: blunt instrument, target tooth, clamp, and rubber dam. Sharp-probe prompts also use independent sessions.
 - The CP08 positive search may stop after a clear dense confirmation window. A negative CP08 result must scan the complete annotated stage.
+- Only `steps[].time_range` may be read from the annotation JSON. Existing point, box, or mask prompts must be ignored; they cannot provide object locations, candidate timestamps, or labels to this gate.
+- This matches the active SAM3 production path for CP09/CP11, which uses `TextPromptPolicy`; the retained `AnnotationPromptPolicy` is a legacy-backend compatibility path and must not be copied into this gate.
 
 ## Gate contract
 
@@ -331,7 +333,8 @@ git commit -m "feat: score SAM3 feasibility masks"
   2. only a CP08 prompt with a sparse candidate receives a second, clipped three-second window at `5.0` FPS;
   3. tooth, clamp, and dam each receive the same CP09-tail range at `5.0` FPS;
   4. every call is independent, represented by a separate `track()` invocation;
-  5. a prompt with no CP08 candidate is never declared absent until its full sparse scan is complete.
+  5. a prompt with no CP08 candidate is never declared absent until its full sparse scan is complete;
+  6. point/box/mask prompts present in the annotation JSON are never passed to the segmenter and never choose a candidate time.
 
 Use small synthetic `FrameMasks` values with known frame indices and masks. Do not mock the metric functions.
 
@@ -362,7 +365,6 @@ The implementation must:
 - refuse a non-empty output directory;
 - call `track(video_path, TimeRange(...), [SegmentationPrompt(...)], sample_fps=...)` once per session, with one text prompt and a stable object ID;
 - sparse-scan the full CP08 stage for every blunt and sharp prompt;
-- also run a point-prompt diagnostic at the existing success annotation time `139.814028s`, using its three `blunt‑tipped instrument` points; record it separately as `manual_point_diagnostic` and never allow it to satisfy the automatic text-localization gate;
 - derive the first candidate timestamp from returned `FrameMasks` metadata;
 - run one dense window only for prompts with a valid sparse candidate;
 - evaluate tooth, clamp, and dam over the last three seconds of CP09;
@@ -546,7 +548,7 @@ If the repository uses different success filenames, use the exact listed paths a
 
 - [ ] During the run, monitor GPU memory and output timestamps. If there is no new artifact or console progress for 60 seconds, inspect the process and GPU before waiting further. On OOM, preserve `summary.json` and logs, report peak usage, and do not silently lower resolution/FPS or change the verified batch size.
 
-- [ ] Inspect `summary.json` and every selected overlay at original resolution, including frames immediately before and after `139.814028s`. Update `manual_review.json` from `pending` to `pass` or `fail`, with a concrete Chinese note for each item. The clamp note must explicitly say whether both wings are included. The blunt-instrument note must identify the left working end near the tooth/clamp, state whether its terminal contour is visible, and must not use the thick right handle as bluntness evidence. The sharp-probe note must classify each non-empty candidate as true sharp instrument or false positive.
+- [ ] Inspect `summary.json` and every selected overlay at original resolution, including frames immediately before and after the candidate time found automatically by SAM3. Update `manual_review.json` from `pending` to `pass` or `fail`, with a concrete Chinese note for each item. The clamp note must explicitly say whether both wings are included. The blunt-instrument note must identify the working end near the tooth/clamp, state whether its terminal contour is visible, and must not use the thick handle as bluntness evidence. The sharp-probe note must classify each non-empty candidate as true sharp instrument or false positive.
 
 - [ ] The feasibility gate passes only when all of the following are true:
 
