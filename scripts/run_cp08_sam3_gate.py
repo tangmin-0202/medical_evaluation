@@ -239,6 +239,7 @@ def _run_prompt(
     output_dir: Path,
     read_frame_fn: Callable[[Path, int], np.ndarray],
     sample_frames_fn: Callable[..., Iterable[SampledFrame]],
+    appearance_validator: Callable[[np.ndarray, np.ndarray], bool] | None = None,
 ) -> dict[str, Any]:
     prompt = SegmentationPrompt(
         object_id=object_id,
@@ -278,8 +279,7 @@ def _run_prompt(
             dtype=bool,
         )
         masks.append(mask)
-        frames.append(
-            _write_artifacts(
+        frame_record = _write_artifacts(
                 output_dir=output_dir,
                 artifact_dir=artifact_dir,
                 frame_index=item.frame_index,
@@ -289,13 +289,32 @@ def _run_prompt(
                 raw=raw,
                 mask=mask,
             )
-        )
+        if appearance_validator is not None:
+            frame_record["appearance_valid"] = bool(
+                mask.sum() >= MIN_MASK_AREA_PX and appearance_validator(raw, mask)
+            )
+        frames.append(frame_record)
     metrics = summarize_masks(masks, min_area_px=MIN_MASK_AREA_PX)
+    if appearance_validator is not None:
+        flags = [bool(frame.get("appearance_valid")) for frame in frames]
+        consecutive = 0
+        max_consecutive = 0
+        for flag in flags:
+            consecutive = consecutive + 1 if flag else 0
+            max_consecutive = max(max_consecutive, consecutive)
+        metrics.update(
+            appearance_valid_frame_count=sum(flags),
+            max_consecutive_appearance_valid_frames=max_consecutive,
+            automatic_gate_passed=(
+                metrics["automatic_gate_passed"] and max_consecutive >= 3
+            ),
+        )
     first_candidate = next(
         (
             frame["frame_time_sec"]
             for frame in frames
             if frame["mask_area_px"] >= MIN_MASK_AREA_PX
+            and frame.get("appearance_valid", True)
         ),
         None,
     )

@@ -67,7 +67,7 @@ def test_ambiguous_prompt_is_audited_without_aborting_other_objects(tmp_path):
         model_version = "test"
 
         def track(self, video_path, time_range, prompts, sample_fps):
-            if prompts[0].text == "dental dam template sheet":
+            if prompts[0].text == gate.CATALOG["cp_01"]["template_board"][1]:
                 raise gate.Sam3AmbiguousTextResult("multiple candidates")
             yield FrameMasks(frame_index=0, frame_time_sec=1,
                              masks={prompts[0].object_id: np.ones((16, 16), bool)})
@@ -93,3 +93,36 @@ def test_cp02_cp03_dam_prompts_describe_visible_green_sheet():
     catalog = load_gate().CATALOG
     assert "large green sheet" in catalog["cp_02"]["rubber_dam"]
     assert "large green sheet with a small hole" in catalog["cp_03"]["rubber_dam"]
+
+
+def test_cp01_prompts_describe_visible_template_and_pen_appearance():
+    catalog = load_gate().CATALOG["cp_01"]
+    assert "white rectangular card with a black cross and rows of black dots" in (
+        catalog["template_board"]
+    )
+    assert "thin black pen touching the green sheet" in catalog["marking_pen"]
+
+
+def test_cp02_punch_prompt_distinguishes_held_tool_with_hole_disk():
+    prompts = load_gate().CATALOG["cp_02"]["rubber_dam_punch"]
+    assert "metal pliers held in a hand with a round disk containing several holes" in prompts
+
+
+def test_visible_appearance_rejects_green_sheet_as_white_board():
+    gate = load_gate()
+    mask = np.ones((20, 20), dtype=bool)
+    green = np.full((20, 20, 3), (30, 180, 30), dtype=np.uint8)
+    white = np.full((20, 20, 3), (220, 220, 220), dtype=np.uint8)
+
+    assert gate.visible_appearance_is_plausible("template_board", green, mask) is False
+    assert gate.visible_appearance_is_plausible("template_board", white, mask) is True
+
+
+def test_visible_appearance_rejects_bright_metal_as_black_pen():
+    gate = load_gate()
+    mask = np.ones((20, 20), dtype=bool)
+    metal = np.full((20, 20, 3), (190, 190, 190), dtype=np.uint8)
+    black = np.full((20, 20, 3), (35, 35, 35), dtype=np.uint8)
+
+    assert gate.visible_appearance_is_plausible("marking_pen", metal, mask) is False
+    assert gate.visible_appearance_is_plausible("marking_pen", black, mask) is True

@@ -7,6 +7,9 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.presets import PRESETS
@@ -25,18 +28,42 @@ _spec.loader.exec_module(_support)
 CATALOG = {
     "cp_03": {"rubber_dam": ("large green sheet with a small hole", "large green sheet")},
     "cp_01": {
-        "template_board": ("white rectangular dental rubber dam marking template board",
-                           "dental dam template sheet"),
+        "template_board": (
+            "white rectangular card with a black cross and rows of black dots",
+            "white card under the green sheet",
+        ),
         "rubber_dam": ("flat green rubber sheet", "large flat green rectangular sheet"),
-        "marking_pen": ("black marking pen", "marker pen held in a gloved hand"),
+        "marking_pen": (
+            "thin black pen touching the green sheet",
+            "black pen held in a gloved hand",
+        ),
     },
     "cp_02": {
-        "rubber_dam_punch": ("metal dental rubber dam punch pliers with a rotating hole disk",
-                             "dental rubber dam punch"),
+        "rubber_dam_punch": (
+            "metal pliers held in a hand with a round disk containing several holes",
+            "handheld metal pliers with a multi-hole wheel at the tip",
+        ),
         "cleaning_instrument": ("metal dental probe", "dental instrument held in a gloved hand"),
         "rubber_dam": ("large green sheet", "large flat green rectangular sheet"),
     },
 }
+
+
+def visible_appearance_is_plausible(
+    object_id: str, raw_bgr: np.ndarray, mask: np.ndarray,
+) -> bool:
+    """Reject obvious semantic swaps while retaining every raw mask for audit."""
+    binary = np.asarray(mask, dtype=bool)
+    if binary.ndim != 2 or raw_bgr.shape[:2] != binary.shape or not binary.any():
+        return False
+    hsv = cv2.cvtColor(np.asarray(raw_bgr, dtype=np.uint8), cv2.COLOR_BGR2HSV)
+    saturation = hsv[..., 1][binary]
+    value = hsv[..., 2][binary]
+    if object_id == "template_board":
+        return bool(np.mean((saturation < 90) & (value > 145)) >= 0.35)
+    if object_id == "marking_pen":
+        return bool(np.mean(value < 105) >= 0.25)
+    return True
 
 
 def collect_gate(
@@ -55,6 +82,9 @@ def collect_gate(
                     object_id=object_id, prompt_text=text, sample_fps=sample_fps,
                     phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
                     sample_frames_fn=sample_frames,
+                    appearance_validator=lambda raw, mask, object_id=object_id: (
+                        visible_appearance_is_plausible(object_id, raw, mask)
+                    ),
                 )
             except Sam3AmbiguousTextResult as exc:
                 result = {"status": "prompt_failed", "error_type": type(exc).__name__,
