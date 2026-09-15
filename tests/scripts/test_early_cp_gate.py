@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -127,3 +128,47 @@ def test_visible_appearance_rejects_bright_metal_as_black_pen():
 
     assert gate.visible_appearance_is_plausible("marking_pen", metal, mask) is False
     assert gate.visible_appearance_is_plausible("marking_pen", black, mask) is True
+
+
+def test_cp02_uses_automatic_box_when_text_prompts_miss(tmp_path):
+    gate = load_gate()
+    frames = []
+    for index in range(5):
+        image = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        center = (120 + 35 * index, 250)
+        cv2.circle(image, center, 30, (185, 185, 185), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (center[0] + int(16 * np.cos(angle)),
+                     center[1] + int(16 * np.sin(angle)))
+            cv2.circle(image, point, 4, (20, 20, 20), -1)
+        frames.append(SimpleNamespace(frame_index=index, time_sec=float(index), image_bgr=image))
+
+    class Backend:
+        model_version = "test"
+
+        def __init__(self):
+            self.box_prompt = None
+
+        def track(self, video_path, time_range, prompts, sample_fps):
+            if prompts[0].kind == "text":
+                return iter(())
+            self.box_prompt = prompts[0]
+            mask = np.zeros((360, 640), bool)
+            mask[210:290, 160:240] = True
+            return iter([FrameMasks(frame_index=2, frame_time_sec=2, masks={
+                "rubber_dam_punch": mask,
+            })])
+
+    backend = Backend()
+    result = gate.collect_gate(
+        backend, Path("unused.mp4"), "cp_02", TimeRange(start_sec=0, end_sec=4),
+        tmp_path, sample_fps=1,
+        read_frame_fn=lambda _path, index: frames[index].image_bgr,
+        sample_frames_fn=lambda *args, **kwargs: iter(frames),
+    )
+
+    automatic = result["objects"]["rubber_dam_punch"][-1]
+    assert automatic["prompt_kind"] == "box"
+    assert automatic["locator"]["motion_ratio"] >= 0.15
+    assert backend.box_prompt is not None
+    assert backend.box_prompt.kind == "box"

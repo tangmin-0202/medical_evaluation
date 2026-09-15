@@ -12,7 +12,9 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.features.cp02_punch import locate_moving_multihole_disk
 from medical_evaluation.presets import PRESETS
+from medical_evaluation.segmentation.base import SegmentationPrompt
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json
 from medical_evaluation.video import read_frame, sample_frames
@@ -71,6 +73,7 @@ def visible_appearance_is_plausible(
 def collect_gate(
     backend, video_path, checkpoint_id, time_range, output_dir, *, sample_fps=2,
     read_frame_fn=read_frame,
+    sample_frames_fn=sample_frames,
 ):
     _support._prepare_output(output_dir)
     objects = {}
@@ -83,7 +86,7 @@ def collect_gate(
                     segmenter=backend, video_path=video_path, time_range=time_range,
                     object_id=object_id, prompt_text=text, sample_fps=sample_fps,
                     phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
-                    sample_frames_fn=sample_frames,
+                    sample_frames_fn=sample_frames_fn,
                     appearance_validator=lambda raw, mask, object_id=object_id: (
                         visible_appearance_is_plausible(object_id, raw, mask)
                     ),
@@ -93,6 +96,18 @@ def collect_gate(
                           "error_message": str(exc), "automatic_gate_passed": False,
                           "valid_frame_count": 0, "max_consecutive_valid_frames": 0}
             objects[object_id].append({"prompt": text, **result})
+    if checkpoint_id == "cp_02":
+        objects["rubber_dam_punch"].append(
+            _run_automatic_punch_box(
+                backend=backend,
+                video_path=video_path,
+                time_range=time_range,
+                output_dir=output_dir,
+                sample_fps=sample_fps,
+                read_frame_fn=read_frame_fn,
+                sample_frames_fn=sample_frames_fn,
+            )
+        )
     payload = {
         "status": "completed", "checkpoint_id": checkpoint_id,
         "time_range": time_range.model_dump(mode="json"),
@@ -102,6 +117,106 @@ def collect_gate(
     }
     atomic_write_json(output_dir / "summary.json", payload)
     return payload
+
+
+def _run_automatic_punch_box(
+    *, backend, video_path, time_range, output_dir, sample_fps, read_frame_fn,
+    sample_frames_fn,
+):
+    """Generate a SAM3 box from motion and multi-hole appearance, without manual points."""
+    prompt_text = "automatic moving multi-hole disk box"
+    sampled = list(sample_frames_fn(
+        video_path,
+        start_sec=time_range.start_sec,
+        end_sec=time_range.end_sec,
+        sample_fps=sample_fps,
+    ))
+    locator = locate_moving_multihole_disk([item.image_bgr for item in sampled])
+    if locator is None:
+        return {
+            "prompt": prompt_text,
+            "prompt_kind": "box",
+            "status": "locator_not_found",
+            "automatic_gate_passed": False,
+            "valid_frame_count": 0,
+            "max_consecutive_valid_frames": 0,
+            "frames": [],
+            "locator": None,
+        }
+
+    seed = sampled[locator.frame_position]
+    height, width = seed.image_bgr.shape[:2]
+    coordinates = locator.normalized_box(width, height)
+    prompt = SegmentationPrompt(
+        object_id="rubber_dam_punch",
+        kind="box",
+        frame_time_sec=seed.time_sec,
+        coordinates=coordinates,
+    )
+    artifact_dir = output_dir / "rubber_dam_punch" / _support._slug(prompt_text) / "scan"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    locator_overlay = seed.image_bgr.copy()
+    x1, y1, x2, y2 = [
+        round(value) for value in (
+            coordinates[0] * width,
+            coordinates[1] * height,
+            coordinates[2] * width,
+            coordinates[3] * height,
+        )
+    ]
+    cv2.circle(
+        locator_overlay, (round(locator.x), round(locator.y)), round(locator.radius),
+        (0, 255, 255), 2,
+    )
+    cv2.rectangle(locator_overlay, (x1, y1), (x2, y2), (255, 0, 255), 2)
+    cv2.putText(
+        locator_overlay,
+        f"holes={locator.hole_count} motion={locator.motion_ratio:.3f}",
+        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
+        cv2.LINE_AA,
+    )
+    locator_overlay_path = artifact_dir / "locator_overlay.jpg"
+    if not cv2.imwrite(str(locator_overlay_path), locator_overlay):
+        raise OSError(f"could not write artifact: {locator_overlay_path}")
+
+    tracked = list(backend.track(video_path, time_range, [prompt], sample_fps))
+    frames = []
+    masks = []
+    for item in tracked:
+        raw = read_frame_fn(video_path, item.frame_index)
+        mask = np.asarray(
+            item.masks.get("rubber_dam_punch", np.zeros(raw.shape[:2], dtype=bool)),
+            dtype=bool,
+        )
+        masks.append(mask)
+        frames.append(_support._write_artifacts(
+            output_dir=output_dir,
+            artifact_dir=artifact_dir,
+            frame_index=item.frame_index,
+            frame_time_sec=item.frame_time_sec,
+            object_id="rubber_dam_punch",
+            prompt_text=prompt_text,
+            raw=raw,
+            mask=mask,
+        ))
+    return {
+        "prompt": prompt_text,
+        "prompt_kind": "box",
+        "box_coordinates": coordinates,
+        "locator": {
+            "frame_position": locator.frame_position,
+            "frame_index": seed.frame_index,
+            "time_sec": seed.time_sec,
+            "x": locator.x,
+            "y": locator.y,
+            "radius": locator.radius,
+            "hole_count": locator.hole_count,
+            "motion_ratio": locator.motion_ratio,
+            "overlay_path": locator_overlay_path.relative_to(output_dir).as_posix(),
+        },
+        "frames": frames,
+        **_support.summarize_masks(masks, min_area_px=_support.MIN_MASK_AREA_PX),
+    }
 
 
 def main(argv=None):

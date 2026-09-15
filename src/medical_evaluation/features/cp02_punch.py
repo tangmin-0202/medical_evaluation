@@ -19,6 +19,79 @@ class Hole:
             raise ValueError("hole geometry must be finite with positive radius")
 
 
+@dataclass(frozen=True)
+class MovingDisk:
+    frame_position: int
+    x: float
+    y: float
+    radius: float
+    hole_count: int
+    motion_ratio: float
+
+    def normalized_box(
+        self, width: int, height: int, *, padding_radii: float = 1.35,
+    ) -> list[float]:
+        if width <= 0 or height <= 0 or padding_radii <= 1:
+            raise ValueError("valid image size and disk padding are required")
+        extent = self.radius * padding_radii
+        return [
+            max(0.0, (self.x - extent) / width),
+            max(0.0, (self.y - extent) / height),
+            min(1.0, (self.x + extent) / width),
+            min(1.0, (self.y + extent) / height),
+        ]
+
+
+def locate_moving_multihole_disk(
+    frames_bgr: Sequence[np.ndarray], *, min_holes: int = 3,
+    min_motion_ratio: float = 0.15,
+) -> MovingDisk | None:
+    """Locate a moving multi-hole wheel without a manually supplied point or box."""
+    if len(frames_bgr) < 3 or min_holes < 2 or not 0 < min_motion_ratio < 1:
+        raise ValueError("at least three frames and valid disk thresholds are required")
+    frames = [np.asarray(frame, dtype=np.uint8) for frame in frames_bgr]
+    shape = frames[0].shape
+    if len(shape) != 3 or shape[2] != 3 or any(frame.shape != shape for frame in frames):
+        raise ValueError("all frames must be same-size BGR images")
+    grays = [cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) for frame in frames]
+    background = np.median(np.stack(grays), axis=0).astype(np.uint8)
+    height, width = shape[:2]
+    min_radius = max(8, round(width * 0.01))
+    max_radius = max(min_radius + 2, round(width * 0.05))
+    candidates: list[MovingDisk] = []
+    yy, xx = np.ogrid[:height, :width]
+    for frame_position, gray in enumerate(grays):
+        circles = cv2.HoughCircles(
+            cv2.medianBlur(gray, 7), cv2.HOUGH_GRADIENT, dp=1.2,
+            minDist=max(20, min_radius), param1=120, param2=24,
+            minRadius=min_radius, maxRadius=max_radius,
+        )
+        if circles is None:
+            continue
+        for x, y, radius in np.round(circles[0]).astype(int):
+            inner = (xx - x) ** 2 + (yy - y) ** 2 < (0.8 * radius) ** 2
+            dark = inner & (gray < 110)
+            count, _, stats, _ = cv2.connectedComponentsWithStats(dark.astype(np.uint8))
+            min_area = max(3, round(radius * radius * 0.002))
+            max_area = max(min_area + 1, round(radius * radius * 0.20))
+            hole_count = sum(
+                min_area <= int(stats[index, cv2.CC_STAT_AREA]) <= max_area
+                for index in range(1, count)
+            )
+            motion_ratio = float(np.mean(cv2.absdiff(gray, background)[inner] > 20))
+            if hole_count >= min_holes and motion_ratio >= min_motion_ratio:
+                candidates.append(
+                    MovingDisk(
+                        frame_position=frame_position, x=float(x), y=float(y),
+                        radius=float(radius), hole_count=hole_count,
+                        motion_ratio=motion_ratio,
+                    )
+                )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.hole_count, item.motion_ratio, item.radius))
+
+
 def second_largest_hole(
     holes: Sequence[Hole], *, layout_reliable: bool, min_radius_gap: float,
 ) -> int | None:
