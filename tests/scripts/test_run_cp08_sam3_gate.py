@@ -76,6 +76,22 @@ def test_prompt_catalog_has_independent_cp08_and_cp09_objects() -> None:
     assert "green dental rubber dam" in gate.PROMPT_CANDIDATES["rubber_dam"]
 
 
+def test_tooth_catalog_includes_simple_prompts_after_relational_prompt_miss() -> None:
+    gate = _load_gate_module()
+
+    assert {"tooth", "white tooth", "molar tooth"}.issubset(
+        gate.PROMPT_CANDIDATES["target_tooth"]
+    )
+
+
+def test_instrument_catalog_can_search_shape_without_claiming_tip_type() -> None:
+    gate = _load_gate_module()
+
+    assert "metal dental instrument with a long handle and curved working shaft" in (
+        gate.PROMPT_CANDIDATES["blunt_instrument"]
+    )
+
+
 def test_load_windows_uses_all_of_cp08_and_last_three_seconds_of_cp09(
     tmp_path: Path,
 ) -> None:

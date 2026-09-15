@@ -24,6 +24,7 @@ from medical_evaluation.video import SampledFrame, read_frame, sample_frames
 
 PROMPT_CANDIDATES: dict[str, tuple[str, ...]] = {
     "blunt_instrument": (
+        "metal dental instrument with a long handle and curved working shaft",
         "blunt dental instrument",
         "dental instrument with a rounded blunt working tip",
         "metal dental instrument with a curved shaft and rounded working tip",
@@ -35,6 +36,9 @@ PROMPT_CANDIDATES: dict[str, tuple[str, ...]] = {
     "target_tooth": (
         "isolated white tooth inside the rubber dam clamp",
         "white molar enclosed by the metal rubber dam clamp",
+        "tooth",
+        "white tooth",
+        "molar tooth",
     ),
     "rubber_dam_clamp": (
         "metal rubber dam clamp around the tooth",
