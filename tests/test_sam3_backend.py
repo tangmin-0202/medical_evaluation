@@ -214,7 +214,7 @@ def test_sam3_rejects_point_prompt(tmp_path: Path) -> None:
         )
 
 
-def test_sam3_uses_automatic_box_prompt_and_tracks_both_directions(
+def test_sam3_uses_fresh_sessions_for_box_prompt_directions(
     tmp_path: Path,
 ) -> None:
     predictor = FakeSam3Predictor()
@@ -238,8 +238,12 @@ def test_sam3_uses_automatic_box_prompt_and_tracks_both_directions(
         "bounding_box_labels": [1],
         "output_prob_thresh": 0.5,
     }
-    assert predictor.stream_requests[0]["start_frame_index"] == 0
-    assert predictor.stream_requests[0]["propagation_direction"] == "both"
+    assert [request["propagation_direction"] for request in predictor.stream_requests] == [
+        "backward",
+        "forward",
+    ]
+    assert all(request["start_frame_index"] == 0 for request in predictor.stream_requests)
+    assert sum(request["type"] == "start_session" for request in predictor.requests) == 2
     assert len(frames) == 2
     assert all(set(frame.masks) == {"target_tooth"} for frame in frames)
 

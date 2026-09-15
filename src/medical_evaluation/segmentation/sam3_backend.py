@@ -153,60 +153,94 @@ class Sam3Backend:
                 if selected_id is None:
                     return
 
-                stream = self.predictor.handle_stream_request(
-                    {
-                        "type": "propagate_in_video",
-                        "session_id": session_id,
-                        "propagation_direction": "both",
-                        "start_frame_index": prompt_local_index,
-                        "output_prob_thresh": self.output_prob_threshold,
-                    }
-                )
                 tracked: dict[int, FrameMasks] = {}
-                for item in stream:
-                    local_index = int(item["frame_index"])
-                    if local_index < 0 or local_index >= len(sequence.entries):
-                        raise ValueError(f"SAM3 returned invalid local frame index {local_index}")
-                    entry = sequence.entries[local_index]
-                    outputs = item["outputs"]
-                    object_ids = _as_array(outputs["out_obj_ids"]).reshape(-1)
-                    masks = list(outputs["out_binary_masks"])
-                    selected_masks = [
-                        mask
-                        for object_id, mask in zip(object_ids, masks, strict=True)
-                        if int(object_id) == selected_id
-                    ]
-                    selected_mask = (
-                        selected_masks[0]
-                        if selected_masks
-                        else np.zeros(
-                            (sequence.metadata.height, sequence.metadata.width),
-                            dtype=bool,
+                directions = ("both",) if prompt.kind == "text" else ("backward", "forward")
+                for direction_index, direction in enumerate(directions):
+                    if direction_index:
+                        self.predictor.handle_request(
+                            {"type": "close_session", "session_id": session_id}
                         )
+                        response = self.predictor.handle_request(
+                            {
+                                "type": "start_session",
+                                "resource_path": str(sequence.directory),
+                                "offload_video_to_cpu": True,
+                            }
+                        )
+                        session_id = str(response["session_id"])
+                        assert prompt.coordinates is not None
+                        x1, y1, x2, y2 = prompt.coordinates
+                        prompt_result = self.predictor.handle_request(
+                            {
+                                "type": "add_prompt",
+                                "session_id": session_id,
+                                "frame_index": prompt_local_index,
+                                "bounding_boxes": [[x1, y1, x2 - x1, y2 - y1]],
+                                "bounding_box_labels": [1],
+                                "output_prob_thresh": self.output_prob_threshold,
+                            }
+                        )
+                        selected_id = _select_candidate_id(prompt_result)
+                        if selected_id is None:
+                            continue
+                        selected_prompt_score = _candidate_score(
+                            prompt_result["outputs"], selected_id
+                        )
+                    stream = self.predictor.handle_stream_request(
+                        {
+                            "type": "propagate_in_video",
+                            "session_id": session_id,
+                            "propagation_direction": direction,
+                            "start_frame_index": prompt_local_index,
+                            "output_prob_thresh": self.output_prob_threshold,
+                        }
                     )
-                    raw = {
-                        "frame": entry.source_frame_index,
-                        "objects": {prompt.object_id: selected_mask},
-                    }
-                    frame_masks = normalize_masks(
-                        raw,
-                        threshold=self.output_prob_threshold,
-                        frame_time_sec=entry.source_time_sec,
-                    )
-                    frame_masks.sample_position = local_index
-                    if not frame_masks.masks[prompt.object_id].any():
+                    for item in stream:
+                        local_index = int(item["frame_index"])
+                        if local_index < 0 or local_index >= len(sequence.entries):
+                            raise ValueError(
+                                f"SAM3 returned invalid local frame index {local_index}"
+                            )
+                        entry = sequence.entries[local_index]
+                        outputs = item["outputs"]
+                        object_ids = _as_array(outputs["out_obj_ids"]).reshape(-1)
+                        masks = list(outputs["out_binary_masks"])
+                        selected_masks = [
+                            mask
+                            for object_id, mask in zip(object_ids, masks, strict=True)
+                            if int(object_id) == selected_id
+                        ]
+                        selected_mask = (
+                            selected_masks[0]
+                            if selected_masks
+                            else np.zeros(
+                                (sequence.metadata.height, sequence.metadata.width),
+                                dtype=bool,
+                            )
+                        )
+                        raw = {
+                            "frame": entry.source_frame_index,
+                            "objects": {prompt.object_id: selected_mask},
+                        }
+                        frame_masks = normalize_masks(
+                            raw,
+                            threshold=self.output_prob_threshold,
+                            frame_time_sec=entry.source_time_sec,
+                        )
+                        frame_masks.sample_position = local_index
+                        if not frame_masks.masks[prompt.object_id].any():
+                            tracked[local_index] = frame_masks
+                            continue
+                        score = _candidate_score(outputs, selected_id)
+                        source = "propagation"
+                        if score is None:
+                            # Official propagation output omits scores on some revisions.
+                            score = selected_prompt_score
+                            source = "discovery"
+                        if score is not None:
+                            frame_masks.scores[prompt.object_id] = score
+                            frame_masks.score_sources[prompt.object_id] = source
                         tracked[local_index] = frame_masks
-                        continue
-                    score = _candidate_score(outputs, selected_id)
-                    source = "propagation"
-                    if score is None:
-                        # Official propagation output omits scores on some revisions.
-                        score = selected_prompt_score
-                        source = "discovery"
-                    if score is not None:
-                        frame_masks.scores[prompt.object_id] = score
-                        frame_masks.score_sources[prompt.object_id] = source
-                    tracked[local_index] = frame_masks
                 for local_index in sorted(tracked):
                     yield tracked[local_index]
             finally:
