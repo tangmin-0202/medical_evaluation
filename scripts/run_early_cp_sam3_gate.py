@@ -10,6 +10,7 @@ from pathlib import Path
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.presets import PRESETS
+from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json
 from medical_evaluation.video import read_frame, sample_frames
 
@@ -22,18 +23,18 @@ sys.modules[_spec.name] = _support
 _spec.loader.exec_module(_support)
 
 CATALOG = {
-    "cp_03": {"rubber_dam": ("green dental rubber dam",)},
+    "cp_03": {"rubber_dam": ("large green sheet with a small hole", "large green sheet")},
     "cp_01": {
         "template_board": ("white rectangular dental rubber dam marking template board",
                            "dental dam template sheet"),
-        "rubber_dam": ("green dental rubber dam",),
+        "rubber_dam": ("flat green rubber sheet", "large flat green rectangular sheet"),
         "marking_pen": ("black marking pen", "marker pen held in a gloved hand"),
     },
     "cp_02": {
         "rubber_dam_punch": ("metal dental rubber dam punch pliers with a rotating hole disk",
                              "dental rubber dam punch"),
         "cleaning_instrument": ("metal dental probe", "dental instrument held in a gloved hand"),
-        "rubber_dam": ("green dental rubber dam",),
+        "rubber_dam": ("large green sheet", "large flat green rectangular sheet"),
     },
 }
 
@@ -48,12 +49,17 @@ def collect_gate(
         objects[object_id] = []
         for text in prompts:
             print(f"{checkpoint_id} {object_id}: {text}", flush=True)
-            result = _support._run_prompt(
-                segmenter=backend, video_path=video_path, time_range=time_range,
-                object_id=object_id, prompt_text=text, sample_fps=sample_fps,
-                phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
-                sample_frames_fn=sample_frames,
-            )
+            try:
+                result = _support._run_prompt(
+                    segmenter=backend, video_path=video_path, time_range=time_range,
+                    object_id=object_id, prompt_text=text, sample_fps=sample_fps,
+                    phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
+                    sample_frames_fn=sample_frames,
+                )
+            except Sam3AmbiguousTextResult as exc:
+                result = {"status": "prompt_failed", "error_type": type(exc).__name__,
+                          "error_message": str(exc), "automatic_gate_passed": False,
+                          "valid_frame_count": 0, "max_consecutive_valid_frames": 0}
             objects[object_id].append({"prompt": text, **result})
     payload = {
         "status": "completed", "checkpoint_id": checkpoint_id,

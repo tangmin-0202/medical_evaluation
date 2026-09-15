@@ -44,7 +44,10 @@ PROMPT_CANDIDATES: dict[str, tuple[str, ...]] = {
         "metal rubber dam clamp around the tooth",
         "complete stainless steel rubber dam clamp with two side wings",
     ),
-    "rubber_dam": ("green dental rubber dam",),
+    "rubber_dam": (
+        "large green sheet covering the mouth area",
+        "green dental rubber dam",
+    ),
 }
 
 CP08_SPARSE_FPS = 1.0

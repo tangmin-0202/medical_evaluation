@@ -74,6 +74,7 @@ def test_prompt_catalog_has_independent_cp08_and_cp09_objects() -> None:
     assert len(gate.PROMPT_CANDIDATES["blunt_instrument"]) >= 2
     assert len(gate.PROMPT_CANDIDATES["sharp_probe"]) >= 2
     assert "green dental rubber dam" in gate.PROMPT_CANDIDATES["rubber_dam"]
+    assert "large green sheet covering the mouth area" in gate.PROMPT_CANDIDATES["rubber_dam"]
 
 
 def test_tooth_catalog_includes_simple_prompts_after_relational_prompt_miss() -> None:

@@ -58,3 +58,38 @@ def test_nonempty_output_is_not_overwritten(tmp_path):
         gate.collect_gate(None, Path("unused"), "cp_01", TimeRange(start_sec=0, end_sec=2),
                           tmp_path, sample_fps=2)
     assert (tmp_path / "user.txt").read_text() == "keep"
+
+
+def test_ambiguous_prompt_is_audited_without_aborting_other_objects(tmp_path):
+    gate = load_gate()
+
+    class Backend:
+        model_version = "test"
+
+        def track(self, video_path, time_range, prompts, sample_fps):
+            if prompts[0].text == "dental dam template sheet":
+                raise gate.Sam3AmbiguousTextResult("multiple candidates")
+            yield FrameMasks(frame_index=0, frame_time_sec=1,
+                             masks={prompts[0].object_id: np.ones((16, 16), bool)})
+
+    result = gate.collect_gate(
+        Backend(), Path("unused.mp4"), "cp_01", TimeRange(start_sec=0, end_sec=2),
+        tmp_path, sample_fps=2,
+        read_frame_fn=lambda *_: np.zeros((16, 16, 3), np.uint8),
+    )
+    failed = result["objects"]["template_board"][1]
+    assert failed["status"] == "prompt_failed"
+    assert failed["error_type"] == "Sam3AmbiguousTextResult"
+    assert result["objects"]["marking_pen"]
+
+
+def test_cp01_dam_catalog_includes_flat_sheet_appearance():
+    prompts = load_gate().CATALOG["cp_01"]["rubber_dam"]
+    assert "flat green rubber sheet" in prompts
+    assert all("dental" not in prompt and "rubber dam" not in prompt for prompt in prompts)
+
+
+def test_cp02_cp03_dam_prompts_describe_visible_green_sheet():
+    catalog = load_gate().CATALOG
+    assert "large green sheet" in catalog["cp_02"]["rubber_dam"]
+    assert "large green sheet with a small hole" in catalog["cp_03"]["rubber_dam"]
