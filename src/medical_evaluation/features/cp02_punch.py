@@ -71,19 +71,49 @@ def locate_moving_multihole_disk(
         for x, y, radius in np.round(circles[0]).astype(int):
             inner = (xx - x) ** 2 + (yy - y) ** 2 < (0.8 * radius) ** 2
             dark = inner & (gray < 110)
-            count, _, stats, _ = cv2.connectedComponentsWithStats(dark.astype(np.uint8))
+            count, _, stats, centers = cv2.connectedComponentsWithStats(
+                dark.astype(np.uint8),
+            )
             min_area = max(3, round(radius * radius * 0.002))
             max_area = max(min_area + 1, round(radius * radius * 0.20))
-            hole_count = sum(
-                min_area <= int(stats[index, cv2.CC_STAT_AREA]) <= max_area
-                for index in range(1, count)
+            hole_count = 0
+            hole_centers = []
+            for index in range(1, count):
+                component_width = int(stats[index, cv2.CC_STAT_WIDTH])
+                component_height = int(stats[index, cv2.CC_STAT_HEIGHT])
+                component_area = int(stats[index, cv2.CC_STAT_AREA])
+                aspect_ratio = max(component_width, component_height) / max(
+                    1, min(component_width, component_height),
+                )
+                fill_ratio = component_area / (component_width * component_height)
+                if (
+                    min_area <= component_area <= max_area
+                    and aspect_ratio <= 1.8
+                    and fill_ratio >= 0.45
+                ):
+                    hole_count += 1
+                    hole_centers.append(centers[index])
+            if hole_count < min_holes:
+                continue
+            refined_x, refined_y = np.mean(hole_centers, axis=0)
+            center_distances = np.linalg.norm(
+                np.asarray(hole_centers) - np.array([refined_x, refined_y]), axis=1,
             )
-            motion_ratio = float(np.mean(cv2.absdiff(gray, background)[inner] > 20))
+            refined_radius = max(float(radius) * 0.55, float(center_distances.max()) * 1.5)
+            refined_inner = (
+                (xx - refined_x) ** 2 + (yy - refined_y) ** 2 < refined_radius ** 2
+            )
+            motion_ratio = float(
+                np.mean(cv2.absdiff(gray, background)[refined_inner] > 20),
+            )
             if hole_count >= min_holes and motion_ratio >= min_motion_ratio:
                 candidates.append(
                     MovingDisk(
-                        frame_position=frame_position, x=float(x), y=float(y),
-                        radius=float(radius), hole_count=hole_count,
+                        frame_position=frame_position,
+                        x=float(refined_x),
+                        y=float(refined_y),
+                        radius=refined_radius,
+                        hole_count=hole_count,
                         motion_ratio=motion_ratio,
                     )
                 )

@@ -74,3 +74,34 @@ def test_static_multihole_disks_do_not_create_automatic_box():
     frame = _disk_frame((120, 250), moving=False)
 
     assert punch.locate_moving_multihole_disk([frame.copy() for _ in range(5)]) is None
+
+
+def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():
+    frames = []
+    for index in range(5):
+        frame = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        disk_center = (150 + 30 * index, 250)
+        press_center = (205 + 30 * index, 245)
+        cv2.circle(frame, disk_center, 30, (185, 185, 185), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (
+                disk_center[0] + int(17 * np.cos(angle)),
+                disk_center[1] + int(17 * np.sin(angle)),
+            )
+            cv2.circle(frame, point, 4, (20, 20, 20), -1)
+        cv2.circle(frame, press_center, 36, (180, 180, 180), -1)
+        for offset in range(-24, 25, 6):
+            cv2.rectangle(
+                frame,
+                (press_center[0] + offset - 1, press_center[1] - 16),
+                (press_center[0] + offset + 1, press_center[1] + 16),
+                (25, 25, 25),
+                -1,
+            )
+        frames.append(frame)
+
+    result = punch.locate_moving_multihole_disk(frames)
+
+    assert result is not None
+    expected_centers = [150 + 30 * index for index in range(5)]
+    assert min(abs(result.x - expected) for expected in expected_centers) <= 10

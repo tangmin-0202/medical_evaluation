@@ -142,67 +142,97 @@ def _run_automatic_punch_box(
             "max_consecutive_valid_frames": 0,
             "frames": [],
             "locator": None,
+            "box_attempts": [],
+            "selected_padding_radii": None,
         }
 
     seed = sampled[locator.frame_position]
     height, width = seed.image_bgr.shape[:2]
-    coordinates = locator.normalized_box(width, height)
-    prompt = SegmentationPrompt(
-        object_id="rubber_dam_punch",
-        kind="box",
-        frame_time_sec=seed.time_sec,
-        coordinates=coordinates,
-    )
-    artifact_dir = output_dir / "rubber_dam_punch" / _support._slug(prompt_text) / "scan"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    locator_overlay = seed.image_bgr.copy()
-    x1, y1, x2, y2 = [
-        round(value) for value in (
-            coordinates[0] * width,
-            coordinates[1] * height,
-            coordinates[2] * width,
-            coordinates[3] * height,
+    base_artifact_dir = output_dir / "rubber_dam_punch" / _support._slug(prompt_text)
+    attempts = []
+    selected = None
+    for padding_radii in (1.35, 2.0, 3.5):
+        coordinates = locator.normalized_box(
+            width, height, padding_radii=padding_radii,
         )
-    ]
-    cv2.circle(
-        locator_overlay, (round(locator.x), round(locator.y)), round(locator.radius),
-        (0, 255, 255), 2,
-    )
-    cv2.rectangle(locator_overlay, (x1, y1), (x2, y2), (255, 0, 255), 2)
-    cv2.putText(
-        locator_overlay,
-        f"holes={locator.hole_count} motion={locator.motion_ratio:.3f}",
-        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
-        cv2.LINE_AA,
-    )
-    locator_overlay_path = artifact_dir / "locator_overlay.jpg"
-    if not cv2.imwrite(str(locator_overlay_path), locator_overlay):
-        raise OSError(f"could not write artifact: {locator_overlay_path}")
-
-    tracked = list(backend.track(video_path, time_range, [prompt], sample_fps))
-    frames = []
-    masks = []
-    for item in tracked:
-        raw = read_frame_fn(video_path, item.frame_index)
-        mask = np.asarray(
-            item.masks.get("rubber_dam_punch", np.zeros(raw.shape[:2], dtype=bool)),
-            dtype=bool,
-        )
-        masks.append(mask)
-        frames.append(_support._write_artifacts(
-            output_dir=output_dir,
-            artifact_dir=artifact_dir,
-            frame_index=item.frame_index,
-            frame_time_sec=item.frame_time_sec,
+        prompt = SegmentationPrompt(
             object_id="rubber_dam_punch",
-            prompt_text=prompt_text,
-            raw=raw,
-            mask=mask,
-        ))
+            kind="box",
+            frame_time_sec=seed.time_sec,
+            coordinates=coordinates,
+        )
+        artifact_dir = base_artifact_dir / f"padding-{padding_radii:g}" / "scan"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        locator_overlay = seed.image_bgr.copy()
+        x1, y1, x2, y2 = [
+            round(value) for value in (
+                coordinates[0] * width,
+                coordinates[1] * height,
+                coordinates[2] * width,
+                coordinates[3] * height,
+            )
+        ]
+        cv2.circle(
+            locator_overlay, (round(locator.x), round(locator.y)), round(locator.radius),
+            (0, 255, 255), 2,
+        )
+        cv2.rectangle(locator_overlay, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        cv2.putText(
+            locator_overlay,
+            f"holes={locator.hole_count} motion={locator.motion_ratio:.3f} pad={padding_radii:g}",
+            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
+            cv2.LINE_AA,
+        )
+        locator_overlay_path = artifact_dir / "locator_overlay.jpg"
+        if not cv2.imwrite(str(locator_overlay_path), locator_overlay):
+            raise OSError(f"could not write artifact: {locator_overlay_path}")
+
+        tracked = list(backend.track(video_path, time_range, [prompt], sample_fps))
+        frames = []
+        masks = []
+        for item in tracked:
+            raw = read_frame_fn(video_path, item.frame_index)
+            mask = np.asarray(
+                item.masks.get(
+                    "rubber_dam_punch", np.zeros(raw.shape[:2], dtype=bool),
+                ),
+                dtype=bool,
+            )
+            masks.append(mask)
+            frames.append(_support._write_artifacts(
+                output_dir=output_dir,
+                artifact_dir=artifact_dir,
+                frame_index=item.frame_index,
+                frame_time_sec=item.frame_time_sec,
+                object_id="rubber_dam_punch",
+                prompt_text=prompt_text,
+                raw=raw,
+                mask=mask,
+            ))
+        metrics = _support.summarize_masks(
+            masks, min_area_px=_support.MIN_MASK_AREA_PX,
+        )
+        attempts.append({
+            "padding_radii": padding_radii,
+            "box_coordinates": coordinates,
+            **metrics,
+        })
+        selected = {
+            "padding_radii": padding_radii,
+            "box_coordinates": coordinates,
+            "locator_overlay_path": locator_overlay_path,
+            "frames": frames,
+            "metrics": metrics,
+        }
+        if metrics["valid_frame_count"] > 0:
+            break
+    assert selected is not None
     return {
         "prompt": prompt_text,
         "prompt_kind": "box",
-        "box_coordinates": coordinates,
+        "box_coordinates": selected["box_coordinates"],
+        "box_attempts": attempts,
+        "selected_padding_radii": selected["padding_radii"],
         "locator": {
             "frame_position": locator.frame_position,
             "frame_index": seed.frame_index,
@@ -212,10 +242,12 @@ def _run_automatic_punch_box(
             "radius": locator.radius,
             "hole_count": locator.hole_count,
             "motion_ratio": locator.motion_ratio,
-            "overlay_path": locator_overlay_path.relative_to(output_dir).as_posix(),
+            "overlay_path": selected["locator_overlay_path"].relative_to(
+                output_dir
+            ).as_posix(),
         },
-        "frames": frames,
-        **_support.summarize_masks(masks, min_area_px=_support.MIN_MASK_AREA_PX),
+        "frames": selected["frames"],
+        **selected["metrics"],
     }
 
 
