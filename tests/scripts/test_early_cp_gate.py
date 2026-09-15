@@ -106,6 +106,7 @@ def test_cp01_prompts_describe_visible_template_and_pen_appearance():
 def test_cp02_punch_prompt_distinguishes_held_tool_with_hole_disk():
     prompts = load_gate().CATALOG["cp_02"]["rubber_dam_punch"]
     assert "metal pliers held in a hand with a round disk containing several holes" in prompts
+    assert "small round metal disk with several holes held in a gloved hand" in prompts
 
 
 def test_visible_appearance_rejects_green_sheet_as_white_board():

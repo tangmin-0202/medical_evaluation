@@ -42,6 +42,8 @@ CATALOG = {
         "rubber_dam_punch": (
             "metal pliers held in a hand with a round disk containing several holes",
             "handheld metal pliers with a multi-hole wheel at the tip",
+            "small round metal disk with several holes held in a gloved hand",
+            "round silver disk with several dark holes",
         ),
         "cleaning_instrument": ("metal dental probe", "dental instrument held in a gloved hand"),
         "rubber_dam": ("large green sheet", "large flat green rectangular sheet"),
