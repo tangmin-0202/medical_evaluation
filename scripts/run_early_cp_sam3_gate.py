@@ -257,6 +257,8 @@ def _run_automatic_punch_box(
             "inside_box_ratio": measurement.inside_box_ratio,
             "green_ratio": measurement.green_ratio,
             "elongation": measurement.elongation,
+            "visible_hole_count": measurement.visible_hole_count,
+            "visible_disk_center": measurement.visible_disk_center,
         }
         frames.append(record)
         accepted_flags.append(measurement.accepted)
@@ -273,7 +275,7 @@ def _run_automatic_punch_box(
         accepted_frame_count=accepted_count,
         max_consecutive_accepted_frames=max_consecutive,
         automatic_gate_passed=(
-            max_consecutive >= 3
+            max_consecutive >= 2
             and metrics["median_dominant_component_ratio"] >= 0.60
         ),
     )

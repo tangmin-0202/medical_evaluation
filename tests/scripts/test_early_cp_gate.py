@@ -252,6 +252,55 @@ def test_cp02_rejects_nonempty_green_sam3_mask(tmp_path):
     assert result["automatic_gate_passed"] is False
 
 
+def test_cp02_gate_accepts_two_moved_disk_frames(tmp_path, monkeypatch):
+    gate = load_gate()
+    from medical_evaluation.features.cp02_punch import HeldPunchBox, MovingDisk
+
+    images = []
+    masks = []
+    for index in range(4):
+        image = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        center = (120 + 65 * index, 220)
+        cv2.circle(image, center, 32, (190, 190, 190), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (center[0] + int(17 * np.cos(angle)),
+                     center[1] + int(17 * np.sin(angle)))
+            cv2.circle(image, point, 4, (20, 20, 20), -1)
+        mask = np.zeros((360, 640), bool)
+        if index >= 2:
+            cv2.circle(mask.view(np.uint8), center, 32, 1, -1)
+        images.append(SimpleNamespace(frame_index=index, time_sec=float(index), image_bgr=image))
+        masks.append(mask)
+
+    monkeypatch.setattr(
+        gate, "locate_moving_multihole_disk",
+        lambda _frames: MovingDisk(0, 120, 220, 32, 6, 0.6),
+    )
+    monkeypatch.setattr(
+        gate, "locate_held_punch_box",
+        lambda _frames, _disk: HeldPunchBox(0, 88, 188, 190, 285, 1.6, 0.6),
+    )
+
+    class Backend:
+        def track(self, _video_path, _time_range, _prompts, _sample_fps):
+            return iter(FrameMasks(
+                frame_index=index, frame_time_sec=float(index),
+                masks={"rubber_dam_punch": masks[index]},
+            ) for index in range(4))
+
+    result = gate._run_automatic_punch_box(
+        backend=Backend(), video_path=Path("unused.mp4"),
+        time_range=TimeRange(start_sec=0, end_sec=3), output_dir=tmp_path,
+        sample_fps=1,
+        read_frame_fn=lambda _path, index: images[index].image_bgr,
+        sample_frames_fn=lambda *args, **kwargs: iter(images),
+    )
+
+    assert result["accepted_frame_count"] == 2
+    assert result["max_consecutive_accepted_frames"] == 2
+    assert result["automatic_gate_passed"] is True
+
+
 def test_cp02_automatic_only_mode_skips_all_text_prompts(tmp_path):
     gate = load_gate()
     frames = []

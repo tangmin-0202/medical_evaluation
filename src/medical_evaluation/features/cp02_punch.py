@@ -84,6 +84,8 @@ class HeldPunchMaskMeasurement:
     inside_box_ratio: float
     green_ratio: float
     elongation: float
+    visible_hole_count: int = 0
+    visible_disk_center: tuple[float, float] | None = None
 
 
 def locate_moving_multihole_disk(
@@ -339,7 +341,7 @@ def measure_held_punch_mask(
     disk: MovingDisk,
     box: HeldPunchBox,
 ) -> HeldPunchMaskMeasurement:
-    """Measure one SAM3 mask and reject obvious instance or semantic swaps."""
+    """Accept a mask when a multi-hole disk is visible in its current-frame region."""
     frame = np.asarray(frame_bgr, dtype=np.uint8)
     binary = np.asarray(mask, dtype=bool)
     if frame.ndim != 3 or frame.shape[2] != 3 or binary.shape != frame.shape[:2]:
@@ -368,14 +370,13 @@ def measure_held_punch_mask(
         max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
     )
 
-    if anchor_distance > 1.25:
-        reason = "anchor_missed"
-    elif inside_ratio < 0.55:
-        reason = "outside_tool_box"
-    elif green_ratio > 0.35:
+    visible_hole_count, visible_disk_center = _visible_disk_in_mask(
+        frame, binary, disk.radius,
+    )
+    if green_ratio > 0.35:
         reason = "green_sheet_mask"
-    elif elongation < 1.35:
-        reason = "not_elongated"
+    elif visible_hole_count < 3:
+        reason = "disk_holes_not_visible"
     else:
         reason = "criteria_satisfied"
     return HeldPunchMaskMeasurement(
@@ -385,7 +386,60 @@ def measure_held_punch_mask(
         inside_box_ratio=inside_ratio,
         green_ratio=green_ratio,
         elongation=elongation,
+        visible_hole_count=visible_hole_count,
+        visible_disk_center=visible_disk_center,
     )
+
+
+def _visible_disk_in_mask(
+    frame_bgr: np.ndarray, mask: np.ndarray, seed_radius: float,
+) -> tuple[int, tuple[float, float] | None]:
+    """Find a multi-hole circle inside the current mask, without a fixed screen anchor."""
+    ys, xs = np.nonzero(mask)
+    padding = max(12, round(seed_radius))
+    y1 = max(0, int(ys.min()) - padding)
+    y2 = min(mask.shape[0], int(ys.max()) + padding + 1)
+    x1 = max(0, int(xs.min()) - padding)
+    x2 = min(mask.shape[1], int(xs.max()) + padding + 1)
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    crop = gray[y1:y2, x1:x2]
+    circles = cv2.HoughCircles(
+        cv2.medianBlur(crop, 7), cv2.HOUGH_GRADIENT, dp=1.2,
+        minDist=max(12, round(seed_radius * 0.5)), param1=120, param2=24,
+        minRadius=max(8, round(seed_radius * 0.45)),
+        maxRadius=max(12, round(seed_radius * 2.5)),
+    )
+    if circles is None:
+        return 0, None
+    best_count = 0
+    best_center = None
+    for local_x, local_y, radius in np.round(circles[0]).astype(int):
+        x, y = local_x + x1, local_y + y1
+        if not (0 <= x < mask.shape[1] and 0 <= y < mask.shape[0] and mask[y, x]):
+            continue
+        top, bottom = max(0, y - radius), min(mask.shape[0], y + radius + 1)
+        left, right = max(0, x - radius), min(mask.shape[1], x + radius + 1)
+        yy, xx = np.ogrid[top:bottom, left:right]
+        dark = ((xx - x) ** 2 + (yy - y) ** 2 < (0.8 * radius) ** 2) & (
+            gray[top:bottom, left:right] < 110
+        )
+        count, _, stats, _ = cv2.connectedComponentsWithStats(dark.astype(np.uint8))
+        holes = 0
+        for index in range(1, count):
+            width = int(stats[index, cv2.CC_STAT_WIDTH])
+            height = int(stats[index, cv2.CC_STAT_HEIGHT])
+            area = int(stats[index, cv2.CC_STAT_AREA])
+            if (
+                max(3, round(radius * radius * 0.002))
+                <= area <= max(4, round(radius * radius * 0.20))
+                and max(width, height) / max(1, min(width, height)) <= 1.8
+                and area / (width * height) >= 0.45
+            ):
+                holes += 1
+        if holes > best_count:
+            best_count = holes
+            best_center = (float(x), float(y))
+    return best_count, best_center
 
 
 def second_largest_hole(

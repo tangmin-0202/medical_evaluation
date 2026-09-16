@@ -218,6 +218,9 @@ def _mask_fixture():
     cv2.line(tool_mask.view(np.uint8), (115, 125), (245, 185), 1, 18)
     cv2.circle(tool_mask.view(np.uint8), (100, 120), 24, 1, -1)
     frame[tool_mask] = (190, 190, 190)
+    for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+        point = (100 + int(13 * np.cos(angle)), 120 + int(13 * np.sin(angle)))
+        cv2.circle(frame, point, 3, (20, 20, 20), -1)
     disk = punch.MovingDisk(
         frame_position=0,
         x=100,
@@ -259,12 +262,43 @@ def test_held_punch_mask_rejects_green_sheet():
     assert result.reason == "green_sheet_mask"
 
 
-def test_held_punch_mask_rejects_mask_away_from_disk_anchor():
+def test_held_punch_mask_rejects_mask_without_visible_disk():
     frame, _, disk, box = _mask_fixture()
     unrelated = np.zeros(frame.shape[:2], bool)
     unrelated[20:60, 220:300] = True
+    frame[unrelated] = (190, 190, 190)
 
     result = punch.measure_held_punch_mask(frame, unrelated, disk, box)
 
     assert result.accepted is False
-    assert result.reason == "anchor_missed"
+    assert result.reason == "disk_holes_not_visible"
+
+
+def test_held_punch_mask_accepts_moved_multihole_disk_with_glove():
+    frame, _, disk, box = _mask_fixture()
+    moved = np.zeros(frame.shape[:2], bool)
+    cv2.circle(moved.view(np.uint8), (230, 110), 31, 1, -1)
+    cv2.rectangle(moved.view(np.uint8), (220, 135), (295, 205), 1, -1)
+    frame[moved] = (190, 190, 190)
+    frame[140:205, 240:295] = (175, 195, 220)
+    for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+        point = (230 + int(17 * np.cos(angle)), 110 + int(17 * np.sin(angle)))
+        cv2.circle(frame, point, 4, (20, 20, 20), -1)
+
+    result = punch.measure_held_punch_mask(frame, moved, disk, box)
+
+    assert result.accepted is True
+    assert result.reason == "criteria_satisfied"
+    assert result.visible_hole_count >= 3
+
+
+def test_held_punch_mask_rejects_moved_blob_without_holes():
+    frame, _, disk, box = _mask_fixture()
+    unrelated = np.zeros(frame.shape[:2], bool)
+    cv2.circle(unrelated.view(np.uint8), (230, 110), 31, 1, -1)
+    frame[unrelated] = (190, 190, 190)
+
+    result = punch.measure_held_punch_mask(frame, unrelated, disk, box)
+
+    assert result.accepted is False
+    assert result.reason == "disk_holes_not_visible"
