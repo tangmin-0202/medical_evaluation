@@ -144,6 +144,10 @@ def locate_moving_multihole_disk(
                 np.asarray(hole_centers) - np.array([refined_x, refined_y]), axis=1,
             )
             refined_radius = max(float(radius) * 0.55, float(center_distances.max()) * 1.5)
+            if not _disk_fully_visible(
+                refined_x, refined_y, refined_radius, width, height,
+            ):
+                continue
             refined_inner = (
                 (xx - refined_x) ** 2 + (yy - refined_y) ** 2 < refined_radius ** 2
             )
@@ -173,6 +177,10 @@ def locate_moving_multihole_disk(
         candidates,
         key=lambda item: (item.surface_contrast, item.motion_ratio, item.hole_count),
     )
+
+
+def _disk_fully_visible(x: float, y: float, radius: float, width: int, height: int) -> bool:
+    return x - radius >= 0 and y - radius >= 0 and x + radius < width and y + radius < height
 
 
 def _disk_surface_contrast(frame_bgr: np.ndarray, x: float, y: float, radius: float) -> float:

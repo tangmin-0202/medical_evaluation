@@ -147,6 +147,11 @@ def test_disk_surface_contrast_rejects_hollow_press_opening():
     assert hollow < 20
 
 
+def test_disk_candidate_must_be_fully_inside_image():
+    assert punch._disk_fully_visible(120, 120, 30, 400, 240)
+    assert not punch._disk_fully_visible(120, 220, 30, 400, 240)
+
+
 def _held_punch_frames(*, include_handle=True, handle_color=(195, 195, 195)):
     frames = []
     for index in range(5):
