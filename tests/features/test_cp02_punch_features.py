@@ -380,3 +380,11 @@ def test_prepunch_scan_extends_to_next_stage_start_when_gap_contains_adjustment(
     )
 
     assert scan == TimeRange(start_sec=19.0, end_sec=55.0)
+
+
+def test_automatic_punch_box_padding_keeps_wheel_inside_prompt():
+    box = punch.HeldPunchBox(0, 1040, 777, 1147, 946, 1.5, 0.6)
+
+    coordinates = box.normalized(1920, 1080, padding_px=28)
+
+    assert coordinates == [1012 / 1920, 749 / 1080, 1175 / 1920, 974 / 1080]

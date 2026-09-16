@@ -211,7 +211,9 @@ def _run_automatic_punch_box(
             "max_consecutive_accepted_frames": 0,
         }
 
-    coordinates = tool_box.normalized(width, height)
+    coordinates = tool_box.normalized(
+        width, height, padding_px=max(12, round(locator.radius * 0.75)),
+    )
     prompt = SegmentationPrompt(
         object_id="rubber_dam_punch",
         kind="box",

@@ -67,14 +67,16 @@ class HeldPunchBox:
     def contains(self, x: float, y: float) -> bool:
         return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
 
-    def normalized(self, width: int, height: int) -> list[float]:
-        if width <= 0 or height <= 0:
-            raise ValueError("positive image dimensions are required")
+    def normalized(
+        self, width: int, height: int, *, padding_px: int = 0,
+    ) -> list[float]:
+        if width <= 0 or height <= 0 or padding_px < 0:
+            raise ValueError("positive image dimensions and non-negative padding required")
         return [
-            self.x1 / width,
-            self.y1 / height,
-            self.x2 / width,
-            self.y2 / height,
+            max(0, self.x1 - padding_px) / width,
+            max(0, self.y1 - padding_px) / height,
+            min(width, self.x2 + padding_px) / width,
+            min(height, self.y2 + padding_px) / height,
         ]
 
 
