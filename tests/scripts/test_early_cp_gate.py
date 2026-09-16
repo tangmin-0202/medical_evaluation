@@ -62,6 +62,27 @@ def test_cp02_gate_window_includes_last_adjustment_between_stages():
     ) == TimeRange(start_sec=19, end_sec=55)
 
 
+def test_extended_cp02_tracking_uses_original_stage_for_auto_box_seed(tmp_path, monkeypatch):
+    gate = load_gate()
+    observed = {}
+
+    def fake_auto_box(**kwargs):
+        observed.update(kwargs)
+        return {"automatic_gate_passed": False}
+
+    monkeypatch.setattr(gate, "_run_automatic_punch_box", fake_auto_box)
+    original = TimeRange(start_sec=19, end_sec=50)
+    extended = TimeRange(start_sec=19, end_sec=55)
+
+    gate.collect_gate(
+        SimpleNamespace(model_version="test"), Path("unused.mp4"), "cp_02", extended, tmp_path,
+        automatic_punch_only=True, localization_time_range=original,
+    )
+
+    assert observed["time_range"] == extended
+    assert observed["localization_time_range"] == original
+
+
 def test_cp03_gate_needs_only_dam():
     assert set(load_gate().CATALOG["cp_03"]) == {"rubber_dam"}
 

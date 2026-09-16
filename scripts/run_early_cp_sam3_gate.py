@@ -99,6 +99,7 @@ def collect_gate(
     read_frame_fn=read_frame,
     sample_frames_fn=sample_frames,
     automatic_punch_only=False,
+    localization_time_range=None,
 ):
     _support._prepare_output(output_dir)
     if automatic_punch_only and checkpoint_id != "cp_02":
@@ -135,6 +136,7 @@ def collect_gate(
                 backend=backend,
                 video_path=video_path,
                 time_range=time_range,
+                localization_time_range=localization_time_range or time_range,
                 output_dir=output_dir,
                 sample_fps=sample_fps,
                 read_frame_fn=read_frame_fn,
@@ -154,15 +156,17 @@ def collect_gate(
 
 
 def _run_automatic_punch_box(
-    *, backend, video_path, time_range, output_dir, sample_fps, read_frame_fn,
+    *, backend, video_path, time_range, output_dir,
+    sample_fps, read_frame_fn,
     sample_frames_fn,
+    localization_time_range=None,
 ):
     """Generate a whole-tool SAM3 box from a moving disk, without manual points."""
     prompt_text = "automatic held punch box"
     sampled = list(sample_frames_fn(
         video_path,
-        start_sec=time_range.start_sec,
-        end_sec=time_range.end_sec,
+        start_sec=(localization_time_range or time_range).start_sec,
+        end_sec=(localization_time_range or time_range).end_sec,
         sample_fps=sample_fps,
     ))
     locator = locate_moving_multihole_disk([item.image_bgr for item in sampled])
@@ -211,9 +215,7 @@ def _run_automatic_punch_box(
             "max_consecutive_accepted_frames": 0,
         }
 
-    coordinates = tool_box.normalized(
-        width, height, padding_px=max(12, round(locator.radius * 0.75)),
-    )
+    coordinates = tool_box.normalized(width, height)
     prompt = SegmentationPrompt(
         object_id="rubber_dam_punch",
         kind="box",
@@ -364,11 +366,15 @@ def main(argv=None):
             annotations, args.checkpoint_id,
             include_prepunch_gap=args.include_prepunch_gap,
         )
+        localization_window = resolve_gate_window(
+            annotations, args.checkpoint_id,
+        )
         _support._reset_cuda_peak_memory()
         result = collect_gate(
             _support._build_backend(args), args.videos / PRESETS[args.video_id],
             args.checkpoint_id, window, args.output_dir, sample_fps=args.sample_fps,
             automatic_punch_only=args.automatic_punch_only,
+            localization_time_range=localization_window,
         )
         result.update(provenance=provenance, elapsed_seconds=time.perf_counter() - started,
                       cuda_peak_memory=_support.cuda_peak_memory())
