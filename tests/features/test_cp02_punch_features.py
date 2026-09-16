@@ -302,3 +302,81 @@ def test_held_punch_mask_rejects_moved_blob_without_holes():
 
     assert result.accepted is False
     assert result.reason == "disk_holes_not_visible"
+
+
+def test_visible_disk_prefers_solid_wheel_over_lower_mechanism_dark_spots():
+    frame = np.full((300, 420, 3), (170, 120, 70), np.uint8)
+    mask = np.zeros(frame.shape[:2], bool)
+    cv2.circle(frame, (130, 90), 36, (195, 195, 195), -1)
+    cv2.circle(mask.view(np.uint8), (130, 90), 36, 1, -1)
+    for angle in np.linspace(0, 2 * np.pi, 5, endpoint=False):
+        point = (130 + int(20 * np.cos(angle)), 90 + int(20 * np.sin(angle)))
+        cv2.circle(frame, point, 4, (20, 20, 20), -1)
+    cv2.rectangle(frame, (110, 135), (180, 255), (170, 170, 170), -1)
+    cv2.rectangle(mask.view(np.uint8), (110, 135), (180, 255), 1, -1)
+    cv2.circle(frame, (145, 205), 34, (180, 180, 180), -1)
+    for angle in np.linspace(0, 2 * np.pi, 10, endpoint=False):
+        point = (145 + int(19 * np.cos(angle)), 205 + int(19 * np.sin(angle)))
+        cv2.circle(frame, point, 3, (20, 20, 20), -1)
+
+    hole_count, center = punch._visible_disk_in_mask(frame, mask, 36)
+
+    assert hole_count >= 3
+    assert center is not None
+    assert abs(center[0] - 130) <= 10
+    assert abs(center[1] - 90) <= 10
+
+
+def test_visible_disk_rejects_lower_mechanism_when_wheel_holes_occluded():
+    frame = np.full((300, 420, 3), (170, 120, 70), np.uint8)
+    mask = np.zeros(frame.shape[:2], bool)
+    cv2.circle(frame, (130, 90), 36, (195, 195, 195), -1)
+    cv2.circle(mask.view(np.uint8), (130, 90), 36, 1, -1)
+    for angle in np.linspace(0, 2 * np.pi, 2, endpoint=False):
+        point = (130 + int(20 * np.cos(angle)), 90 + int(20 * np.sin(angle)))
+        cv2.circle(frame, point, 4, (20, 20, 20), -1)
+    cv2.rectangle(frame, (105, 135), (180, 260), (170, 170, 170), -1)
+    cv2.rectangle(mask.view(np.uint8), (105, 135), (180, 260), 1, -1)
+    cv2.circle(frame, (145, 205), 34, (180, 180, 180), -1)
+    for angle in np.linspace(0, 2 * np.pi, 10, endpoint=False):
+        point = (145 + int(19 * np.cos(angle)), 205 + int(19 * np.sin(angle)))
+        cv2.circle(frame, point, 3, (20, 20, 20), -1)
+
+    hole_count, center = punch._visible_disk_in_mask(frame, mask, 36)
+
+    assert hole_count == 0
+    assert center is None
+
+
+def test_final_prepunch_selection_uses_last_stable_alignment_not_transient():
+    observations = [
+        punch.PrePunchObservation(10.0, 1, 12.0, True),
+        punch.PrePunchObservation(10.5, 1, 12.5, True),
+        punch.PrePunchObservation(11.0, None, 30.0, True),
+        punch.PrePunchObservation(11.5, 0, 30.5, True),
+        punch.PrePunchObservation(12.0, 0, 30.5, True),
+    ]
+
+    assert punch.final_prepunch_hole(observations, contact_time_sec=12.4) == 0
+
+
+def test_final_prepunch_selection_rejects_unseen_readjustment():
+    observations = [
+        punch.PrePunchObservation(10.0, 1, 12.0, True),
+        punch.PrePunchObservation(10.5, 1, 12.5, True),
+        punch.PrePunchObservation(11.0, None, 30.0, True),
+        punch.PrePunchObservation(11.5, None, None, False),
+    ]
+
+    assert punch.final_prepunch_hole(observations, contact_time_sec=12.0) is None
+
+
+def test_prepunch_scan_extends_to_next_stage_start_when_gap_contains_adjustment():
+    from medical_evaluation.domain import TimeRange
+
+    scan = punch.prepunch_scan_range(
+        TimeRange(start_sec=19.0, end_sec=50.0),
+        TimeRange(start_sec=55.0, end_sec=71.0),
+    )
+
+    assert scan == TimeRange(start_sec=19.0, end_sec=55.0)

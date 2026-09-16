@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from medical_evaluation.domain import TimeRange
+
 
 @dataclass(frozen=True)
 class Hole:
@@ -86,6 +88,87 @@ class HeldPunchMaskMeasurement:
     elongation: float
     visible_hole_count: int = 0
     visible_disk_center: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True)
+class PrePunchObservation:
+    time_sec: float
+    aligned_hole_index: int | None
+    disk_to_handle_angle_deg: float | None
+    reliable: bool
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.time_sec) or self.time_sec < 0:
+            raise ValueError("observation time must be finite and non-negative")
+        if self.aligned_hole_index is not None and self.aligned_hole_index < 0:
+            raise ValueError("hole index must be non-negative")
+        if (
+            self.disk_to_handle_angle_deg is not None
+            and not math.isfinite(self.disk_to_handle_angle_deg)
+        ):
+            raise ValueError("relative wheel angle must be finite")
+
+
+def prepunch_scan_range(
+    cp02_range: TimeRange,
+    cp03_range: TimeRange,
+    *,
+    max_interstage_gap_sec: float = 8.0,
+) -> TimeRange:
+    """Include a short interstage gap where the last wheel adjustment may occur."""
+    if max_interstage_gap_sec <= 0:
+        raise ValueError("positive interstage gap limit required")
+    gap = cp03_range.start_sec - cp02_range.end_sec
+    if 0 <= gap <= max_interstage_gap_sec:
+        return TimeRange(
+            start_sec=cp02_range.start_sec,
+            end_sec=cp03_range.start_sec,
+        )
+    return cp02_range
+
+
+def final_prepunch_hole(
+    observations: Sequence[PrePunchObservation],
+    *,
+    contact_time_sec: float,
+    max_gap_sec: float = 1.0,
+    max_angle_delta_deg: float = 3.0,
+) -> int | None:
+    """Require the last two pre-contact frames to show one stable aligned hole.
+
+    An earlier correct alignment cannot override a later disk adjustment. The
+    angle is relative to the punch handle, so camera/tool motion is not treated
+    as disk rotation. Missing late frames remain unknown, never pass.
+    """
+    if not math.isfinite(contact_time_sec) or contact_time_sec < 0:
+        raise ValueError("contact time must be finite and non-negative")
+    if max_gap_sec <= 0 or max_angle_delta_deg <= 0:
+        raise ValueError("positive temporal and angular tolerances are required")
+    before = sorted(
+        (item for item in observations if item.time_sec < contact_time_sec),
+        key=lambda item: item.time_sec,
+    )
+    if len(before) < 2:
+        return None
+    earlier, last = before[-2:]
+    if (
+        not earlier.reliable
+        or not last.reliable
+        or earlier.aligned_hole_index is None
+        or last.aligned_hole_index is None
+        or earlier.aligned_hole_index != last.aligned_hole_index
+        or earlier.disk_to_handle_angle_deg is None
+        or last.disk_to_handle_angle_deg is None
+        or last.time_sec - earlier.time_sec > max_gap_sec
+        or contact_time_sec - last.time_sec > max_gap_sec
+    ):
+        return None
+    angle_delta = (
+        last.disk_to_handle_angle_deg - earlier.disk_to_handle_angle_deg + 180
+    ) % 360 - 180
+    if abs(angle_delta) > max_angle_delta_deg:
+        return None
+    return last.aligned_hole_index
 
 
 def locate_moving_multihole_disk(
@@ -413,9 +496,18 @@ def _visible_disk_in_mask(
         return 0, None
     best_count = 0
     best_center = None
+    best_rank = -math.inf
     for local_x, local_y, radius in np.round(circles[0]).astype(int):
         x, y = local_x + x1, local_y + y1
         if not (0 <= x < mask.shape[1] and 0 <= y < mask.shape[0] and mask[y, x]):
+            continue
+        # In this fixed overhead view the wheel is at the upper end of the
+        # hand-held punch; dark highlights in the lower press body are not holes.
+        mask_height = max(1, int(ys.max()) - int(ys.min()))
+        if (
+            mask_height >= 3.0 * seed_radius
+            and (y - int(ys.min())) / mask_height > 0.42
+        ):
             continue
         top, bottom = max(0, y - radius), min(mask.shape[0], y + radius + 1)
         left, right = max(0, x - radius), min(mask.shape[1], x + radius + 1)
@@ -436,7 +528,13 @@ def _visible_disk_in_mask(
                 and area / (width * height) >= 0.45
             ):
                 holes += 1
-        if holes > best_count:
+        contrast = _disk_surface_contrast(frame_bgr, x, y, radius)
+        # A genuine wheel has both several openings and a distinct metal face.
+        # Neither raw spot count nor border contrast alone is reliable when
+        # SAM3 includes the glove or the lower press mechanism in its mask.
+        rank = contrast + 15.0 * min(holes, 8)
+        if holes >= 3 and rank > best_rank:
+            best_rank = rank
             best_count = holes
             best_center = (float(x), float(y))
     return best_count, best_center

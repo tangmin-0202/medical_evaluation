@@ -47,6 +47,21 @@ def test_cp02_gate_catalog_includes_punch_cleanup_and_dam():
     assert set(gate.CATALOG["cp_02"]) == {"rubber_dam_punch", "cleaning_instrument", "rubber_dam"}
 
 
+def test_cp02_gate_window_includes_last_adjustment_between_stages():
+    from medical_evaluation.annotations import SegmentAnnotation, VideoAnnotations
+
+    annotations = VideoAnnotations(video_id="failure", steps=[
+        SegmentAnnotation(checkpoint_id="cp_02", time_range=TimeRange(start_sec=19, end_sec=50),
+                          label="needs_review", reason="test"),
+        SegmentAnnotation(checkpoint_id="cp_03", time_range=TimeRange(start_sec=55, end_sec=71),
+                          label="needs_review", reason="test"),
+    ])
+
+    assert load_gate().resolve_gate_window(
+        annotations, "cp_02", include_prepunch_gap=True,
+    ) == TimeRange(start_sec=19, end_sec=55)
+
+
 def test_cp03_gate_needs_only_dam():
     assert set(load_gate().CATALOG["cp_03"]) == {"rubber_dam"}
 

@@ -16,6 +16,7 @@ from medical_evaluation.features.cp02_punch import (
     locate_held_punch_box,
     locate_moving_multihole_disk,
     measure_held_punch_mask,
+    prepunch_scan_range,
 )
 from medical_evaluation.presets import PRESETS
 from medical_evaluation.segmentation.base import SegmentationPrompt
@@ -55,6 +56,25 @@ CATALOG = {
         "rubber_dam": ("large green sheet", "large flat green rectangular sheet"),
     },
 }
+
+
+def resolve_gate_window(
+    annotations: VideoAnnotations,
+    checkpoint_id: str,
+    *,
+    include_prepunch_gap: bool = False,
+) -> TimeRange:
+    ranges = {
+        item.checkpoint_id: item.time_range for item in annotations.steps
+    }
+    if checkpoint_id not in ranges:
+        raise ValueError(f"exactly one {checkpoint_id} time range is required")
+    window = ranges[checkpoint_id]
+    if include_prepunch_gap:
+        if checkpoint_id != "cp_02" or "cp_03" not in ranges:
+            raise ValueError("pre-punch gap requires CP02 and CP03 ranges")
+        window = prepunch_scan_range(window, ranges["cp_03"])
+    return window
 
 
 def visible_appearance_is_plausible(
@@ -317,9 +337,12 @@ def main(argv=None):
     parser.add_argument("--checkpoint-id", choices=tuple(CATALOG), required=True)
     parser.add_argument("--sample-fps", type=float, default=2)
     parser.add_argument("--automatic-punch-only", action="store_true")
+    parser.add_argument("--include-prepunch-gap", action="store_true")
     args = parser.parse_args(argv)
     if args.sample_fps <= 0:
         parser.error("sample-fps must be positive")
+    if args.include_prepunch_gap and args.checkpoint_id != "cp_02":
+        parser.error("pre-punch gap is CP02-only")
     _support._prepare_output(args.output_dir)
     started = time.perf_counter()
     provenance = {
@@ -335,10 +358,10 @@ def main(argv=None):
         annotations = VideoAnnotations.model_validate_json(
             (args.annotations / f"{args.video_id}.json").read_text(encoding="utf-8")
         )
-        ranges = [s.time_range for s in annotations.steps if s.checkpoint_id == args.checkpoint_id]
-        if len(ranges) != 1:
-            raise ValueError("exactly one checkpoint time range is required")
-        window = TimeRange.model_validate(ranges[0].model_dump())
+        window = resolve_gate_window(
+            annotations, args.checkpoint_id,
+            include_prepunch_gap=args.include_prepunch_gap,
+        )
         _support._reset_cuda_peak_memory()
         result = collect_gate(
             _support._build_backend(args), args.videos / PRESETS[args.video_id],
