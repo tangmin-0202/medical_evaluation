@@ -191,6 +191,7 @@ def test_cp02_uses_automatic_box_when_text_prompts_miss(tmp_path):
     assert automatic["prompt_kind"] == "box"
     assert automatic["prompt"] == "automatic held punch box"
     assert automatic["locator"]["motion_ratio"] >= 0.15
+    assert automatic["locator"]["surface_contrast"] > 30
     assert automatic["tool_box"] is not None
     assert automatic["accepted_frame_count"] == 1
     assert automatic["frames"][0]["semantic_features"]["reason"] == (

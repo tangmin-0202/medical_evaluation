@@ -184,6 +184,7 @@ def _run_automatic_punch_box(
                 "radius": locator.radius,
                 "hole_count": locator.hole_count,
                 "motion_ratio": locator.motion_ratio,
+                "surface_contrast": locator.surface_contrast,
             },
             "tool_box": None,
             "accepted_frame_count": 0,
@@ -216,6 +217,7 @@ def _run_automatic_punch_box(
         locator_overlay,
         (
             f"holes={locator.hole_count} motion={locator.motion_ratio:.3f} "
+            f"contrast={locator.surface_contrast:.1f} "
             f"elongation={tool_box.elongation:.2f}"
         ),
         (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
@@ -288,6 +290,7 @@ def _run_automatic_punch_box(
             "radius": locator.radius,
             "hole_count": locator.hole_count,
             "motion_ratio": locator.motion_ratio,
+            "surface_contrast": locator.surface_contrast,
             "overlay_path": locator_overlay_path.relative_to(
                 output_dir
             ).as_posix(),

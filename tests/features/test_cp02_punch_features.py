@@ -107,6 +107,46 @@ def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():
     assert min(abs(result.x - expected) for expected in expected_centers) <= 10
 
 
+def test_prefers_solid_hole_disk_over_moving_open_press_with_more_dark_spots():
+    frames = []
+    for index in range(5):
+        frame = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        disk_center = (145 + 28 * index, 240)
+        press_center = (225 + 28 * index, 240)
+        cv2.circle(frame, disk_center, 30, (190, 190, 190), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (
+                disk_center[0] + int(16 * np.cos(angle)),
+                disk_center[1] + int(16 * np.sin(angle)),
+            )
+            cv2.circle(frame, point, 4, (20, 20, 20), -1)
+        cv2.circle(frame, press_center, 36, (190, 190, 190), 3)
+        for angle in np.linspace(0, 2 * np.pi, 10, endpoint=False):
+            point = (
+                press_center[0] + int(20 * np.cos(angle)),
+                press_center[1] + int(20 * np.sin(angle)),
+            )
+            cv2.circle(frame, point, 3, (20, 20, 20), -1)
+        frames.append(frame)
+
+    result = punch.locate_moving_multihole_disk(frames)
+
+    assert result is not None
+    assert min(abs(result.x - (145 + 28 * index)) for index in range(5)) <= 10
+
+
+def test_disk_surface_contrast_rejects_hollow_press_opening():
+    frame = np.full((240, 400, 3), (170, 120, 70), np.uint8)
+    cv2.circle(frame, (100, 120), 30, (190, 190, 190), -1)
+    cv2.circle(frame, (290, 120), 30, (190, 190, 190), 2)
+
+    solid = punch._disk_surface_contrast(frame, 100, 120, 30)
+    hollow = punch._disk_surface_contrast(frame, 290, 120, 30)
+
+    assert solid > 70
+    assert hollow < 20
+
+
 def _held_punch_frames(*, include_handle=True, handle_color=(195, 195, 195)):
     frames = []
     for index in range(5):

@@ -27,6 +27,7 @@ class MovingDisk:
     radius: float
     hole_count: int
     motion_ratio: float
+    surface_contrast: float = 0.0
 
     def normalized_box(
         self, width: int, height: int, *, padding_radii: float = 1.35,
@@ -150,6 +151,11 @@ def locate_moving_multihole_disk(
                 np.mean(cv2.absdiff(gray, background)[refined_inner] > 20),
             )
             if hole_count >= min_holes and motion_ratio >= min_motion_ratio:
+                surface_contrast = _disk_surface_contrast(
+                    frames[frame_position], refined_x, refined_y, refined_radius,
+                )
+                if surface_contrast < 35.0:
+                    continue
                 candidates.append(
                     MovingDisk(
                         frame_position=frame_position,
@@ -158,11 +164,35 @@ def locate_moving_multihole_disk(
                         radius=refined_radius,
                         hole_count=hole_count,
                         motion_ratio=motion_ratio,
+                        surface_contrast=surface_contrast,
                     )
                 )
     if not candidates:
         return None
-    return max(candidates, key=lambda item: (item.hole_count, item.motion_ratio, item.radius))
+    return max(
+        candidates,
+        key=lambda item: (item.surface_contrast, item.motion_ratio, item.hole_count),
+    )
+
+
+def _disk_surface_contrast(frame_bgr: np.ndarray, x: float, y: float, radius: float) -> float:
+    """Compare a candidate disk face with its immediate outer surroundings."""
+    height, width = frame_bgr.shape[:2]
+    extent = round(1.8 * radius) + 1
+    x1, x2 = max(0, round(x) - extent), min(width, round(x) + extent + 1)
+    y1, y2 = max(0, round(y) - extent), min(height, round(y) + extent + 1)
+    crop = frame_bgr[y1:y2, x1:x2]
+    yy, xx = np.ogrid[y1:y2, x1:x2]
+    distance_sq = (xx - x) ** 2 + (yy - y) ** 2
+    inner = distance_sq < radius ** 2
+    outer = (distance_sq >= (1.3 * radius) ** 2) & (
+        distance_sq < (1.8 * radius) ** 2
+    )
+    if not inner.any() or not outer.any():
+        return 0.0
+    return float(np.linalg.norm(
+        np.median(crop[inner], axis=0) - np.median(crop[outer], axis=0),
+    ))
 
 
 def locate_held_punch_box(
