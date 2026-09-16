@@ -105,3 +105,108 @@ def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():
     assert result is not None
     expected_centers = [150 + 30 * index for index in range(5)]
     assert min(abs(result.x - expected) for expected in expected_centers) <= 10
+
+
+def _held_punch_frames(*, include_handle=True):
+    frames = []
+    for index in range(5):
+        frame = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        cv2.rectangle(frame, (500, 45), (560, 125), (190, 190, 190), -1)
+        center = (130 + 35 * index, 235)
+        if include_handle:
+            cv2.line(
+                frame,
+                (center[0] + 16, center[1] + 8),
+                (center[0] + 110, center[1] + 70),
+                (195, 195, 195),
+                18,
+            )
+        cv2.circle(frame, center, 30, (185, 185, 185), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (
+                center[0] + int(16 * np.cos(angle)),
+                center[1] + int(16 * np.sin(angle)),
+            )
+            cv2.circle(frame, point, 4, (20, 20, 20), -1)
+        frames.append(frame)
+    return frames
+
+
+def test_held_punch_box_follows_moving_tool_not_static_distractor():
+    frames = _held_punch_frames()
+    disk = punch.locate_moving_multihole_disk(frames)
+
+    box = punch.locate_held_punch_box(frames, disk)
+
+    assert disk is not None
+    assert box is not None
+    expected_handle_end = (130 + 35 * box.frame_position + 105, 300)
+    assert box.contains(disk.x, disk.y)
+    assert box.contains(*expected_handle_end)
+    assert not box.contains(530, 85)
+
+
+def test_held_punch_box_requires_connected_elongated_motion():
+    frames = _held_punch_frames(include_handle=False)
+    disk = punch.locate_moving_multihole_disk(frames)
+
+    assert disk is not None
+    assert punch.locate_held_punch_box(frames, disk) is None
+
+
+def _mask_fixture():
+    frame = np.full((240, 320, 3), (30, 170, 30), np.uint8)
+    tool_mask = np.zeros((240, 320), bool)
+    cv2.line(tool_mask.view(np.uint8), (115, 125), (245, 185), 1, 18)
+    cv2.circle(tool_mask.view(np.uint8), (100, 120), 24, 1, -1)
+    frame[tool_mask] = (190, 190, 190)
+    disk = punch.MovingDisk(
+        frame_position=0,
+        x=100,
+        y=120,
+        radius=24,
+        hole_count=6,
+        motion_ratio=0.6,
+    )
+    box = punch.HeldPunchBox(
+        frame_position=0,
+        x1=65,
+        y1=85,
+        x2=270,
+        y2=210,
+        elongation=2.0,
+        motion_ratio=0.6,
+    )
+    return frame, tool_mask, disk, box
+
+
+def test_held_punch_mask_accepts_anchor_connected_elongated_metal():
+    frame, tool_mask, disk, box = _mask_fixture()
+
+    result = punch.measure_held_punch_mask(frame, tool_mask, disk, box)
+
+    assert result.accepted is True
+    assert result.reason == "criteria_satisfied"
+    assert result.green_ratio < 0.1
+
+
+def test_held_punch_mask_rejects_green_sheet():
+    frame, _, disk, box = _mask_fixture()
+    green_mask = np.zeros(frame.shape[:2], bool)
+    green_mask[70:225, 45:300] = True
+
+    result = punch.measure_held_punch_mask(frame, green_mask, disk, box)
+
+    assert result.accepted is False
+    assert result.reason == "green_sheet_mask"
+
+
+def test_held_punch_mask_rejects_mask_away_from_disk_anchor():
+    frame, _, disk, box = _mask_fixture()
+    unrelated = np.zeros(frame.shape[:2], bool)
+    unrelated[20:60, 220:300] = True
+
+    result = punch.measure_held_punch_mask(frame, unrelated, disk, box)
+
+    assert result.accepted is False
+    assert result.reason == "anchor_missed"

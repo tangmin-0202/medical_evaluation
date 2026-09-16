@@ -42,6 +42,49 @@ class MovingDisk:
         ]
 
 
+@dataclass(frozen=True)
+class HeldPunchBox:
+    frame_position: int
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    elongation: float
+    motion_ratio: float
+
+    def __post_init__(self) -> None:
+        values = (self.elongation, self.motion_ratio)
+        if self.frame_position < 0 or self.x1 < 0 or self.y1 < 0:
+            raise ValueError("held punch box coordinates must be non-negative")
+        if self.x2 <= self.x1 or self.y2 <= self.y1:
+            raise ValueError("held punch box corners must be ordered")
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("held punch box measurements must be finite")
+
+    def contains(self, x: float, y: float) -> bool:
+        return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
+
+    def normalized(self, width: int, height: int) -> list[float]:
+        if width <= 0 or height <= 0:
+            raise ValueError("positive image dimensions are required")
+        return [
+            self.x1 / width,
+            self.y1 / height,
+            self.x2 / width,
+            self.y2 / height,
+        ]
+
+
+@dataclass(frozen=True)
+class HeldPunchMaskMeasurement:
+    accepted: bool
+    reason: str
+    anchor_distance_radii: float
+    inside_box_ratio: float
+    green_ratio: float
+    elongation: float
+
+
 def locate_moving_multihole_disk(
     frames_bgr: Sequence[np.ndarray], *, min_holes: int = 3,
     min_motion_ratio: float = 0.15,
@@ -120,6 +163,131 @@ def locate_moving_multihole_disk(
     if not candidates:
         return None
     return max(candidates, key=lambda item: (item.hole_count, item.motion_ratio, item.radius))
+
+
+def locate_held_punch_box(
+    frames_bgr: Sequence[np.ndarray], disk: MovingDisk | None,
+) -> HeldPunchBox | None:
+    """Locate the moving elongated metal body connected to an automatic disk anchor."""
+    if disk is None:
+        return None
+    frames = [np.asarray(frame, dtype=np.uint8) for frame in frames_bgr]
+    if not frames or not 0 <= disk.frame_position < len(frames):
+        raise ValueError("disk frame position must refer to the supplied frames")
+    shape = frames[0].shape
+    if len(shape) != 3 or shape[2] != 3 or any(frame.shape != shape for frame in frames):
+        raise ValueError("all frames must be same-size BGR images")
+
+    seed = frames[disk.frame_position]
+    height, width = shape[:2]
+    background = np.median(np.stack(frames), axis=0).astype(np.uint8)
+    gray_seed = cv2.cvtColor(seed, cv2.COLOR_BGR2GRAY)
+    gray_background = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
+    motion = cv2.absdiff(gray_seed, gray_background) > 18
+    hsv = cv2.cvtColor(seed, cv2.COLOR_BGR2HSV)
+    low_saturation_bright = (hsv[..., 1] < 95) & (hsv[..., 2] > 75)
+    candidate = (motion & low_saturation_bright).astype(np.uint8)
+
+    radius = max(4, round(disk.radius))
+    close_size = max(3, round(radius * 0.45)) | 1
+    candidate = cv2.morphologyEx(
+        candidate,
+        cv2.MORPH_CLOSE,
+        np.ones((close_size, close_size), np.uint8),
+    )
+    candidate = cv2.dilate(
+        candidate,
+        np.ones((max(3, radius // 4), max(3, radius // 4)), np.uint8),
+    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(candidate)
+    yy, xx = np.ogrid[:height, :width]
+    anchor = (xx - disk.x) ** 2 + (yy - disk.y) ** 2 <= (1.25 * disk.radius) ** 2
+    matches = []
+    for index in range(1, count):
+        component = labels == index
+        if not np.any(component & anchor):
+            continue
+        points = np.column_stack(np.nonzero(component))[:, ::-1].astype(np.float32)
+        (_, _), (rect_width, rect_height), _ = cv2.minAreaRect(points)
+        elongation = max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        matches.append((elongation, area, component))
+    if not matches:
+        return None
+    elongation, _, component = max(matches, key=lambda item: (item[0], item[1]))
+    if elongation < 1.35:
+        return None
+
+    ys, xs = np.nonzero(component)
+    padding = max(4, round(disk.radius * 0.45))
+    x1 = max(0, int(xs.min()) - padding)
+    y1 = max(0, int(ys.min()) - padding)
+    x2 = min(width, int(xs.max()) + padding + 1)
+    y2 = min(height, int(ys.max()) + padding + 1)
+    return HeldPunchBox(
+        frame_position=disk.frame_position,
+        x1=x1,
+        y1=y1,
+        x2=x2,
+        y2=y2,
+        elongation=float(elongation),
+        motion_ratio=disk.motion_ratio,
+    )
+
+
+def measure_held_punch_mask(
+    frame_bgr: np.ndarray,
+    mask: np.ndarray,
+    disk: MovingDisk,
+    box: HeldPunchBox,
+) -> HeldPunchMaskMeasurement:
+    """Measure one SAM3 mask and reject obvious instance or semantic swaps."""
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    binary = np.asarray(mask, dtype=bool)
+    if frame.ndim != 3 or frame.shape[2] != 3 or binary.shape != frame.shape[:2]:
+        raise ValueError("frame and held punch mask dimensions must match")
+    if not binary.any():
+        return HeldPunchMaskMeasurement(False, "empty_mask", math.inf, 0.0, 0.0, 0.0)
+
+    ys, xs = np.nonzero(binary)
+    anchor_distance = float(
+        np.sqrt((xs - disk.x) ** 2 + (ys - disk.y) ** 2).min() / disk.radius
+    )
+    inside = (
+        (xs >= box.x1) & (xs < box.x2) & (ys >= box.y1) & (ys < box.y2)
+    )
+    inside_ratio = float(np.mean(inside))
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hue = hsv[..., 0][binary]
+    saturation = hsv[..., 1][binary]
+    value = hsv[..., 2][binary]
+    green_ratio = float(np.mean(
+        (hue >= 30) & (hue <= 100) & (saturation >= 55) & (value >= 45)
+    ))
+    points = np.column_stack((xs, ys)).astype(np.float32)
+    (_, _), (rect_width, rect_height), _ = cv2.minAreaRect(points)
+    elongation = float(
+        max(rect_width, rect_height) / max(1.0, min(rect_width, rect_height))
+    )
+
+    if anchor_distance > 1.25:
+        reason = "anchor_missed"
+    elif inside_ratio < 0.55:
+        reason = "outside_tool_box"
+    elif green_ratio > 0.35:
+        reason = "green_sheet_mask"
+    elif elongation < 1.35:
+        reason = "not_elongated"
+    else:
+        reason = "criteria_satisfied"
+    return HeldPunchMaskMeasurement(
+        accepted=reason == "criteria_satisfied",
+        reason=reason,
+        anchor_distance_radii=anchor_distance,
+        inside_box_ratio=inside_ratio,
+        green_ratio=green_ratio,
+        elongation=elongation,
+    )
 
 
 def second_largest_hole(
