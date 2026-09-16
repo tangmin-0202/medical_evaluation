@@ -107,7 +107,7 @@ def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():
     assert min(abs(result.x - expected) for expected in expected_centers) <= 10
 
 
-def _held_punch_frames(*, include_handle=True):
+def _held_punch_frames(*, include_handle=True, handle_color=(195, 195, 195)):
     frames = []
     for index in range(5):
         frame = np.full((360, 640, 3), (170, 120, 70), np.uint8)
@@ -118,7 +118,7 @@ def _held_punch_frames(*, include_handle=True):
                 frame,
                 (center[0] + 16, center[1] + 8),
                 (center[0] + 110, center[1] + 70),
-                (195, 195, 195),
+                handle_color,
                 18,
             )
         cv2.circle(frame, center, 30, (185, 185, 185), -1)
@@ -152,6 +152,19 @@ def test_held_punch_box_requires_connected_elongated_motion():
 
     assert disk is not None
     assert punch.locate_held_punch_box(frames, disk) is None
+
+
+def test_held_punch_box_uses_edges_when_warm_lighting_raises_saturation():
+    frames = _held_punch_frames(handle_color=(75, 135, 195))
+    disk = punch.locate_moving_multihole_disk(frames)
+
+    box = punch.locate_held_punch_box(frames, disk)
+
+    assert disk is not None
+    assert box is not None
+    expected_handle_end = (130 + 35 * box.frame_position + 105, 300)
+    assert box.contains(disk.x, disk.y)
+    assert box.contains(*expected_handle_end)
 
 
 def _mask_fixture():

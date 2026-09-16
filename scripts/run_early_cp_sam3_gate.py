@@ -12,7 +12,11 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
-from medical_evaluation.features.cp02_punch import locate_moving_multihole_disk
+from medical_evaluation.features.cp02_punch import (
+    locate_held_punch_box,
+    locate_moving_multihole_disk,
+    measure_held_punch_mask,
+)
 from medical_evaluation.presets import PRESETS
 from medical_evaluation.segmentation.base import SegmentationPrompt
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
@@ -123,8 +127,8 @@ def _run_automatic_punch_box(
     *, backend, video_path, time_range, output_dir, sample_fps, read_frame_fn,
     sample_frames_fn,
 ):
-    """Generate a SAM3 box from motion and multi-hole appearance, without manual points."""
-    prompt_text = "automatic moving multi-hole disk box"
+    """Generate a whole-tool SAM3 box from a moving disk, without manual points."""
+    prompt_text = "automatic held punch box"
     sampled = list(sample_frames_fn(
         video_path,
         start_sec=time_range.start_sec,
@@ -142,97 +146,129 @@ def _run_automatic_punch_box(
             "max_consecutive_valid_frames": 0,
             "frames": [],
             "locator": None,
-            "box_attempts": [],
-            "selected_padding_radii": None,
+            "tool_box": None,
+            "accepted_frame_count": 0,
+            "max_consecutive_accepted_frames": 0,
         }
 
     seed = sampled[locator.frame_position]
     height, width = seed.image_bgr.shape[:2]
-    base_artifact_dir = output_dir / "rubber_dam_punch" / _support._slug(prompt_text)
-    attempts = []
-    selected = None
-    for padding_radii in (1.35, 2.0, 3.5):
-        coordinates = locator.normalized_box(
-            width, height, padding_radii=padding_radii,
-        )
-        prompt = SegmentationPrompt(
-            object_id="rubber_dam_punch",
-            kind="box",
-            frame_time_sec=seed.time_sec,
-            coordinates=coordinates,
-        )
-        artifact_dir = base_artifact_dir / f"padding-{padding_radii:g}" / "scan"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        locator_overlay = seed.image_bgr.copy()
-        x1, y1, x2, y2 = [
-            round(value) for value in (
-                coordinates[0] * width,
-                coordinates[1] * height,
-                coordinates[2] * width,
-                coordinates[3] * height,
-            )
-        ]
-        cv2.circle(
-            locator_overlay, (round(locator.x), round(locator.y)), round(locator.radius),
-            (0, 255, 255), 2,
-        )
-        cv2.rectangle(locator_overlay, (x1, y1), (x2, y2), (255, 0, 255), 2)
-        cv2.putText(
-            locator_overlay,
-            f"holes={locator.hole_count} motion={locator.motion_ratio:.3f} pad={padding_radii:g}",
-            (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
-            cv2.LINE_AA,
-        )
-        locator_overlay_path = artifact_dir / "locator_overlay.jpg"
-        if not cv2.imwrite(str(locator_overlay_path), locator_overlay):
-            raise OSError(f"could not write artifact: {locator_overlay_path}")
-
-        tracked = list(backend.track(video_path, time_range, [prompt], sample_fps))
-        frames = []
-        masks = []
-        for item in tracked:
-            raw = read_frame_fn(video_path, item.frame_index)
-            mask = np.asarray(
-                item.masks.get(
-                    "rubber_dam_punch", np.zeros(raw.shape[:2], dtype=bool),
-                ),
-                dtype=bool,
-            )
-            masks.append(mask)
-            frames.append(_support._write_artifacts(
-                output_dir=output_dir,
-                artifact_dir=artifact_dir,
-                frame_index=item.frame_index,
-                frame_time_sec=item.frame_time_sec,
-                object_id="rubber_dam_punch",
-                prompt_text=prompt_text,
-                raw=raw,
-                mask=mask,
-            ))
-        metrics = _support.summarize_masks(
-            masks, min_area_px=_support.MIN_MASK_AREA_PX,
-        )
-        attempts.append({
-            "padding_radii": padding_radii,
-            "box_coordinates": coordinates,
-            **metrics,
-        })
-        selected = {
-            "padding_radii": padding_radii,
-            "box_coordinates": coordinates,
-            "locator_overlay_path": locator_overlay_path,
-            "frames": frames,
-            "metrics": metrics,
+    tool_box = locate_held_punch_box(
+        [item.image_bgr for item in sampled], locator,
+    )
+    if tool_box is None:
+        return {
+            "prompt": prompt_text,
+            "prompt_kind": "box",
+            "status": "tool_box_not_found",
+            "automatic_gate_passed": False,
+            "valid_frame_count": 0,
+            "max_consecutive_valid_frames": 0,
+            "frames": [],
+            "locator": {
+                "frame_position": locator.frame_position,
+                "frame_index": seed.frame_index,
+                "time_sec": seed.time_sec,
+                "x": locator.x,
+                "y": locator.y,
+                "radius": locator.radius,
+                "hole_count": locator.hole_count,
+                "motion_ratio": locator.motion_ratio,
+            },
+            "tool_box": None,
+            "accepted_frame_count": 0,
+            "max_consecutive_accepted_frames": 0,
         }
-        if metrics["valid_frame_count"] > 0:
-            break
-    assert selected is not None
+
+    coordinates = tool_box.normalized(width, height)
+    prompt = SegmentationPrompt(
+        object_id="rubber_dam_punch",
+        kind="box",
+        frame_time_sec=seed.time_sec,
+        coordinates=coordinates,
+    )
+    base_artifact_dir = output_dir / "rubber_dam_punch" / _support._slug(prompt_text)
+    artifact_dir = base_artifact_dir / "scan"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    locator_overlay = seed.image_bgr.copy()
+    cv2.circle(
+        locator_overlay, (round(locator.x), round(locator.y)), round(locator.radius),
+        (0, 255, 255), 2,
+    )
+    cv2.rectangle(
+        locator_overlay,
+        (tool_box.x1, tool_box.y1),
+        (tool_box.x2, tool_box.y2),
+        (255, 0, 255),
+        2,
+    )
+    cv2.putText(
+        locator_overlay,
+        (
+            f"holes={locator.hole_count} motion={locator.motion_ratio:.3f} "
+            f"elongation={tool_box.elongation:.2f}"
+        ),
+        (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2,
+        cv2.LINE_AA,
+    )
+    locator_overlay_path = artifact_dir / "locator_overlay.jpg"
+    if not cv2.imwrite(str(locator_overlay_path), locator_overlay):
+        raise OSError(f"could not write artifact: {locator_overlay_path}")
+
+    tracked = list(backend.track(video_path, time_range, [prompt], sample_fps))
+    frames = []
+    accepted_flags = []
+    accepted_masks = []
+    for item in tracked:
+        raw = read_frame_fn(video_path, item.frame_index)
+        mask = np.asarray(
+            item.masks.get(
+                "rubber_dam_punch", np.zeros(raw.shape[:2], dtype=bool),
+            ),
+            dtype=bool,
+        )
+        measurement = measure_held_punch_mask(raw, mask, locator, tool_box)
+        record = _support._write_artifacts(
+            output_dir=output_dir,
+            artifact_dir=artifact_dir,
+            frame_index=item.frame_index,
+            frame_time_sec=item.frame_time_sec,
+            object_id="rubber_dam_punch",
+            prompt_text=prompt_text,
+            raw=raw,
+            mask=mask,
+        )
+        record["semantic_features"] = {
+            "accepted": measurement.accepted,
+            "reason": measurement.reason,
+            "anchor_distance_radii": measurement.anchor_distance_radii,
+            "inside_box_ratio": measurement.inside_box_ratio,
+            "green_ratio": measurement.green_ratio,
+            "elongation": measurement.elongation,
+        }
+        frames.append(record)
+        accepted_flags.append(measurement.accepted)
+        accepted_masks.append(mask if measurement.accepted else np.zeros_like(mask))
+
+    metrics = _support.summarize_masks(
+        accepted_masks, min_area_px=_support.MIN_MASK_AREA_PX,
+    )
+    max_consecutive = _support._max_true_run(accepted_flags)
+    accepted_count = sum(accepted_flags)
+    metrics.update(
+        valid_frame_count=accepted_count,
+        max_consecutive_valid_frames=max_consecutive,
+        accepted_frame_count=accepted_count,
+        max_consecutive_accepted_frames=max_consecutive,
+        automatic_gate_passed=(
+            max_consecutive >= 3
+            and metrics["median_dominant_component_ratio"] >= 0.60
+        ),
+    )
     return {
         "prompt": prompt_text,
         "prompt_kind": "box",
-        "box_coordinates": selected["box_coordinates"],
-        "box_attempts": attempts,
-        "selected_padding_radii": selected["padding_radii"],
+        "box_coordinates": coordinates,
         "locator": {
             "frame_position": locator.frame_position,
             "frame_index": seed.frame_index,
@@ -242,12 +278,21 @@ def _run_automatic_punch_box(
             "radius": locator.radius,
             "hole_count": locator.hole_count,
             "motion_ratio": locator.motion_ratio,
-            "overlay_path": selected["locator_overlay_path"].relative_to(
+            "overlay_path": locator_overlay_path.relative_to(
                 output_dir
             ).as_posix(),
         },
-        "frames": selected["frames"],
-        **selected["metrics"],
+        "tool_box": {
+            "frame_position": tool_box.frame_position,
+            "x1": tool_box.x1,
+            "y1": tool_box.y1,
+            "x2": tool_box.x2,
+            "y2": tool_box.y2,
+            "elongation": tool_box.elongation,
+            "motion_ratio": tool_box.motion_ratio,
+        },
+        "frames": frames,
+        **metrics,
     }
 
 

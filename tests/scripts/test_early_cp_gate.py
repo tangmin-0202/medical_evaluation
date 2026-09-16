@@ -136,6 +136,13 @@ def test_cp02_uses_automatic_box_when_text_prompts_miss(tmp_path):
     for index in range(5):
         image = np.full((360, 640, 3), (170, 120, 70), np.uint8)
         center = (120 + 35 * index, 250)
+        cv2.line(
+            image,
+            (center[0] + 15, center[1] + 5),
+            (center[0] + 115, center[1] + 65),
+            (190, 190, 190),
+            18,
+        )
         cv2.circle(image, center, 30, (185, 185, 185), -1)
         for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
             point = (center[0] + int(16 * np.cos(angle)),
@@ -154,10 +161,23 @@ def test_cp02_uses_automatic_box_when_text_prompts_miss(tmp_path):
                 return iter(())
             self.box_prompt = prompts[0]
             mask = np.zeros((360, 640), bool)
-            mask[210:290, 160:240] = True
-            return iter([FrameMasks(frame_index=2, frame_time_sec=2, masks={
+            frame_index = round(prompts[0].frame_time_sec)
+            center = (120 + 35 * frame_index, 250)
+            cv2.line(
+                mask.view(np.uint8),
+                (center[0] + 15, center[1] + 5),
+                (center[0] + 115, center[1] + 65),
+                1,
+                18,
+            )
+            cv2.circle(mask.view(np.uint8), center, 30, 1, -1)
+            return iter([FrameMasks(
+                frame_index=frame_index,
+                frame_time_sec=prompts[0].frame_time_sec,
+                masks={
                 "rubber_dam_punch": mask,
-            })])
+                },
+            )])
 
     backend = Backend()
     result = gate.collect_gate(
@@ -169,17 +189,30 @@ def test_cp02_uses_automatic_box_when_text_prompts_miss(tmp_path):
 
     automatic = result["objects"]["rubber_dam_punch"][-1]
     assert automatic["prompt_kind"] == "box"
+    assert automatic["prompt"] == "automatic held punch box"
     assert automatic["locator"]["motion_ratio"] >= 0.15
+    assert automatic["tool_box"] is not None
+    assert automatic["accepted_frame_count"] == 1
+    assert automatic["frames"][0]["semantic_features"]["reason"] == (
+        "criteria_satisfied"
+    )
     assert backend.box_prompt is not None
     assert backend.box_prompt.kind == "box"
 
 
-def test_cp02_expands_automatic_box_when_tight_disk_box_has_no_sam3_object(tmp_path):
+def test_cp02_rejects_nonempty_green_sam3_mask(tmp_path):
     gate = load_gate()
     frames = []
     for index in range(5):
-        image = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        image = np.full((360, 640, 3), (30, 170, 30), np.uint8)
         center = (120 + 35 * index, 250)
+        cv2.line(
+            image,
+            (center[0] + 15, center[1] + 5),
+            (center[0] + 115, center[1] + 65),
+            (190, 190, 190),
+            18,
+        )
         cv2.circle(image, center, 30, (185, 185, 185), -1)
         for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
             point = (center[0] + int(16 * np.cos(angle)),
@@ -188,18 +221,16 @@ def test_cp02_expands_automatic_box_when_tight_disk_box_has_no_sam3_object(tmp_p
         frames.append(SimpleNamespace(frame_index=index, time_sec=float(index), image_bgr=image))
 
     class Backend:
-        def __init__(self):
-            self.box_widths = []
-
         def track(self, _video_path, _time_range, prompts, _sample_fps):
             box = prompts[0].coordinates
-            self.box_widths.append(box[2] - box[0])
-            if self.box_widths[-1] < 0.15:
-                return iter(())
             mask = np.zeros((360, 640), bool)
-            mask[200:300, 130:270] = True
+            left, top = round(box[0] * 640), round(box[1] * 360)
+            right, bottom = round(box[2] * 640), round(box[3] * 360)
+            mask[top:bottom, left:right] = True
+            frame_index = round(prompts[0].frame_time_sec)
             return iter([FrameMasks(
-                frame_index=2, frame_time_sec=2,
+                frame_index=frame_index,
+                frame_time_sec=prompts[0].frame_time_sec,
                 masks={"rubber_dam_punch": mask},
             )])
 
@@ -214,7 +245,7 @@ def test_cp02_expands_automatic_box_when_tight_disk_box_has_no_sam3_object(tmp_p
         sample_frames_fn=lambda *args, **kwargs: iter(frames),
     )
 
-    assert len(backend.box_widths) == 2
-    assert result["selected_padding_radii"] == 2.0
-    assert len(result["box_attempts"]) == 2
-    assert result["frame_count"] == 1
+    assert result["accepted_frame_count"] == 0
+    assert result["frames"][0]["mask_area_px"] > 0
+    assert result["frames"][0]["semantic_features"]["reason"] == "green_sheet_mask"
+    assert result["automatic_gate_passed"] is False

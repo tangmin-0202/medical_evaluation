@@ -184,11 +184,59 @@ def locate_held_punch_box(
     gray_seed = cv2.cvtColor(seed, cv2.COLOR_BGR2GRAY)
     gray_background = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY)
     motion = cv2.absdiff(gray_seed, gray_background) > 18
+    radius = max(4, round(disk.radius))
+    motion_support = cv2.dilate(
+        motion.astype(np.uint8),
+        np.ones((max(3, radius // 4), max(3, radius // 4)), np.uint8),
+    ).astype(bool)
+    edges = cv2.Canny(gray_seed, 60, 160)
+    moving_edges = (edges.astype(bool) & motion_support).astype(np.uint8) * 255
+    lines = cv2.HoughLinesP(
+        moving_edges,
+        1,
+        np.pi / 180,
+        threshold=max(20, round(radius * 0.55)),
+        minLineLength=max(30, round(radius * 1.8)),
+        maxLineGap=max(10, round(radius * 0.5)),
+    )
+    line_candidates = []
+    if lines is not None:
+        for x1, y1, x2, y2 in lines[:, 0]:
+            distance = _point_segment_distance(
+                disk.x, disk.y, float(x1), float(y1), float(x2), float(y2),
+            )
+            endpoint_distances = (
+                math.dist((disk.x, disk.y), (float(x1), float(y1))),
+                math.dist((disk.x, disk.y), (float(x2), float(y2))),
+            )
+            far_index = int(endpoint_distances[1] > endpoint_distances[0])
+            far_distance = endpoint_distances[far_index]
+            if distance <= 1.8 * disk.radius and far_distance >= 2.0 * disk.radius:
+                far_point = ((x1, y1), (x2, y2))[far_index]
+                line_candidates.append((far_distance, distance, far_point))
+    if line_candidates:
+        far_distance, _, (far_x, far_y) = max(
+            line_candidates, key=lambda item: (item[0], -item[1]),
+        )
+        padding = max(4, round(disk.radius * 0.9))
+        x1 = max(0, round(min(disk.x, far_x)) - padding)
+        y1 = max(0, round(min(disk.y, far_y)) - padding)
+        x2 = min(width, round(max(disk.x, far_x)) + padding + 1)
+        y2 = min(height, round(max(disk.y, far_y)) + padding + 1)
+        return HeldPunchBox(
+            frame_position=disk.frame_position,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            elongation=float(far_distance / (2 * disk.radius)),
+            motion_ratio=disk.motion_ratio,
+        )
+
     hsv = cv2.cvtColor(seed, cv2.COLOR_BGR2HSV)
     low_saturation_bright = (hsv[..., 1] < 95) & (hsv[..., 2] > 75)
     candidate = (motion & low_saturation_bright).astype(np.uint8)
 
-    radius = max(4, round(disk.radius))
     close_size = max(3, round(radius * 0.45)) | 1
     candidate = cv2.morphologyEx(
         candidate,
@@ -233,6 +281,18 @@ def locate_held_punch_box(
         elongation=float(elongation),
         motion_ratio=disk.motion_ratio,
     )
+
+
+def _point_segment_distance(
+    px: float, py: float, x1: float, y1: float, x2: float, y2: float,
+) -> float:
+    dx = x2 - x1
+    dy = y2 - y1
+    denominator = dx * dx + dy * dy
+    if denominator == 0:
+        return math.dist((px, py), (x1, y1))
+    position = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / denominator))
+    return math.dist((px, py), (x1 + position * dx, y1 + position * dy))
 
 
 def measure_held_punch_mask(
