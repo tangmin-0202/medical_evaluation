@@ -78,28 +78,37 @@ def collect_gate(
     backend, video_path, checkpoint_id, time_range, output_dir, *, sample_fps=2,
     read_frame_fn=read_frame,
     sample_frames_fn=sample_frames,
+    automatic_punch_only=False,
 ):
     _support._prepare_output(output_dir)
-    objects = {}
-    for object_id, prompts in CATALOG[checkpoint_id].items():
-        objects[object_id] = []
-        for text in prompts:
-            print(f"{checkpoint_id} {object_id}: {text}", flush=True)
-            try:
-                result = _support._run_prompt(
-                    segmenter=backend, video_path=video_path, time_range=time_range,
-                    object_id=object_id, prompt_text=text, sample_fps=sample_fps,
-                    phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
-                    sample_frames_fn=sample_frames_fn,
-                    appearance_validator=lambda raw, mask, object_id=object_id: (
-                        visible_appearance_is_plausible(object_id, raw, mask)
-                    ),
-                )
-            except Sam3AmbiguousTextResult as exc:
-                result = {"status": "prompt_failed", "error_type": type(exc).__name__,
-                          "error_message": str(exc), "automatic_gate_passed": False,
-                          "valid_frame_count": 0, "max_consecutive_valid_frames": 0}
-            objects[object_id].append({"prompt": text, **result})
+    if automatic_punch_only and checkpoint_id != "cp_02":
+        raise ValueError("automatic punch-only mode requires cp_02")
+    objects = {"rubber_dam_punch": []} if automatic_punch_only else {}
+    if not automatic_punch_only:
+        for object_id, prompts in CATALOG[checkpoint_id].items():
+            objects[object_id] = []
+            for text in prompts:
+                print(f"{checkpoint_id} {object_id}: {text}", flush=True)
+                try:
+                    result = _support._run_prompt(
+                        segmenter=backend, video_path=video_path, time_range=time_range,
+                        object_id=object_id, prompt_text=text, sample_fps=sample_fps,
+                        phase="scan", output_dir=output_dir, read_frame_fn=read_frame_fn,
+                        sample_frames_fn=sample_frames_fn,
+                        appearance_validator=lambda raw, mask, object_id=object_id: (
+                            visible_appearance_is_plausible(object_id, raw, mask)
+                        ),
+                    )
+                except Sam3AmbiguousTextResult as exc:
+                    result = {
+                        "status": "prompt_failed",
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "automatic_gate_passed": False,
+                        "valid_frame_count": 0,
+                        "max_consecutive_valid_frames": 0,
+                    }
+                objects[object_id].append({"prompt": text, **result})
     if checkpoint_id == "cp_02":
         objects["rubber_dam_punch"].append(
             _run_automatic_punch_box(
@@ -117,6 +126,7 @@ def collect_gate(
         "time_range": time_range.model_dump(mode="json"),
         "model_version": backend.model_version, "objects": objects,
         "visual_review_status": "pending", "session_strategy": "independent_text_only",
+        "automatic_punch_only": automatic_punch_only,
         "score": None,
     }
     atomic_write_json(output_dir / "summary.json", payload)
@@ -301,6 +311,7 @@ def main(argv=None):
     parser.description = "SAM3 CP01/CP02 object gate only; no automatic grading."
     parser.add_argument("--checkpoint-id", choices=tuple(CATALOG), required=True)
     parser.add_argument("--sample-fps", type=float, default=2)
+    parser.add_argument("--automatic-punch-only", action="store_true")
     args = parser.parse_args(argv)
     if args.sample_fps <= 0:
         parser.error("sample-fps must be positive")
@@ -327,6 +338,7 @@ def main(argv=None):
         result = collect_gate(
             _support._build_backend(args), args.videos / PRESETS[args.video_id],
             args.checkpoint_id, window, args.output_dir, sample_fps=args.sample_fps,
+            automatic_punch_only=args.automatic_punch_only,
         )
         result.update(provenance=provenance, elapsed_seconds=time.perf_counter() - started,
                       cuda_peak_memory=_support.cuda_peak_memory())

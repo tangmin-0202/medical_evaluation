@@ -249,3 +249,70 @@ def test_cp02_rejects_nonempty_green_sam3_mask(tmp_path):
     assert result["frames"][0]["mask_area_px"] > 0
     assert result["frames"][0]["semantic_features"]["reason"] == "green_sheet_mask"
     assert result["automatic_gate_passed"] is False
+
+
+def test_cp02_automatic_only_mode_skips_all_text_prompts(tmp_path):
+    gate = load_gate()
+    frames = []
+    for index in range(5):
+        image = np.full((360, 640, 3), (170, 120, 70), np.uint8)
+        center = (120 + 35 * index, 250)
+        cv2.line(
+            image,
+            (center[0] + 15, center[1] + 5),
+            (center[0] + 115, center[1] + 65),
+            (190, 190, 190),
+            18,
+        )
+        cv2.circle(image, center, 30, (185, 185, 185), -1)
+        for angle in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            point = (
+                center[0] + int(16 * np.cos(angle)),
+                center[1] + int(16 * np.sin(angle)),
+            )
+            cv2.circle(image, point, 4, (20, 20, 20), -1)
+        frames.append(
+            SimpleNamespace(frame_index=index, time_sec=float(index), image_bgr=image)
+        )
+
+    class Backend:
+        model_version = "test"
+
+        def __init__(self):
+            self.prompt_kinds = []
+
+        def track(self, _video_path, _time_range, prompts, _sample_fps):
+            self.prompt_kinds.append(prompts[0].kind)
+            mask = np.zeros((360, 640), bool)
+            frame_index = round(prompts[0].frame_time_sec)
+            center = (120 + 35 * frame_index, 250)
+            cv2.line(
+                mask.view(np.uint8),
+                (center[0] + 15, center[1] + 5),
+                (center[0] + 115, center[1] + 65),
+                1,
+                18,
+            )
+            cv2.circle(mask.view(np.uint8), center, 30, 1, -1)
+            return iter([FrameMasks(
+                frame_index=frame_index,
+                frame_time_sec=prompts[0].frame_time_sec,
+                masks={"rubber_dam_punch": mask},
+            )])
+
+    backend = Backend()
+    result = gate.collect_gate(
+        backend,
+        Path("unused.mp4"),
+        "cp_02",
+        TimeRange(start_sec=0, end_sec=4),
+        tmp_path,
+        sample_fps=1,
+        read_frame_fn=lambda _path, index: frames[index].image_bgr,
+        sample_frames_fn=lambda *args, **kwargs: iter(frames),
+        automatic_punch_only=True,
+    )
+
+    assert backend.prompt_kinds == ["box"]
+    assert set(result["objects"]) == {"rubber_dam_punch"}
+    assert len(result["objects"]["rubber_dam_punch"]) == 1
