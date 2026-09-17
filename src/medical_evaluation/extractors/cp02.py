@@ -38,9 +38,10 @@ class Cp02FeatureExtractor:
     # The five holes are only a few pixels wide. At 10 FPS a stable-looking
     # frame can land between two clear source frames, so sample near the native
     # 25 FPS rate and let the reliability gates discard blurred frames.
-    minimum_dense_fps = 25.0
+    minimum_dense_fps = 50.0
     dense_radius_sec = 1.2
     maximum_stable_gap_sec = 0.35
+    minimum_contact_visibility_gap_sec = 0.5
     maximum_exit_gap_sec = 0.4
     residue_absent_ratio = 0.10
     residue_present_ratio = 0.35
@@ -93,7 +94,7 @@ class Cp02FeatureExtractor:
             sample_fps=max(dense_fps, self.minimum_dense_fps),
         ))
         observations = self._measure_dense(dense, anchor)
-        stable = self._last_stable_pair(observations)
+        stable = self._final_prepunch_pair(observations)
         if stable is None:
             features = dict(empty)
             features.update({
@@ -104,7 +105,7 @@ class Cp02FeatureExtractor:
             return ExtractedEvidence(features=features, evidence=[])
 
         earlier, last = stable
-        ratios = [item.green_ratio for item in stable if item.green_ratio is not None]
+        ratios = [last.green_ratio] if last.green_ratio is not None else []
         median_green = float(np.median(ratios)) if ratios else None
         if median_green is None:
             residue: bool | None = None
@@ -124,7 +125,11 @@ class Cp02FeatureExtractor:
                 last.layout.ranking_confidence,
             )),
             "hole_valid_frame_count": float(len(observations)),
-            "final_stable_start_sec": float(earlier.frame.time_sec),
+            "final_stable_start_sec": float(
+                earlier.frame.time_sec
+                if earlier.size_rank == last.size_rank
+                else last.frame.time_sec
+            ),
             "final_stable_end_sec": float(last.frame.time_sec),
             "residue_green_ratio": median_green,
             "residue_before": residue,
@@ -169,16 +174,33 @@ class Cp02FeatureExtractor:
             ))
         return observations
 
-    def _last_stable_pair(
+    def _final_prepunch_pair(
         self, observations: list[_HoleFrame],
     ) -> tuple[_HoleFrame, _HoleFrame] | None:
+        """Return the last adjustment immediately before the contact/occlusion gap.
+
+        The die plate can reappear after punching.  The longest visibility gap
+        separates that post-contact view from the pre-contact adjustment.  A
+        rank change in the final two clear frames is allowed: it records the
+        wheel reaching its final hole immediately before contact, rather than
+        letting the earlier transient hole win.
+        """
         if len(observations) < 2:
             return None
-        earlier, last = observations[-2:]
-        if (
-            earlier.size_rank != last.size_rank
-            or last.frame.time_sec - earlier.frame.time_sec > self.maximum_stable_gap_sec
-        ):
+        gaps = [
+            observations[index + 1].frame.time_sec - observations[index].frame.time_sec
+            for index in range(len(observations) - 1)
+        ]
+        largest_gap = max(gaps)
+        if largest_gap >= self.minimum_contact_visibility_gap_sec:
+            split = gaps.index(largest_gap) + 1
+            before_contact = observations[:split]
+        else:
+            before_contact = observations
+        if len(before_contact) < 2:
+            return None
+        earlier, last = before_contact[-2:]
+        if last.frame.time_sec - earlier.frame.time_sec > self.maximum_stable_gap_sec:
             return None
         return earlier, last
 
@@ -203,7 +225,7 @@ class Cp02FeatureExtractor:
         self, stable: tuple[_HoleFrame, _HoleFrame],
     ) -> list[EvidenceItem]:
         evidence = []
-        for item in stable:
+        for position, item in enumerate(stable):
             overlay = item.frame.image_bgr.copy()
             cv2.circle(
                 overlay,
@@ -254,7 +276,11 @@ class Cp02FeatureExtractor:
             evidence.append(EvidenceItem(
                 time_sec=item.frame.time_sec,
                 overlay_path=relative,
-                rule="final_prepunch_second_largest_hole_alignment",
+                rule=(
+                    "final_prepunch_selected_hole"
+                    if position == len(stable) - 1
+                    else "preceding_punch_disk_adjustment"
+                ),
             ))
         return evidence
 

@@ -79,7 +79,9 @@ def test_cp02_extractor_uses_last_stable_automatic_hole_rank(monkeypatch, tmp_pa
     assert (tmp_path / "evidence" / "cp_02" / "hole_observations.json").is_file()
 
 
-def test_cp02_extractor_keeps_unstable_final_selection_for_review(monkeypatch, tmp_path: Path):
+def test_cp02_extractor_uses_last_adjusted_hole_before_visibility_gap(
+    monkeypatch, tmp_path: Path,
+):
     from medical_evaluation.extractors import cp02
 
     blank = np.full((240, 320, 3), (170, 120, 70), np.uint8)
@@ -111,5 +113,34 @@ def test_cp02_extractor_keeps_unstable_final_selection_for_review(monkeypatch, t
         analysis_width=1280,
     )
 
-    assert result.features["selected_second_largest"] is None
-    assert result.features["selected_hole_size_rank"] is None
+    assert result.features["selected_second_largest"] is True
+    assert result.features["selected_hole_size_rank"] == 2
+    assert result.features["final_stable_start_sec"] == 19.0
+    assert result.features["final_stable_end_sec"] == 19.0
+
+
+def test_cp02_contact_gap_excludes_post_punch_disk_reappearance() -> None:
+    from medical_evaluation.extractors.cp02 import Cp02FeatureExtractor, _HoleFrame
+
+    image = np.zeros((40, 40, 3), np.uint8)
+    disk = MovingDisk(0, 20, 20, 10, 5, 0.5, 60)
+    holes = tuple(Hole(10 + i * 4, 20, 6 - i * 0.5) for i in range(5))
+    layout = DiskHoleLayout(holes, True, "criteria_satisfied", 1, 0.1)
+    observations = [
+        _HoleFrame(
+            frame=SampledFrame(time_sec=time, frame_index=index, image_bgr=image),
+            disk=disk,
+            layout=layout,
+            aligned_index=rank - 1,
+            size_rank=rank,
+            green_ratio=0.0,
+        )
+        for index, (time, rank) in enumerate(((1.0, 1), (1.1, 2), (2.0, 3)))
+    ]
+
+    pair = Cp02FeatureExtractor(
+        annotations=_annotations(), evidence_root=Path("unused")
+    )._final_prepunch_pair(observations)
+
+    assert pair is not None
+    assert [item.size_rank for item in pair] == [1, 2]
