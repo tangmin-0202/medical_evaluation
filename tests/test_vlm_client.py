@@ -19,7 +19,9 @@ def make_review_request() -> VlmReviewRequest:
     )
 
 
-def test_fallback_messages_match_current_cp09_cp10_cp11_rules() -> None:
+def test_fallback_messages_match_current_cp02_cp09_cp10_cp11_rules() -> None:
+    assert "第二大" in template_fallback("wrong_punch_hole_selected").reason_zh
+    assert "绿色残留" in template_fallback("residue_remaining").reason_zh
     assert "稳定" in template_fallback("frame_not_stabilized").reason_zh
     assert "牙线" in template_fallback("dental_floss_not_observed").reason_zh
     cp11 = template_fallback("final_position_incorrect")

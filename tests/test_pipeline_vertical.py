@@ -32,6 +32,17 @@ class FakeExtractor:
         if self.fail_once_with_oom:
             self.fail_once_with_oom = False
             raise RuntimeError("CUDA out of memory")
+        if checkpoint_id == "cp_02":
+            return ExtractedEvidence(
+                features={
+                    "stage_scan_reliable": True,
+                    "punch_action_observed": True,
+                    "selected_second_largest": True,
+                    "residue_before": False,
+                    "cleanup_contact_observed": None,
+                    "residue_after": False,
+                }
+            )
         if checkpoint_id == "cp_09":
             return ExtractedEvidence(features={"frame_oral_center_offset": 0.03})
         if checkpoint_id == "cp_10":
@@ -190,6 +201,24 @@ def test_pipeline_writes_three_real_decisions_and_eight_review_results(tmp_path:
     assert [call[0] for call in extractor.calls] == ["cp_09", "cp_10", "cp_11"]
     stored = json.loads((tmp_path / "jobs" / "job-1" / "report.json").read_text("utf-8"))
     assert len(stored["checkpoints"]) == 11
+
+
+def test_pipeline_can_enable_cp02_as_fourth_real_decision(tmp_path: Path) -> None:
+    pipeline, extractor, _ = make_pipeline(tmp_path)
+    pipeline.enabled_checkpoint_ids = frozenset({"cp_02", "cp_09", "cp_10", "cp_11"})
+
+    report = pipeline.run(make_job(tmp_path))
+
+    assert report.checkpoints[1].status.value == "correct"
+    assert report.checkpoints[1].reason_code == "criteria_satisfied"
+    assert report.summary.evaluated_count == 4
+    assert report.summary.final_score is None
+    assert [call[0] for call in extractor.calls] == [
+        "cp_02",
+        "cp_09",
+        "cp_10",
+        "cp_11",
+    ]
 
 
 def test_pipeline_retries_oom_once_with_degraded_sampling(tmp_path: Path) -> None:

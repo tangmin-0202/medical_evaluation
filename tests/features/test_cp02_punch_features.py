@@ -23,6 +23,116 @@ def test_alignment_requires_tip_near_actual_hole_and_unique_match():
     assert punch.aligned_hole(holes, (0.9, 0.9), max_distance_in_radii=1) is None
 
 
+def test_finds_hole_aligned_with_external_punch_plunger():
+    frame = np.full((260, 360, 3), (170, 120, 70), np.uint8)
+    center = (170, 130)
+    cv2.circle(frame, center, 62, (190, 190, 190), -1)
+    holes = []
+    for radius, angle in zip((9, 7, 6, 5, 4), (210, 250, 290, 330, 10), strict=True):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(35 * np.cos(radians)),
+            center[1] + round(35 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, radius, (20, 20, 20), -1)
+        holes.append(punch.Hole(*point, radius))
+    # The fixed opposite jaw/plunger continues radially beyond hole 1.
+    direction = np.deg2rad(250)
+    cv2.line(
+        frame,
+        (center[0] + round(50 * np.cos(direction)), center[1] + round(50 * np.sin(direction))),
+        (center[0] + round(105 * np.cos(direction)), center[1] + round(105 * np.sin(direction))),
+        (40, 40, 40),
+        10,
+    )
+    disk = punch.MovingDisk(0, *center, 64, 5, 0.5, 60)
+
+    result = punch.aligned_hole_from_plunger(frame, disk, holes)
+
+    assert result == 1
+
+
+def test_plunger_alignment_rejects_two_equally_supported_holes():
+    frame = np.full((260, 360, 3), (170, 120, 70), np.uint8)
+    center = (170, 130)
+    cv2.circle(frame, center, 62, (190, 190, 190), -1)
+    holes = []
+    for angle in (210, 250, 290, 330, 10):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(35 * np.cos(radians)),
+            center[1] + round(35 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, 5, (20, 20, 20), -1)
+        holes.append(punch.Hole(*point, 5))
+    for angle in (210, 250):
+        direction = np.deg2rad(angle)
+        cv2.line(
+            frame,
+            (center[0] + round(50 * np.cos(direction)), center[1] + round(50 * np.sin(direction))),
+            (center[0] + round(105 * np.cos(direction)), center[1] + round(105 * np.sin(direction))),
+            (40, 40, 40),
+            10,
+        )
+    disk = punch.MovingDisk(0, *center, 64, 5, 0.5, 60)
+
+    assert punch.aligned_hole_from_plunger(frame, disk, holes) is None
+
+
+def test_selected_hole_is_opposite_broad_handle_and_jaw_cluster():
+    frame = np.full((300, 380, 3), (170, 120, 70), np.uint8)
+    center = (180, 145)
+    cv2.circle(frame, center, 62, (190, 190, 190), -1)
+    holes = []
+    for angle in (210, 250, 290, 330, 10):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(35 * np.cos(radians)),
+            center[1] + round(35 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, 5, (20, 20, 20), -1)
+        holes.append(punch.Hole(*point, 5))
+    for angle in (55, 85, 110):
+        radians = np.deg2rad(angle)
+        cv2.line(
+            frame,
+            (center[0] + round(50 * np.cos(radians)), center[1] + round(50 * np.sin(radians))),
+            (center[0] + round(120 * np.cos(radians)), center[1] + round(120 * np.sin(radians))),
+            (45, 45, 45),
+            8,
+        )
+    disk = punch.MovingDisk(0, *center, 64, 5, 0.5, 60)
+
+    assert punch.aligned_hole_opposite_handle(frame, disk, holes) == 1
+
+
+def test_handle_opposite_alignment_rejects_equidistant_holes():
+    frame = np.full((300, 380, 3), (170, 120, 70), np.uint8)
+    center = (180, 145)
+    cv2.circle(frame, center, 62, (190, 190, 190), -1)
+    holes = []
+    for angle in (210, 250, 290, 330, 10):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(35 * np.cos(radians)),
+            center[1] + round(35 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, 5, (20, 20, 20), -1)
+        holes.append(punch.Hole(*point, 5))
+    for angle in (65, 90, 115):
+        radians = np.deg2rad(angle)
+        cv2.line(
+            frame,
+            (center[0] + round(50 * np.cos(radians)), center[1] + round(50 * np.sin(radians))),
+            (center[0] + round(120 * np.cos(radians)), center[1] + round(120 * np.sin(radians))),
+            (45, 45, 45),
+            8,
+        )
+    disk = punch.MovingDisk(0, *center, 64, 5, 0.5, 60)
+
+    assert punch.aligned_hole_opposite_handle(frame, disk, holes) is None
+
+
 def test_same_color_ratio_samples_only_hole_interior():
     frame = np.zeros((10, 10, 3), np.uint8)
     frame[:] = (0, 180, 0)
@@ -91,6 +201,153 @@ def test_last_moving_disk_uses_late_visible_frames_without_sam3_mask():
 def test_last_moving_disk_does_not_infer_from_static_background():
     frame = _disk_frame((0, 0), moving=False)
     assert punch.locate_last_moving_multihole_disk([frame.copy() for _ in range(5)]) is None
+
+
+def test_measures_and_ranks_holes_on_foreshortened_disk():
+    frame = np.full((260, 360, 3), (170, 120, 70), np.uint8)
+    center = (170, 130)
+    cv2.ellipse(frame, center, (62, 42), 24, 0, 360, (195, 195, 195), -1)
+    radii = [9, 7, 5, 4, 3]
+    angles = np.deg2rad([20, 92, 164, 236, 308])
+    rotation = np.deg2rad(24)
+    for radius, angle in zip(radii, angles, strict=True):
+        local_x = 35 * np.cos(angle)
+        local_y = 24 * np.sin(angle)
+        x = center[0] + local_x * np.cos(rotation) - local_y * np.sin(rotation)
+        y = center[1] + local_x * np.sin(rotation) + local_y * np.cos(rotation)
+        cv2.circle(frame, (round(x), round(y)), radius, (25, 25, 25), -1)
+    disk = punch.MovingDisk(0, *center, 66, 5, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk)
+
+    assert result.reliable is True
+    assert result.reason == "criteria_satisfied"
+    assert len(result.holes) == 5
+    assert result.second_largest_index is not None
+    assert result.holes[result.second_largest_index].radius == pytest.approx(
+        sorted((hole.radius for hole in result.holes), reverse=True)[1]
+    )
+    assert result.ranking_confidence > 0
+
+
+def test_measures_five_hole_punch_layout_on_partial_arc():
+    frame = np.full((240, 320, 3), (170, 120, 70), np.uint8)
+    center = (150, 130)
+    cv2.circle(frame, center, 65, (190, 190, 190), -1)
+    for radius, angle in zip((8, 7, 6, 5, 4), (205, 235, 265, 295, 325), strict=True):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(40 * np.cos(radians)),
+            center[1] + round(40 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, radius, (20, 20, 20), -1)
+    disk = punch.MovingDisk(0, *center, 67, 5, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk)
+
+    assert result.reliable is True
+    assert result.reason == "criteria_satisfied"
+    assert result.second_largest_index is not None
+
+
+def test_disk_hole_measurement_rejects_lower_mechanism_dark_highlights():
+    frame = np.full((260, 360, 3), (170, 120, 70), np.uint8)
+    center = (170, 130)
+    cv2.circle(frame, center, 62, (190, 190, 190), -1)
+    for point in ((155, 150), (170, 158), (185, 150)):
+        cv2.ellipse(frame, point, (3, 10), 0, 0, 360, (25, 25, 25), -1)
+    disk = punch.MovingDisk(0, *center, 64, 3, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk)
+
+    assert result.reliable is False
+    assert result.second_largest_index is None
+    assert result.reason == "insufficient_spatially_distinct_holes"
+
+
+def test_disk_hole_measurement_accepts_warm_lit_metal_face():
+    frame = np.full((240, 320, 3), (170, 120, 70), np.uint8)
+    center = (150, 120)
+    cv2.circle(frame, center, 48, (90, 145, 205), -1)
+    for radius, angle in zip((8, 7, 5, 4), (10, 100, 190, 280), strict=True):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(27 * np.cos(radians)),
+            center[1] + round(27 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, radius, (20, 20, 20), -1)
+    disk = punch.MovingDisk(0, *center, 50, 4, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk, expected_hole_count=4)
+
+    assert result.reliable is True
+    assert len(result.holes) == 4
+
+
+def test_disk_hole_measurement_uses_expected_layout_not_noisy_locator_count():
+    frame = np.full((240, 320, 3), (170, 120, 70), np.uint8)
+    center = (150, 120)
+    cv2.circle(frame, center, 48, (190, 190, 190), -1)
+    for radius, angle in zip((8, 7, 6, 5, 4), (10, 82, 154, 226, 298), strict=True):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(27 * np.cos(radians)),
+            center[1] + round(27 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, radius, (20, 20, 20), -1)
+    disk = punch.MovingDisk(0, *center, 50, 6, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk, expected_hole_count=5)
+
+    assert len(result.holes) == 5
+    assert result.reliable is True
+    assert result.reason == "criteria_satisfied"
+    assert result.second_largest_index is not None
+
+
+def test_disk_hole_measurement_rejects_incomplete_expected_layout():
+    frame = np.full((240, 320, 3), (170, 120, 70), np.uint8)
+    center = (150, 120)
+    cv2.circle(frame, center, 48, (190, 190, 190), -1)
+    for angle in (10, 82, 154, 226):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(27 * np.cos(radians)),
+            center[1] + round(27 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, 5, (20, 20, 20), -1)
+    disk = punch.MovingDisk(0, *center, 50, 4, 0.5, 60)
+
+    result = punch.measure_disk_holes(frame, disk, expected_hole_count=5)
+
+    assert len(result.holes) == 4
+    assert result.reliable is False
+    assert result.reason == "unexpected_hole_count"
+    assert result.second_largest_index is None
+
+
+def test_locates_five_hole_layout_near_previous_automatic_disk():
+    frame = np.full((300, 500, 3), (170, 120, 70), np.uint8)
+    center = (180, 155)
+    cv2.circle(frame, center, 58, (190, 190, 190), -1)
+    for radius, angle in zip((9, 7, 6, 5, 4), (205, 235, 265, 295, 325), strict=True):
+        radians = np.deg2rad(angle)
+        point = (
+            center[0] + round(36 * np.cos(radians)),
+            center[1] + round(36 * np.sin(radians)),
+        )
+        cv2.circle(frame, point, radius, (20, 20, 20), -1)
+    cv2.circle(frame, (410, 80), 45, (190, 190, 190), -1)
+    reference = punch.MovingDisk(0, 165, 150, 55, 5, 0.5, 60)
+
+    result = punch.locate_disk_layout_near(frame, reference)
+
+    assert result is not None
+    disk, layout = result
+    assert disk.x == pytest.approx(center[0], abs=8)
+    assert disk.y == pytest.approx(center[1], abs=8)
+    assert layout.reliable is True
+    assert layout.second_largest_index is not None
 
 
 def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():

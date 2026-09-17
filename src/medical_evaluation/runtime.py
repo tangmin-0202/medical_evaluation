@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from medical_evaluation.annotations import AnnotationStore
+from medical_evaluation.extractors.cp02 import Cp02FeatureExtractor
 from medical_evaluation.extractors.cp09 import Cp09FeatureExtractor
 from medical_evaluation.extractors.cp09_cp11 import Cp09Cp11FeatureExtractor
 from medical_evaluation.extractors.cp10 import Cp10FeatureExtractor
@@ -97,6 +98,10 @@ def build_analysis_pipeline(
             output_path=evidence_root / "segmentation_metadata.json",
             static_metadata=static_metadata,
         )
+        cp02 = Cp02FeatureExtractor(
+            annotations=annotations,
+            evidence_root=evidence_root,
+        )
         cp09 = Cp09FeatureExtractor(
             segmenter=audited_segmenter,
             annotations=annotations,
@@ -121,6 +126,7 @@ def build_analysis_pipeline(
         )
         cp10 = Cp10FeatureExtractor(evidence_root=evidence_root)
         return Cp09Cp11FeatureExtractor(
+            cp02=cp02,
             cp09=cp09,
             cp10=cp10,
             cp11=cp11,
@@ -140,4 +146,5 @@ def build_analysis_pipeline(
             settings.vlm_base_url,
             settings.vlm_model,
         ),
+        enabled_checkpoint_ids=frozenset({"cp_02", "cp_09", "cp_10", "cp_11"}),
     )

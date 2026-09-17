@@ -93,6 +93,15 @@ class HeldPunchMaskMeasurement:
 
 
 @dataclass(frozen=True)
+class DiskHoleLayout:
+    holes: tuple[Hole, ...]
+    reliable: bool
+    reason: str
+    second_largest_index: int | None
+    ranking_confidence: float
+
+
+@dataclass(frozen=True)
 class PrePunchObservation:
     time_sec: float
     aligned_hole_index: int | None
@@ -291,6 +300,183 @@ def locate_last_moving_multihole_disk(
                 surface_contrast=candidate.surface_contrast,
             )
     return None
+
+
+def measure_disk_holes(
+    frame_bgr: np.ndarray,
+    disk: MovingDisk,
+    *,
+    min_holes: int = 3,
+    expected_hole_count: int = 5,
+) -> DiskHoleLayout:
+    """Measure the punch's five-hole layout inside an automatically located disk.
+
+    ``MovingDisk.hole_count`` belongs to the coarse motion locator and can
+    include dark punch-mechanism details.  Layout reliability therefore uses
+    the known wheel layout rather than requiring both detectors to repeat the
+    same counting error.
+    """
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    if (
+        frame.ndim != 3
+        or frame.shape[2] != 3
+        or min_holes < 3
+        or expected_hole_count < min_holes
+    ):
+        raise ValueError("BGR frame and at least three holes are required")
+    height, width = frame.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    search = (xx - disk.x) ** 2 + (yy - disk.y) ** 2 <= (1.05 * disk.radius) ** 2
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    metal = (
+        search
+        & (hsv[..., 1] < 105)
+        & (hsv[..., 2] > 90)
+    ).astype(np.uint8)
+    metal = cv2.morphologyEx(
+        metal, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8),
+    )
+    contours, _ = cv2.findContours(metal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    center = (float(disk.x), float(disk.y))
+    containing = [c for c in contours if cv2.pointPolygonTest(c, center, False) >= 0]
+    face_contour = max(containing or contours, key=cv2.contourArea) if contours else None
+    if (
+        face_contour is not None
+        and cv2.contourArea(face_contour) >= 0.35 * math.pi * disk.radius**2
+    ):
+        face = np.zeros((height, width), np.uint8)
+        cv2.drawContours(face, [cv2.convexHull(face_contour)], -1, 1, -1)
+        face = face.astype(bool) & search
+    else:
+        # Warm procedure lighting makes the metal wheel highly saturated. The
+        # motion/multi-hole locator has already established the disk geometry,
+        # so use its conservative inner circle rather than rejecting the face.
+        face = (xx - disk.x) ** 2 + (yy - disk.y) ** 2 <= (0.82 * disk.radius) ** 2
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    face_values = gray[face]
+    dark_limit = min(125.0, float(np.median(face_values)) - 25.0)
+    dark = (face & (gray <= dark_limit)).astype(np.uint8)
+    count, _labels, stats, centers = cv2.connectedComponentsWithStats(dark)
+    holes: list[Hole] = []
+    angles: list[float] = []
+    min_area = max(3, round(disk.radius * disk.radius * 0.002))
+    max_area = max(min_area + 1, round(disk.radius * disk.radius * 0.08))
+    for index in range(1, count):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        component_width = int(stats[index, cv2.CC_STAT_WIDTH])
+        component_height = int(stats[index, cv2.CC_STAT_HEIGHT])
+        aspect = max(component_width, component_height) / max(
+            1, min(component_width, component_height),
+        )
+        fill = area / max(1, component_width * component_height)
+        x, y = map(float, centers[index])
+        radial = math.dist((x, y), center) / disk.radius
+        if not (
+            min_area <= area <= max_area
+            and aspect <= 1.8
+            and fill >= 0.45
+            and 0.12 <= radial <= 0.78
+        ):
+            continue
+        holes.append(Hole(x=x, y=y, radius=math.sqrt(area / math.pi)))
+        angles.append(math.degrees(math.atan2(y - disk.y, x - disk.x)) % 360)
+
+    if len(holes) < min_holes:
+        return DiskHoleLayout(
+            tuple(holes), False, "insufficient_spatially_distinct_holes", None, 0.0,
+        )
+    if len(holes) != expected_hole_count:
+        return DiskHoleLayout(
+            tuple(holes), False, "unexpected_hole_count", None, 0.0,
+        )
+    ordered_angles = sorted(angles)
+    gaps = [
+        (ordered_angles[(i + 1) % len(ordered_angles)] - ordered_angles[i]) % 360
+        for i in range(len(ordered_angles))
+    ]
+    angular_coverage = 360.0 - max(gaps)
+    # This punch exposes its five sizes along a partial arc; requiring holes
+    # around most of a full circle rejects the real, unobstructed wheel.
+    if angular_coverage < 100.0:
+        return DiskHoleLayout(
+            tuple(holes), False, "insufficient_spatially_distinct_holes", None, 0.0,
+        )
+    radii = sorted((hole.radius for hole in holes), reverse=True)
+    min_gap = max(0.35, 0.05 * radii[0])
+    selected = second_largest_hole(
+        holes, layout_reliable=True, min_radius_gap=min_gap,
+    )
+    if selected is None:
+        return DiskHoleLayout(tuple(holes), False, "ambiguous_hole_ranking", None, 0.0)
+    confidence = min(radii[0] - radii[1], radii[1] - radii[2]) / radii[0]
+    return DiskHoleLayout(
+        tuple(holes), True, "criteria_satisfied", selected, float(confidence),
+    )
+
+
+def locate_disk_layout_near(
+    frame_bgr: np.ndarray,
+    reference: MovingDisk,
+    *,
+    max_center_shift_radii: float = 3.0,
+    expected_hole_count: int = 5,
+) -> tuple[MovingDisk, DiskHoleLayout] | None:
+    """Relocate a previously automatic disk anchor in one adjacent frame."""
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    if frame.ndim != 3 or frame.shape[2] != 3 or max_center_shift_radii <= 0:
+        raise ValueError("BGR frame and positive tracking tolerance are required")
+    height, width = frame.shape[:2]
+    extent = round(reference.radius * (max_center_shift_radii + 1.8))
+    x1 = max(0, round(reference.x) - extent)
+    x2 = min(width, round(reference.x) + extent + 1)
+    y1 = max(0, round(reference.y) - extent)
+    y2 = min(height, round(reference.y) + extent + 1)
+    crop = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    circles = cv2.HoughCircles(
+        cv2.medianBlur(crop, 7),
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=max(16, round(reference.radius * 0.5)),
+        param1=120,
+        param2=24,
+        minRadius=max(8, round(reference.radius * 0.5)),
+        maxRadius=max(12, round(reference.radius * 1.7)),
+    )
+    if circles is None:
+        return None
+    candidates: list[tuple[float, MovingDisk, DiskHoleLayout]] = []
+    for local_x, local_y, radius in np.round(circles[0]).astype(int):
+        x = float(local_x + x1)
+        y = float(local_y + y1)
+        center_shift = math.dist((x, y), (reference.x, reference.y)) / reference.radius
+        radius_ratio = float(radius) / reference.radius
+        if center_shift > max_center_shift_radii or not 0.5 <= radius_ratio <= 1.7:
+            continue
+        disk = MovingDisk(
+            frame_position=0,
+            x=x,
+            y=y,
+            radius=float(radius),
+            hole_count=expected_hole_count,
+            motion_ratio=reference.motion_ratio,
+            surface_contrast=_disk_surface_contrast(frame, x, y, float(radius)),
+        )
+        layout = measure_disk_holes(
+            frame, disk, expected_hole_count=expected_hole_count,
+        )
+        if not layout.reliable:
+            continue
+        score = (
+            center_shift
+            + abs(math.log(radius_ratio))
+            - 0.25 * layout.ranking_confidence
+        )
+        candidates.append((score, disk, layout))
+    if not candidates:
+        return None
+    _, disk, layout = min(candidates, key=lambda item: item[0])
+    return disk, layout
 
 
 def _disk_fully_visible(x: float, y: float, radius: float, width: int, height: int) -> bool:
@@ -593,6 +779,123 @@ def aligned_hole(
     matches = [i for i, h in enumerate(holes)
                if math.dist((h.x, h.y), tip) / h.radius <= max_distance_in_radii]
     return matches[0] if len(matches) == 1 else None
+
+
+def aligned_hole_from_plunger(
+    frame_bgr: np.ndarray,
+    disk: MovingDisk,
+    holes: Sequence[Hole],
+    *,
+    sector_half_angle_deg: float = 12.0,
+    minimum_edge_support: float = 0.025,
+    minimum_score_ratio: float = 1.2,
+) -> int | None:
+    """Select the hole whose radial axis continues into the opposite plunger.
+
+    The Ainsworth die plate rotates but the tapered plunger is fixed to the
+    opposite jaw.  Its metal outline therefore creates a supported radial
+    continuation outside exactly one hole.  Ambiguous external structures are
+    rejected instead of being resolved from screen direction.
+    """
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    if frame.ndim != 3 or frame.shape[2] != 3 or not holes:
+        raise ValueError("BGR frame and at least one hole are required")
+    if (
+        sector_half_angle_deg <= 0
+        or minimum_edge_support <= 0
+        or minimum_score_ratio <= 1
+    ):
+        raise ValueError("positive plunger support thresholds are required")
+    height, width = frame.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    dx = xx - disk.x
+    dy = yy - disk.y
+    distance = np.sqrt(dx * dx + dy * dy)
+    angles = (np.degrees(np.arctan2(dy, dx)) + 360.0) % 360.0
+    annulus = (distance >= 0.78 * disk.radius) & (distance <= 2.2 * disk.radius)
+    edges = cv2.Canny(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 60, 160) > 0
+    scores: list[float] = []
+    for hole in holes:
+        angle = math.degrees(math.atan2(hole.y - disk.y, hole.x - disk.x)) % 360.0
+        angle_delta = np.abs((angles - angle + 180.0) % 360.0 - 180.0)
+        support = annulus & (angle_delta <= sector_half_angle_deg)
+        scores.append(float(np.mean(edges[support])) if support.any() else 0.0)
+    order = np.argsort(scores)[::-1]
+    best = int(order[0])
+    second_score = scores[int(order[1])] if len(order) > 1 else 0.0
+    if (
+        scores[best] < minimum_edge_support
+        or scores[best] < minimum_score_ratio * max(second_score, 1e-6)
+    ):
+        return None
+    return best
+
+
+def aligned_hole_opposite_handle(
+    frame_bgr: np.ndarray,
+    disk: MovingDisk,
+    holes: Sequence[Hole],
+    *,
+    maximum_alignment_angle_deg: float = 45.0,
+    minimum_unique_gap_deg: float = 8.0,
+) -> int | None:
+    """Infer the pin-facing hole opposite the broad handle/jaw edge cluster.
+
+    The five-hole die plate rotates while the handles and opposing jaw remain
+    fixed.  The handle side produces a broad group of exterior metal edges;
+    the selected hole is on the opposite radial side.  A non-unique angular
+    match is deliberately left unresolved.
+    """
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    if frame.ndim != 3 or frame.shape[2] != 3 or len(holes) < 2:
+        raise ValueError("BGR frame and at least two holes are required")
+    if maximum_alignment_angle_deg <= 0 or minimum_unique_gap_deg <= 0:
+        raise ValueError("positive alignment tolerances are required")
+    height, width = frame.shape[:2]
+    yy, xx = np.ogrid[:height, :width]
+    dx = xx - disk.x
+    dy = yy - disk.y
+    distance = np.sqrt(dx * dx + dy * dy)
+    angles = (np.degrees(np.arctan2(dy, dx)) + 360.0) % 360.0
+    exterior = (distance >= 1.02 * disk.radius) & (distance <= 2.2 * disk.radius)
+    edges = cv2.Canny(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 60, 160) > 0
+    bin_centers = np.arange(0.0, 360.0, 10.0)
+    support = []
+    for center in bin_centers:
+        delta = np.abs((angles - center + 180.0) % 360.0 - 180.0)
+        sector = exterior & (delta <= 5.0)
+        support.append(float(np.mean(edges[sector])) if sector.any() else 0.0)
+    support_array = np.asarray(support)
+    window_bins = 9
+    window_scores = np.array([
+        sum(support[(start + offset) % len(support)] for offset in range(window_bins))
+        for start in range(len(support))
+    ])
+    best_start = int(np.argmax(window_scores))
+    if window_scores[best_start] / window_bins < 0.015:
+        return None
+    selected_bins = [(best_start + offset) % len(support) for offset in range(window_bins)]
+    weights = support_array[selected_bins]
+    radians = np.deg2rad(bin_centers[selected_bins])
+    body_angle = math.degrees(math.atan2(
+        float(np.sum(weights * np.sin(radians))),
+        float(np.sum(weights * np.cos(radians))),
+    )) % 360.0
+    pin_angle = (body_angle + 180.0) % 360.0
+    distances = []
+    for index, hole in enumerate(holes):
+        hole_angle = math.degrees(
+            math.atan2(hole.y - disk.y, hole.x - disk.x),
+        ) % 360.0
+        delta = abs((hole_angle - pin_angle + 180.0) % 360.0 - 180.0)
+        distances.append((delta, index))
+    distances.sort()
+    if (
+        distances[0][0] > maximum_alignment_angle_deg
+        or distances[1][0] - distances[0][0] < minimum_unique_gap_deg
+    ):
+        return None
+    return distances[0][1]
 
 
 def dam_color_ratio(

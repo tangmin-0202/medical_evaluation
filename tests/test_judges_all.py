@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from medical_evaluation.judges.cp01_cp03 import judge_cp01, judge_cp02, judge_cp03
+from medical_evaluation.judges.cp01_cp03 import judge_cp01, judge_cp03
+from medical_evaluation.judges.cp02_punch import judge_cp02_punch
 from medical_evaluation.judges.cp04_cp06 import judge_cp04, judge_cp05, judge_cp06
 from medical_evaluation.judges.cp07_cp08 import judge_cp07, judge_cp08
 from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp10, judge_cp11
@@ -35,9 +36,23 @@ CASES = [
         },
     ),
     (
-        judge_cp02,
-        {"selected_hole_index": 2, "residue_present": False, "residue_cleared": None},
-        {"selected_hole_index": 1, "residue_present": False, "residue_cleared": None},
+        judge_cp02_punch,
+        {
+            "stage_scan_reliable": True,
+            "punch_action_observed": True,
+            "selected_second_largest": True,
+            "residue_before": False,
+            "cleanup_contact_observed": None,
+            "residue_after": False,
+        },
+        {
+            "stage_scan_reliable": True,
+            "punch_action_observed": True,
+            "selected_second_largest": False,
+            "residue_before": False,
+            "cleanup_contact_observed": None,
+            "residue_after": False,
+        },
     ),
     (
         judge_cp03,
@@ -145,13 +160,20 @@ def test_each_judge_requests_review_for_missing_evidence(
 def test_cp02_requires_cleaning_only_when_residue_is_present(
     thresholds: dict[str, dict[str, float]],
 ) -> None:
-    result = judge_cp02(
-        {"selected_hole_index": 2, "residue_present": True, "residue_cleared": False},
+    result = judge_cp02_punch(
+        {
+            "stage_scan_reliable": True,
+            "punch_action_observed": True,
+            "selected_second_largest": True,
+            "residue_before": True,
+            "cleanup_contact_observed": False,
+            "residue_after": True,
+        },
         thresholds["cp_02"],
     )
 
     assert result.status.value == "incorrect"
-    assert result.reason_code == "residue_not_cleared"
+    assert result.reason_code == "residue_not_cleaned"
 
 
 def test_pipeline_registers_all_11_judges() -> None:

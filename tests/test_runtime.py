@@ -70,10 +70,14 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
     extractor = pipeline.extractor_factory(job)
 
     assert isinstance(extractor, Cp09Cp11FeatureExtractor)
+    assert extractor.cp02.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp09.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp10.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp11.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert pipeline.commentary_provider.model == "Qwen-Test"
+    assert pipeline.enabled_checkpoint_ids == frozenset(
+        {"cp_02", "cp_09", "cp_10", "cp_11"}
+    )
     assert backend_calls == [
         (
             "configs/sam2.1/sam2.1_hiera_l.yaml",
