@@ -449,6 +449,18 @@ def locate_disk_layout_near(
     for local_x, local_y, radius in np.round(circles[0]).astype(int):
         x = float(local_x + x1)
         y = float(local_y + y1)
+        border_clearance = min(
+            x - radius,
+            y - radius,
+            width - (x + radius),
+            height - (y + radius),
+        )
+        # Dark details on the lower press mechanism can form a convincing
+        # five-component circle while almost touching the image boundary. A
+        # usable wheel observation must expose a small ring around the disk so
+        # that all five hole diameters share one visible calibration plane.
+        if border_clearance < 0.2 * radius:
+            continue
         center_shift = math.dist((x, y), (reference.x, reference.y)) / reference.radius
         radius_ratio = float(radius) / reference.radius
         if center_shift > max_center_shift_radii or not 0.5 <= radius_ratio <= 1.7:

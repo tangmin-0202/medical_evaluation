@@ -35,7 +35,10 @@ class _HoleFrame:
 
 class Cp02FeatureExtractor:
     coarse_fps = 2.0
-    minimum_dense_fps = 10.0
+    # The five holes are only a few pixels wide. At 10 FPS a stable-looking
+    # frame can land between two clear source frames, so sample near the native
+    # 25 FPS rate and let the reliability gates discard blurred frames.
+    minimum_dense_fps = 25.0
     dense_radius_sec = 1.2
     maximum_stable_gap_sec = 0.35
     maximum_exit_gap_sec = 0.4
