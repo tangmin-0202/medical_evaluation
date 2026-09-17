@@ -266,6 +266,33 @@ def locate_moving_multihole_disk(
     )
 
 
+def locate_last_moving_multihole_disk(
+    frames_bgr: Sequence[np.ndarray], *, window_frames: int = 3,
+) -> MovingDisk | None:
+    """Find the latest locally visible moving wheel, independent of SAM3 masks.
+
+    A tool leaving the view must not erase an earlier clear pre-contact wheel.
+    This is only a disk observation, not a selected-hole judgement.
+    """
+    if window_frames < 3:
+        raise ValueError("at least three frames are required for motion evidence")
+    frames = list(frames_bgr)
+    for end in range(len(frames), window_frames - 1, -1):
+        start = end - window_frames
+        candidate = locate_moving_multihole_disk(frames[start:end])
+        if candidate is not None:
+            return MovingDisk(
+                frame_position=start + candidate.frame_position,
+                x=candidate.x,
+                y=candidate.y,
+                radius=candidate.radius,
+                hole_count=candidate.hole_count,
+                motion_ratio=candidate.motion_ratio,
+                surface_contrast=candidate.surface_contrast,
+            )
+    return None
+
+
 def _disk_fully_visible(x: float, y: float, radius: float, width: int, height: int) -> bool:
     return x - radius >= 0 and y - radius >= 0 and x + radius < width and y + radius < height
 

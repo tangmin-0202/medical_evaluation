@@ -76,6 +76,23 @@ def test_static_multihole_disks_do_not_create_automatic_box():
     assert punch.locate_moving_multihole_disk([frame.copy() for _ in range(5)]) is None
 
 
+def test_last_moving_disk_uses_late_visible_frames_without_sam3_mask():
+    frames = [_disk_frame((120 + 30 * index, 250)) for index in range(4)]
+    frames += [_disk_frame((350 + 25 * index, 250)) for index in range(3)]
+    frames.append(_disk_frame((0, 0), moving=False))
+
+    result = punch.locate_last_moving_multihole_disk(frames)
+
+    assert result is not None
+    assert result.frame_position >= 4
+    assert result.x > 300
+
+
+def test_last_moving_disk_does_not_infer_from_static_background():
+    frame = _disk_frame((0, 0), moving=False)
+    assert punch.locate_last_moving_multihole_disk([frame.copy() for _ in range(5)]) is None
+
+
 def test_prefers_true_hole_disk_over_adjacent_round_press_mechanism():
     frames = []
     for index in range(5):
