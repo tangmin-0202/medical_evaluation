@@ -16,6 +16,7 @@ from medical_evaluation.features.cp02_punch import (
     locate_disk_layout_near,
     locate_last_moving_multihole_disk,
     prepunch_scan_range,
+    probe_contacts_hole,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
@@ -31,6 +32,7 @@ class _HoleFrame:
     aligned_index: int
     size_rank: int
     green_ratio: float | None
+    probe_contact: bool
 
 
 class Cp02FeatureExtractor:
@@ -115,6 +117,13 @@ class Cp02FeatureExtractor:
             residue = True
         else:
             residue = None
+        cleanup_contact: bool | None = None
+        residue_after: bool | None = False if residue is False else None
+        cleanup_evidence: tuple[_HoleFrame, ...] = ()
+        if residue is True:
+            cleanup_contact, residue_after, cleanup_evidence = self._cleanup_status(
+                observations, last,
+            )
         features: dict[str, float | bool | None] = {
             "stage_scan_reliable": True,
             "punch_action_observed": True,
@@ -133,10 +142,10 @@ class Cp02FeatureExtractor:
             "final_stable_end_sec": float(last.frame.time_sec),
             "residue_green_ratio": median_green,
             "residue_before": residue,
-            "cleanup_contact_observed": None,
-            "residue_after": False if residue is False else None,
+            "cleanup_contact_observed": cleanup_contact,
+            "residue_after": residue_after,
         }
-        evidence = self._write_evidence(stable)
+        evidence = self._write_evidence(stable, cleanup_evidence=cleanup_evidence)
         self._write_table(observations, reason="criteria_satisfied")
         return ExtractedEvidence(features=features, evidence=evidence)
 
@@ -171,6 +180,9 @@ class Cp02FeatureExtractor:
                 aligned_index=aligned,
                 size_rank=order.index(aligned) + 1,
                 green_ratio=_hole_green_ratio(frame.image_bgr, layout.holes[aligned]),
+                probe_contact=probe_contacts_hole(
+                    frame.image_bgr, layout.holes[aligned],
+                ),
             ))
         return observations
 
@@ -204,6 +216,41 @@ class Cp02FeatureExtractor:
             return None
         return earlier, last
 
+    def _cleanup_status(
+        self,
+        observations: list[_HoleFrame],
+        selected: _HoleFrame,
+    ) -> tuple[bool | None, bool | None, tuple[_HoleFrame, ...]]:
+        same_hole = [
+            item
+            for item in observations
+            if item.frame.time_sec > selected.frame.time_sec
+            and item.size_rank == selected.size_rank
+        ]
+        if not same_hole:
+            return None, None, ()
+        contact_index = next(
+            (index for index, item in enumerate(same_hole) if item.probe_contact),
+            None,
+        )
+        if contact_index is None:
+            return False, None, (same_hole[-1],)
+        contact_frame = same_hole[contact_index]
+        after = [
+            item for item in same_hole[contact_index + 1:] if item.green_ratio is not None
+        ]
+        if not after:
+            return True, None, (contact_frame,)
+        result_frame = after[-1]
+        assert result_frame.green_ratio is not None
+        if result_frame.green_ratio <= self.residue_absent_ratio:
+            residue_after: bool | None = False
+        elif result_frame.green_ratio >= self.residue_present_ratio:
+            residue_after = True
+        else:
+            residue_after = None
+        return True, residue_after, (contact_frame, result_frame)
+
     @staticmethod
     def _empty_features(*, stage_scan_reliable: bool) -> dict[str, float | bool | None]:
         return {
@@ -222,10 +269,17 @@ class Cp02FeatureExtractor:
         }
 
     def _write_evidence(
-        self, stable: tuple[_HoleFrame, _HoleFrame],
+        self,
+        stable: tuple[_HoleFrame, _HoleFrame],
+        *,
+        cleanup_evidence: tuple[_HoleFrame, ...] = (),
     ) -> list[EvidenceItem]:
         evidence = []
-        for position, item in enumerate(stable):
+        items = list(stable)
+        for item in cleanup_evidence:
+            if all(item.frame.frame_index != prior.frame.frame_index for prior in items):
+                items.append(item)
+        for position, item in enumerate(items):
             overlay = item.frame.image_bgr.copy()
             cv2.circle(
                 overlay,
@@ -277,9 +331,14 @@ class Cp02FeatureExtractor:
                 time_sec=item.frame.time_sec,
                 overlay_path=relative,
                 rule=(
-                    "final_prepunch_selected_hole"
+                    "preceding_punch_disk_adjustment"
+                    if position < len(stable) - 1
+                    else "final_prepunch_selected_hole"
                     if position == len(stable) - 1
-                    else "preceding_punch_disk_adjustment"
+                    else "same_hole_cleanup_contact"
+                    if cleanup_evidence
+                    and item.frame.frame_index == cleanup_evidence[0].frame.frame_index
+                    else "same_hole_cleanup_result"
                 ),
             ))
         return evidence
@@ -305,6 +364,7 @@ class Cp02FeatureExtractor:
                     "aligned_index": item.aligned_index,
                     "selected_size_rank": item.size_rank,
                     "green_ratio": item.green_ratio,
+                    "probe_contact": item.probe_contact,
                 }
                 for item in observations
             ],

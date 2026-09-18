@@ -133,6 +133,22 @@ def test_handle_opposite_alignment_rejects_equidistant_holes():
     assert punch.aligned_hole_opposite_handle(frame, disk, holes) is None
 
 
+def test_probe_contact_requires_a_line_entering_the_same_hole():
+    frame = np.full((160, 160, 3), 180, np.uint8)
+    hole = punch.Hole(80, 80, 8)
+    cv2.line(frame, (35, 80), (82, 80), (35, 35, 35), 3)
+
+    assert punch.probe_contacts_hole(frame, hole) is True
+
+
+def test_probe_contact_rejects_a_nearby_line_that_misses_the_hole():
+    frame = np.full((160, 160, 3), 180, np.uint8)
+    hole = punch.Hole(80, 80, 8)
+    cv2.line(frame, (35, 55), (125, 55), (35, 35, 35), 3)
+
+    assert punch.probe_contacts_hole(frame, hole) is False
+
+
 def test_same_color_ratio_samples_only_hole_interior():
     frame = np.zeros((10, 10, 3), np.uint8)
     frame[:] = (0, 180, 0)

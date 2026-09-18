@@ -134,6 +134,7 @@ def test_cp02_contact_gap_excludes_post_punch_disk_reappearance() -> None:
             aligned_index=rank - 1,
             size_rank=rank,
             green_ratio=0.0,
+            probe_contact=False,
         )
         for index, (time, rank) in enumerate(((1.0, 1), (1.1, 2), (2.0, 3)))
     ]
@@ -144,3 +145,43 @@ def test_cp02_contact_gap_excludes_post_punch_disk_reappearance() -> None:
 
     assert pair is not None
     assert [item.size_rank for item in pair] == [1, 2]
+
+
+def test_cp02_extractor_confirms_same_hole_residue_cleanup(monkeypatch, tmp_path: Path):
+    from medical_evaluation.extractors import cp02
+
+    blank = np.full((240, 320, 3), (170, 120, 70), np.uint8)
+
+    def frames(_path, *, start_sec, end_sec, sample_fps):
+        times = (18.0, 18.5, 19.0) if sample_fps <= 2.1 else (18.8, 19.0, 19.8, 20.0)
+        return iter(
+            SampledFrame(time_sec=t, frame_index=round(t * 10), image_bgr=blank.copy())
+            for t in times
+            if start_sec <= t < end_sec
+        )
+
+    disk = MovingDisk(2, 150, 130, 45, 5, 0.5, 60)
+    holes = tuple(Hole(120 + i * 15, 120, 8 - i) for i in range(5))
+    layout = DiskHoleLayout(holes, True, "criteria_satisfied", 1, 0.12)
+    green = iter((0.6, 0.6, 0.6, 0.0))
+    contact = iter((False, False, True, False))
+    monkeypatch.setattr(cp02, "sample_frames", frames)
+    monkeypatch.setattr(cp02, "locate_last_moving_multihole_disk", lambda _frames: disk)
+    monkeypatch.setattr(cp02, "locate_disk_layout_near", lambda _frame, _disk: (disk, layout))
+    monkeypatch.setattr(cp02, "aligned_hole_opposite_handle", lambda *_args: 1)
+    monkeypatch.setattr(cp02, "_hole_green_ratio", lambda *_args: next(green))
+    monkeypatch.setattr(cp02, "probe_contacts_hole", lambda *_args: next(contact))
+
+    result = cp02.Cp02FeatureExtractor(
+        annotations=_annotations(), evidence_root=tmp_path / "evidence"
+    ).extract(
+        tmp_path / "unused.mp4",
+        "cp_02",
+        TimeRange(start_sec=10, end_sec=20),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["residue_before"] is True
+    assert result.features["cleanup_contact_observed"] is True
+    assert result.features["residue_after"] is False

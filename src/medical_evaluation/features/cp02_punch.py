@@ -910,6 +910,50 @@ def aligned_hole_opposite_handle(
     return distances[0][1]
 
 
+def probe_contacts_hole(frame_bgr: np.ndarray, hole: Hole) -> bool:
+    """Detect an elongated probe entering the selected hole."""
+    frame = np.asarray(frame_bgr, dtype=np.uint8)
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError("a BGR frame is required")
+    height, width = frame.shape[:2]
+    extent = max(12, round(6 * hole.radius))
+    crop_x1 = max(0, round(hole.x) - extent)
+    crop_x2 = min(width, round(hole.x) + extent + 1)
+    crop_y1 = max(0, round(hole.y) - extent)
+    crop_y2 = min(height, round(hole.y) + extent + 1)
+    gray = cv2.cvtColor(
+        frame[crop_y1:crop_y2, crop_x1:crop_x2], cv2.COLOR_BGR2GRAY,
+    )
+    lines = cv2.HoughLinesP(
+        cv2.Canny(gray, 45, 140),
+        1,
+        np.pi / 180,
+        threshold=max(8, round(1.2 * hole.radius)),
+        minLineLength=max(8, round(2.0 * hole.radius)),
+        maxLineGap=max(3, round(0.8 * hole.radius)),
+    )
+    if lines is None:
+        return False
+    for local_x1, local_y1, local_x2, local_y2 in lines[:, 0]:
+        line = (
+            float(local_x1 + crop_x1),
+            float(local_y1 + crop_y1),
+            float(local_x2 + crop_x1),
+            float(local_y2 + crop_y1),
+        )
+        endpoint_distances = (
+            math.dist((hole.x, hole.y), (line[0], line[1])),
+            math.dist((hole.x, hole.y), (line[2], line[3])),
+        )
+        if (
+            _point_segment_distance(hole.x, hole.y, *line) <= 0.8 * hole.radius
+            and min(endpoint_distances) <= 1.35 * hole.radius
+            and max(endpoint_distances) >= 1.8 * hole.radius
+        ):
+            return True
+    return False
+
+
 def dam_color_ratio(
     frame_bgr: np.ndarray, hole_interior: np.ndarray, dam_reference: np.ndarray,
     *, max_lab_distance: float,
