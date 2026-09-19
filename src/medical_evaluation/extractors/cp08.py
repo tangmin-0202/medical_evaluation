@@ -32,7 +32,7 @@ from medical_evaluation.segmentation.base import (
 )
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json, safe_child
-from medical_evaluation.video import read_frame
+from medical_evaluation.video import read_frame, sample_frames
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
 TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
@@ -60,6 +60,16 @@ class _DamCrossCheck:
     dam_green_state: bool | None
     conflict: bool
     agreed_state: bool | None
+
+
+@dataclass(frozen=True)
+class _DamGateFrame:
+    item: FrameMasks
+    frame: np.ndarray
+    mask: np.ndarray | None
+    frame_green_ratio: float
+    mask_green_ratio: float | None
+    state: bool | None
 
 
 class Cp08FeatureExtractor:
@@ -170,14 +180,60 @@ class Cp08FeatureExtractor:
         action_features, action_evidence = self._extract_action(
             video_path, sparse=sparse, dense_sessions=dense_sessions, observed=observed
         )
+        if not (
+            action_features["instrument_observed"] is True
+            and action_features["instrument_shape_reliable"] is True
+            and action_features["instrument_shape_match"] is True
+        ):
+            return ExtractedEvidence(
+                features=action_features,
+                evidence=action_evidence,
+            )
 
         final_range = self._cp09_final_range()
         final_frames: dict[str, list[FrameMasks]] = {}
         final_errors: dict[str, str] = {}
+        try:
+            final_frames["dam"] = list(
+                self.segmenter.track(
+                    video_path,
+                    final_range,
+                    [
+                        self._text_prompt(
+                            "cp08_rubber_dam", DAM_PROMPT, final_range.end_sec
+                        )
+                    ],
+                    sample_fps=effective_dense_fps,
+                )
+            )
+        except Sam3AmbiguousTextResult:
+            final_frames["dam"] = []
+            final_errors["dam"] = "ambiguous_unscored_candidates"
+        dam_state, dam_valid_count, dam_gate_frames = self._precheck_dam(
+            video_path,
+            final_range,
+            final_frames["dam"],
+            sample_fps=effective_dense_fps,
+        )
+        if dam_state is False:
+            dam_evidence = self._write_dam_gate_evidence(
+                dam_gate_frames, failure_reasons=["rubber_dam_not_positioned"]
+            )
+            return ExtractedEvidence(
+                features={
+                    **action_features,
+                    "final_state_observable": True,
+                    "rubber_dam_positioned": False,
+                    "final_state_valid_frame_count": float(dam_valid_count),
+                    "rubber_dam_segmentation_conflict": False,
+                    "dam_color_conflict_frame_count": 0.0,
+                    "dam_color_conflict_frame_ratio": 0.0,
+                },
+                evidence=[*action_evidence, *dam_evidence],
+            )
         final_objects = {
             "tooth": ("cp08_target_tooth", TOOTH_PROMPT),
             "clamp": ("cp08_full_clamp", CLAMP_PROMPT),
-            "dam": ("cp08_rubber_dam", DAM_PROMPT),
         }
         for name, (object_id, text) in final_objects.items():
             try:
@@ -199,6 +255,115 @@ class Cp08FeatureExtractor:
             features={**action_features, **final_features},
             evidence=[*action_evidence, *final_evidence],
         )
+
+    def _precheck_dam(
+        self,
+        video_path: Path,
+        time_range: TimeRange,
+        sam_frames: list[FrameMasks],
+        *,
+        sample_fps: float,
+    ) -> tuple[bool | None, int, list[_DamGateFrame]]:
+        sources = list(sam_frames)
+        decoded: dict[int, np.ndarray] = {}
+        if not sources:
+            for sampled in sample_frames(
+                video_path,
+                start_sec=time_range.start_sec,
+                end_sec=time_range.end_sec,
+                sample_fps=sample_fps,
+            ):
+                sources.append(
+                    FrameMasks(
+                        frame_index=sampled.frame_index,
+                        frame_time_sec=sampled.time_sec,
+                        masks={},
+                    )
+                )
+                decoded[sampled.frame_index] = sampled.image_bgr
+        measured: list[_DamGateFrame] = []
+        for item in sources:
+            frame = decoded.get(item.frame_index)
+            if frame is None:
+                frame = read_frame(video_path, item.frame_index)
+            green = self._green_pixels(frame)
+            frame_ratio = float(green.mean())
+            mask = self._mask(item, "cp08_rubber_dam")
+            mask_ratio = self._region_ratio(green, mask) if mask is not None else None
+            state: bool | None = None
+            if mask is not None and mask_ratio is not None:
+                if mask_ratio >= self.dam_green_present_ratio:
+                    state = True
+            elif frame_ratio <= self.local_green_absent_ratio:
+                state = False
+            measured.append(
+                _DamGateFrame(item, frame, mask, frame_ratio, mask_ratio, state)
+            )
+        valid = [item.state for item in measured if item.state is not None]
+        if len(valid) < self.minimum_valid_frames:
+            return None, len(valid), measured
+        true_ratio = float(np.mean(valid))
+        if true_ratio >= 2 / 3:
+            return True, len(valid), measured
+        if true_ratio <= 1 / 3:
+            return False, len(valid), measured
+        return None, len(valid), measured
+
+    def _write_dam_gate_evidence(
+        self,
+        values: list[_DamGateFrame],
+        *,
+        failure_reasons: list[str],
+    ) -> list[EvidenceItem]:
+        rows: list[dict[str, Any]] = []
+        evidence: list[EvidenceItem] = []
+        for value in values:
+            mask = (
+                np.zeros(value.frame.shape[:2], dtype=bool)
+                if value.mask is None
+                else value.mask
+            )
+            paths = self._write_frame_bundle(
+                "final",
+                value.item,
+                value.frame,
+                {"dam": mask},
+                ((mask, (0, 255, 0)),),
+                artifact_id=f"dam-gate-{value.item.frame_index:08d}",
+            )
+            rows.append(
+                {
+                    "frame_index": value.item.frame_index,
+                    "time_sec": value.item.frame_time_sec,
+                    "sam_dam_present": value.mask is not None,
+                    "frame_green_ratio": value.frame_green_ratio,
+                    "local_green_ratio": value.frame_green_ratio,
+                    "local_green_state": value.state,
+                    "dam_green_ratio": value.mask_green_ratio,
+                    "dam_green_state": value.state if value.mask is not None else None,
+                    "dam_color_conflict": False,
+                    "dam_presence_state": value.state,
+                    "rejection_reason": (
+                        None if value.state is not None else "dam_presence_unreliable"
+                    ),
+                }
+            )
+            evidence.append(
+                EvidenceItem(
+                    time_sec=value.item.frame_time_sec,
+                    overlay_path=paths["overlay"].relative_to(
+                        self.evidence_root
+                    ).as_posix(),
+                    rule="cp08_cp09_tail_rubber_dam_presence_gate",
+                )
+            )
+        self._write_metrics(
+            "final",
+            selected_prompts={"dam": DAM_PROMPT},
+            rows=rows,
+            failure_reasons=failure_reasons,
+        )
+        return evidence
 
     @staticmethod
     def _text_prompt(

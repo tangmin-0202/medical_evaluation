@@ -118,9 +118,6 @@ def test_text_prompts_use_the_requested_nonzero_stage_start(tmp_path: Path) -> N
 
     assert [(call[0].start_sec, call[1], call[2]) for call in segmenter.calls] == [
         (10, 20, 1.0),
-        (37, 40, 5.0),
-        (37, 40, 5.0),
-        (37, 40, 5.0),
     ]
 
 
@@ -251,6 +248,23 @@ class AmbiguousTailSegmenter(FakeSegmenter):
     def track(self, video_path, time_range, prompts, sample_fps):
         if prompts[0].object_id == "cp08_target_tooth":
             raise Sam3AmbiguousTextResult("multiple unscored tooth candidates")
+        yield from super().track(video_path, time_range, prompts, sample_fps)
+
+
+class AbsentDamGateSegmenter(FakeSegmenter):
+    def track(self, video_path, time_range, prompts, sample_fps):
+        prompt = prompts[0]
+        if prompt.object_id == "cp08_rubber_dam":
+            self.calls.append((time_range, prompt.object_id, prompt.text or "", sample_fps))
+            for offset in range(6):
+                yield FrameMasks(
+                    frame_index=200 + offset,
+                    frame_time_sec=17.0 + offset * 0.25,
+                    masks={"cp08_rubber_dam": _mask("")},
+                )
+            return
+        if prompt.object_id in {"cp08_target_tooth", "cp08_full_clamp"}:
+            raise AssertionError("tooth and clamp must not run after reliable dam absence")
         yield from super().track(video_path, time_range, prompts, sample_fps)
 
 
@@ -413,9 +427,9 @@ def test_cross_stage_extractor_uses_text_only_sparse_dense_and_independent_tail_
     assert [(c[0].start_sec, c[0].end_sec, c[1], c[2], c[3]) for c in segmenter.calls] == [
         (0.0, 10.0, "cp08_instrument", INSTRUMENT_PROMPT, 1.0),
         (4.0, 6.0, "cp08_instrument", INSTRUMENT_PROMPT, 5),
+        (17.0, 20.0, "cp08_rubber_dam", DAM_PROMPT, 5),
         (17.0, 20.0, "cp08_target_tooth", TOOTH_PROMPT, 5),
         (17.0, 20.0, "cp08_full_clamp", CLAMP_PROMPT, 5),
-        (17.0, 20.0, "cp08_rubber_dam", DAM_PROMPT, 5),
     ]
     assert all("blunt" not in call[2].lower() and "sharp" not in call[2].lower()
                for call in segmenter.calls)
@@ -469,6 +483,34 @@ def test_ambiguous_tail_prompt_makes_final_state_unobservable_instead_of_crashin
     assert result.features["final_state_observable"] is False
     assert result.features["final_segmentation_conflict"] is True
     assert result.features["final_segmentation_error_count"] == 1.0
+
+
+def test_reliable_absent_dam_skips_tooth_and_clamp_segmentation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _patch_measurements(monkeypatch)
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp08.read_frame",
+        lambda _path, _index: np.full((48, 64, 3), 120, np.uint8),
+    )
+    segmenter = AbsentDamGateSegmenter()
+
+    result = Cp08FeatureExtractor(
+        segmenter=segmenter,
+        annotations=_annotations(),
+        evidence_root=tmp_path / "evidence",
+    ).extract(
+        tmp_path / "unused.mp4",
+        "cp_08",
+        TimeRange(start_sec=0, end_sec=10),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["final_state_observable"] is True
+    assert result.features["rubber_dam_positioned"] is False
+    assert result.features["final_state_valid_frame_count"] == 6.0
+    assert [call[1] for call in segmenter.calls[-1:]] == ["cp08_rubber_dam"]
 
 
 def test_dense_confirmation_uses_first_shape_plausible_not_first_nonempty_mask(
@@ -885,7 +927,7 @@ def test_evidence_contract_writes_originals_masks_overlays_metrics_prompts_and_r
     assert all((root / item.overlay_path).is_file() for item in result.evidence)
 
 
-def test_no_sparse_candidate_never_runs_dense_confirmation_and_preserves_unreliable_final(
+def test_no_sparse_candidate_short_circuits_before_cp09_final_checks(
     monkeypatch, tmp_path: Path,
 ) -> None:
     from medical_evaluation.extractors.cp08 import Cp08FeatureExtractor
@@ -901,10 +943,12 @@ def test_no_sparse_candidate_never_runs_dense_confirmation_and_preserves_unrelia
 
     instrument_calls = [call for call in segmenter.calls if call[1] == "cp08_instrument"]
     assert len(instrument_calls) == 1
+    assert len(segmenter.calls) == 1
     assert (instrument_calls[0][0].start_sec, instrument_calls[0][0].end_sec) == (0, 10)
     assert result.features["instrument_observed"] is False
     assert result.features["instrument_shape_reliable"] is False
     assert result.features["instrument_shape_match"] is None
+    assert "final_state_observable" not in result.features
     metrics = json.loads(
         (tmp_path / "evidence" / "cp_08" / "action" / "per_frame_metrics.json")
         .read_text("utf-8")
