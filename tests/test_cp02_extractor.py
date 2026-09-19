@@ -584,7 +584,7 @@ def test_dense_measurement_tracks_from_each_reliable_disk(monkeypatch, tmp_path:
 
     cp02.Cp02FeatureExtractor(
         annotations=_annotations(), evidence_root=tmp_path,
-    )._measure_dense(frames, initial)
+    )._measure_dense(frames, initial, track=True)
 
     assert references == [initial, moved]
 

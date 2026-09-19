@@ -114,7 +114,10 @@ class Cp02FeatureExtractor:
                 end_sec=window.end_sec,
                 sample_fps=self.visibility_fps,
             ))
-            visible = self._measure_dense(visibility_chunk, anchor)
+            visible = self._combine_observations(
+                self._measure_dense(visibility_chunk, anchor),
+                self._measure_dense(visibility_chunk, anchor, track=True),
+            )
             if visible:
                 visibility_seed = visible[-1]
                 break
@@ -136,14 +139,15 @@ class Cp02FeatureExtractor:
             scan_range.start_sec,
             selection_boundary_time_sec - self.final_refine_lookback_sec,
         )
-        observations = self._measure_dense(
-            sample_frames(
+        refine_frames = list(sample_frames(
                 video_path,
                 start_sec=refine_start,
                 end_sec=selection_boundary_time_sec,
                 sample_fps=self.final_refine_fps,
-            ),
-            visibility_seed.disk,
+            ))
+        observations = self._combine_observations(
+            self._measure_dense(refine_frames, visibility_seed.disk),
+            self._measure_dense(refine_frames, visibility_seed.disk, track=True),
         )
         selected = self._last_clear_cp02_frame(
             observations, boundary_time_sec=selection_boundary_time_sec,
@@ -214,7 +218,11 @@ class Cp02FeatureExtractor:
             end_sec = start_sec
 
     def _measure_dense(
-        self, frames: Iterable[SampledFrame], anchor: MovingDisk,
+        self,
+        frames: Iterable[SampledFrame],
+        anchor: MovingDisk,
+        *,
+        track: bool = False,
     ) -> list[_HoleFrame]:
         observations: list[_HoleFrame] = []
         tracked_anchor = anchor
@@ -223,7 +231,6 @@ class Cp02FeatureExtractor:
             if located is None:
                 continue
             disk, layout = located
-            tracked_anchor = disk
             aligned = aligned_hole_opposite_handle(frame.image_bgr, disk, layout.holes)
             if aligned is None or layout.second_largest_index is None:
                 continue
@@ -243,7 +250,21 @@ class Cp02FeatureExtractor:
                 green_ratio=_hole_green_ratio(frame.image_bgr, layout.holes[aligned]),
                 probe_contact=False,
             ))
+            if track:
+                tracked_anchor = disk
         return observations
+
+    @staticmethod
+    def _combine_observations(*groups: list[_HoleFrame]) -> list[_HoleFrame]:
+        by_frame: dict[int, _HoleFrame] = {}
+        for item in (observation for group in groups for observation in group):
+            previous = by_frame.get(item.frame.frame_index)
+            if (
+                previous is None
+                or item.layout.ranking_confidence > previous.layout.ranking_confidence
+            ):
+                by_frame[item.frame.frame_index] = item
+        return sorted(by_frame.values(), key=lambda item: item.frame.time_sec)
 
     def _candidate_dense_windows(
         self,
