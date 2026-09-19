@@ -1,4 +1,4 @@
-version: '2026-09-17'
+version: '2026-09-18'
 checkpoints:
 - id: cp_01
   name: 在橡皮布上确定隔离牙位 (目标牙位：36牙）
@@ -28,14 +28,13 @@ checkpoints:
 - id: cp_02
   name: 选择打孔器孔盘上的位置
   criteria:
-  - 打孔接触前最后稳定对准的孔，应为孔盘按孔径从大到小第二大的孔。
-  - 若目标孔内有绿色橡皮布残留，应使用器具清理同一孔并确认残留消失；无残留时不要求清理。
+  - 进入 CP03 前最后可靠可见画面中，对准的孔应为孔盘按孔径从大到小第二大的孔。
+  - 在进入 CP03 前最后可靠可见画面中，第二大孔内不得呈绿色；呈绿色表示仍有残留。
   weight: 0.09090909090909091
   judge_type: hybrid
   required_objects:
   - punch_disk
   - punch_hole
-  - probe
   - green_residue
   reference_time:
     start_sec: 14.0

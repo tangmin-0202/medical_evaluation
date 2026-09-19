@@ -190,7 +190,10 @@ class AnalysisPipeline:
             checkpoints=results,
             audit=RunAudit(
                 rubric_version=self.rubric.version,
-                model_versions={"pipeline": "vertical-cp09-cp10-cp11"},
+                model_versions={
+                    "pipeline": "vertical-cp02-cp09-cp10-cp11",
+                    "extractor": getattr(extractor, "model_version", "unknown"),
+                },
                 started_at=started,
                 completed_at=completed,
                 runtime_sec=(completed - started).total_seconds(),

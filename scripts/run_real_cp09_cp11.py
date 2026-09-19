@@ -5,8 +5,12 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+from medical_evaluation.annotations import AnnotationStore
+from medical_evaluation.extractors.cp02 import Cp02FeatureExtractor
 from medical_evaluation.jobs import JobRecord
-from medical_evaluation.runtime import build_analysis_pipeline
+from medical_evaluation.pipeline import AnalysisPipeline
+from medical_evaluation.rubric import load_rubric
+from medical_evaluation.runtime import ConfirmedAnnotationLocalizer, build_analysis_pipeline
 from medical_evaluation.settings import Settings
 
 VIDEO_FILENAMES = {
@@ -32,7 +36,28 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     settings = Settings(project_root=Path.cwd(), pipeline_mode="real", sam_backend="sam3")
-    pipeline = build_analysis_pipeline(settings)
+    if args.only == "cp_02":
+        annotation_store = AnnotationStore(settings.data_dir / "annotations")
+
+        def cp02_factory(job: JobRecord) -> Cp02FeatureExtractor:
+            return Cp02FeatureExtractor(
+                annotations=annotation_store.load_segments(job.video_id),
+                evidence_root=settings.data_dir / "jobs" / job.id,
+            )
+
+        pipeline = AnalysisPipeline(
+            rubric=load_rubric(settings.rubric_path),
+            extractor_factory=cp02_factory,
+            localizer=ConfirmedAnnotationLocalizer(),
+            output_root=settings.data_dir / "jobs",
+            annotation_store=annotation_store,
+            dense_fps=settings.sample_fps,
+            analysis_width=settings.analysis_width,
+            enabled_checkpoint_ids=frozenset({"cp_02"}),
+            commentary_provider=None,
+        )
+    else:
+        pipeline = build_analysis_pipeline(settings)
     if args.no_commentary:
         pipeline.commentary_provider = None
     if args.only:

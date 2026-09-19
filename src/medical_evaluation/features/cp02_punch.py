@@ -3,6 +3,7 @@
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import combinations, pairwise
 
 import cv2
 import numpy as np
@@ -99,6 +100,7 @@ class DiskHoleLayout:
     reason: str
     second_largest_index: int | None
     ranking_confidence: float
+    plane_axis_ratio: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,81 @@ class PrePunchObservation:
             and not math.isfinite(self.disk_to_handle_angle_deg)
         ):
             raise ValueError("relative wheel angle must be finite")
+
+
+@dataclass(frozen=True)
+class PunchInteractionObservation:
+    time_sec: float
+    green_overlap_ratio: float
+    motion_ratio: float
+
+    def __post_init__(self) -> None:
+        values = (self.time_sec, self.green_overlap_ratio, self.motion_ratio)
+        if not all(math.isfinite(value) for value in values) or self.time_sec < 0:
+            raise ValueError("punch interaction measurements must be finite")
+        if not 0 <= self.green_overlap_ratio <= 1:
+            raise ValueError("green overlap ratio must be in [0, 1]")
+        if not 0 <= self.motion_ratio <= 1:
+            raise ValueError("motion ratio must be in [0, 1]")
+
+
+@dataclass(frozen=True)
+class PunchEvent:
+    time_sec: float
+    end_time_sec: float
+    confidence: float
+    reason: str
+
+
+def detect_punch_event(
+    observations: Sequence[PunchInteractionObservation],
+    *,
+    min_green_ratio: float = 0.45,
+    min_green_increase: float = 0.25,
+    min_motion_ratio: float = 0.02,
+    min_frames: int = 3,
+) -> PunchEvent | None:
+    """Find sustained rubber-dam manipulation in the punch working region."""
+    if (
+        not 0 < min_green_ratio < 1
+        or not 0 < min_green_increase < 1
+        or not 0 < min_motion_ratio < 1
+    ):
+        raise ValueError("event ratios must be in (0, 1)")
+    if min_frames < 2:
+        raise ValueError("punch event requires at least two frames")
+    ordered = sorted(observations, key=lambda item: item.time_sec)
+    if not ordered:
+        return None
+    baseline = float(np.median([
+        item.green_overlap_ratio for item in ordered[:min(3, len(ordered))]
+    ]))
+    green_threshold = max(min_green_ratio, baseline + min_green_increase)
+    runs: list[list[PunchInteractionObservation]] = []
+    current: list[PunchInteractionObservation] = []
+    for item in ordered:
+        if item.green_overlap_ratio >= green_threshold:
+            current.append(item)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    for run in runs:
+        if len(run) < min_frames:
+            continue
+        mean_motion = float(np.mean([item.motion_ratio for item in run]))
+        if mean_motion < min_motion_ratio:
+            continue
+        mean_green = float(np.mean([item.green_overlap_ratio for item in run]))
+        confidence = min(1.0, 0.5 * mean_green / green_threshold + 0.5 * mean_motion / min_motion_ratio)
+        return PunchEvent(
+            time_sec=run[0].time_sec,
+            end_time_sec=run[-1].time_sec,
+            confidence=float(confidence),
+            reason="sustained_green_punch_interaction",
+        )
+    return None
 
 
 def prepunch_scan_range(
@@ -340,17 +417,37 @@ def measure_disk_holes(
     center = (float(disk.x), float(disk.y))
     containing = [c for c in contours if cv2.pointPolygonTest(c, center, False) >= 0]
     face_contour = max(containing or contours, key=cv2.contourArea) if contours else None
-    if (
+    face_is_large = bool(
         face_contour is not None
         and cv2.contourArea(face_contour) >= 0.35 * math.pi * disk.radius**2
-    ):
+    )
+    plane_axis_ratio = 1.0
+    if face_is_large and face_contour is not None and len(face_contour) >= 5:
+        _ellipse_center, axes, _angle = cv2.fitEllipse(face_contour)
+        plane_axis_ratio = min(axes) / max(axes)
+        # Apparent component areas cannot be compared as physical hole sizes
+        # under strong foreshortening without a trustworthy plane homography.
+        # Refuse the ranking instead of silently swapping adjacent sizes.
+        if plane_axis_ratio < 0.78:
+            return DiskHoleLayout(
+                (), False, "unrectified_tilted_disk", None, 0.0,
+                float(plane_axis_ratio),
+            )
+    if face_is_large and face_contour is not None:
         face = np.zeros((height, width), np.uint8)
         cv2.drawContours(face, [cv2.convexHull(face_contour)], -1, 1, -1)
         face = face.astype(bool) & search
     else:
-        # Warm procedure lighting makes the metal wheel highly saturated. The
-        # motion/multi-hole locator has already established the disk geometry,
-        # so use its conservative inner circle rather than rejecting the face.
+        # Warm procedure lighting can make the whole metal face saturated.
+        # In that case require color-independent circular boundary support;
+        # a strongly foreshortened ellipse will not support the Hough circle
+        # around enough angles and is rejected before area ranking.
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if not _disk_has_circular_boundary(gray, disk):
+            return DiskHoleLayout(
+                (), False, "unreliable_disk_plane", None, 0.0,
+                float(plane_axis_ratio),
+            )
         face = (xx - disk.x) ** 2 + (yy - disk.y) ** 2 <= (0.82 * disk.radius) ** 2
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -376,7 +473,9 @@ def measure_disk_holes(
             min_area <= area <= max_area
             and aspect <= 1.8
             and fill >= 0.45
-            and 0.12 <= radial <= 0.78
+            # The five selectable apertures lie on the wheel rim. Its central
+            # punch/hinge opening must never masquerade as the fifth size.
+            and 0.35 <= radial <= 0.78
         ):
             continue
         holes.append(Hole(x=x, y=y, radius=math.sqrt(area / math.pi)))
@@ -385,10 +484,25 @@ def measure_disk_holes(
     if len(holes) < min_holes:
         return DiskHoleLayout(
             tuple(holes), False, "insufficient_spatially_distinct_holes", None, 0.0,
+            float(plane_axis_ratio),
         )
-    if len(holes) != expected_hole_count:
+    if expected_hole_count == 5:
+        selected_indices = _select_consecutive_hole_arc(holes, center, disk.radius)
+        if selected_indices is None:
+            reason = (
+                "unexpected_hole_count"
+                if len(holes) != expected_hole_count
+                else "insufficient_spatially_distinct_holes"
+            )
+            return DiskHoleLayout(
+                tuple(holes), False, reason, None, 0.0, float(plane_axis_ratio),
+            )
+        holes = [holes[index] for index in selected_indices]
+        angles = [angles[index] for index in selected_indices]
+    elif len(holes) != expected_hole_count:
         return DiskHoleLayout(
             tuple(holes), False, "unexpected_hole_count", None, 0.0,
+            float(plane_axis_ratio),
         )
     ordered_angles = sorted(angles)
     gaps = [
@@ -398,21 +512,249 @@ def measure_disk_holes(
     angular_coverage = 360.0 - max(gaps)
     # This punch exposes its five sizes along a partial arc; requiring holes
     # around most of a full circle rejects the real, unobstructed wheel.
-    if angular_coverage < 100.0:
+    if angular_coverage < 20.0 * (len(holes) - 1):
         return DiskHoleLayout(
             tuple(holes), False, "insufficient_spatially_distinct_holes", None, 0.0,
+            float(plane_axis_ratio),
         )
     radii = sorted((hole.radius for hole in holes), reverse=True)
     min_gap = max(0.35, 0.05 * radii[0])
-    selected = second_largest_hole(
-        holes, layout_reliable=True, min_radius_gap=min_gap,
-    )
+    if expected_hole_count == 5:
+        ordered_selection = _second_largest_on_monotonic_arc(holes)
+        selected = None if ordered_selection is None else ordered_selection[0]
+        confidence = 0.0 if ordered_selection is None else ordered_selection[1]
+    else:
+        selected = second_largest_hole(
+            holes, layout_reliable=True, min_radius_gap=min_gap,
+        )
+        confidence = (
+            0.0
+            if selected is None
+            else min(radii[0] - radii[1], radii[1] - radii[2]) / radii[0]
+        )
     if selected is None:
-        return DiskHoleLayout(tuple(holes), False, "ambiguous_hole_ranking", None, 0.0)
-    confidence = min(radii[0] - radii[1], radii[1] - radii[2]) / radii[0]
+        return DiskHoleLayout(
+            tuple(holes), False, "ambiguous_hole_ranking", None, 0.0,
+            float(plane_axis_ratio),
+        )
     return DiskHoleLayout(
         tuple(holes), True, "criteria_satisfied", selected, float(confidence),
+        float(plane_axis_ratio),
     )
+
+
+def _second_largest_on_monotonic_arc(
+    holes: Sequence[Hole],
+) -> tuple[int, float] | None:
+    """Use the punch wheel's monotonic size order when pixels quantize a tie."""
+    order = monotonic_arc_size_order(holes)
+    if order is None:
+        return None
+    largest = holes[order[0]].radius
+    smallest = holes[order[-1]].radius
+    return order[1], float((largest - smallest) / largest)
+
+
+def monotonic_arc_size_order(holes: Sequence[Hole]) -> tuple[int, ...] | None:
+    """Order visible punch holes from the large end to the small end."""
+    if len(holes) < 3:
+        return None
+    points = np.array([[hole.x, hole.y] for hole in holes], dtype=np.float64)
+    design = np.column_stack((2.0 * points, np.ones(len(holes))))
+    target = np.sum(points * points, axis=1)
+    solution, _residuals, rank, _singular = np.linalg.lstsq(
+        design, target, rcond=None,
+    )
+    if rank < 3:
+        return None
+    fitted_center = (float(solution[0]), float(solution[1]))
+    angular = sorted(
+        (
+            math.degrees(
+                math.atan2(
+                    hole.y - fitted_center[1], hole.x - fitted_center[0],
+                ),
+            ) % 360.0,
+            index,
+        )
+        for index, hole in enumerate(holes)
+    )
+    gaps = [
+        (angular[(position + 1) % len(angular)][0] - angular[position][0]) % 360.0
+        for position in range(len(angular))
+    ]
+    outside = max(range(len(gaps)), key=lambda position: gaps[position])
+    order = [
+        angular[(outside + 1 + offset) % len(angular)][1]
+        for offset in range(len(angular))
+    ]
+    if holes[order[0]].radius < holes[order[-1]].radius:
+        order.reverse()
+    largest = holes[order[0]].radius
+    smallest = holes[order[-1]].radius
+    tolerance = max(0.35, 0.08 * largest)
+    if largest - smallest < tolerance:
+        return None
+    if any(
+        holes[later].radius > holes[earlier].radius + tolerance
+        for earlier, later in pairwise(order)
+    ):
+        return None
+    return tuple(order)
+
+
+def _select_consecutive_hole_arc(
+    holes: Sequence[Hole],
+    center: tuple[float, float],
+    disk_radius: float,
+) -> tuple[int, ...] | None:
+    """Return the longest reliable 3--5 hole annular arc."""
+    if len(holes) < 3:
+        return None
+    radial_by_index = {
+        index: math.dist((hole.x, hole.y), center) / disk_radius
+        for index, hole in enumerate(holes)
+    }
+    # Selectable apertures occupy the outer wheel band. Bounding the proposal
+    # pool prevents reflective texture from creating a combinatorial search.
+    candidate_indices = sorted(
+        radial_by_index,
+        key=lambda index: abs(radial_by_index[index] - 0.62),
+    )[:12]
+    angular_indices = sorted(
+        candidate_indices,
+        key=lambda index: math.atan2(
+            holes[index].y - center[1], holes[index].x - center[0],
+        ),
+    )
+    for visible_count in range(min(5, len(candidate_indices)), 2, -1):
+        best: tuple[float, tuple[int, ...]] | None = None
+        for indices in _local_angular_combinations(
+            angular_indices, visible_count, maximum_skips=2,
+        ):
+            points = np.array(
+                [[holes[index].x, holes[index].y] for index in indices],
+                dtype=np.float64,
+            )
+            design = np.column_stack((2.0 * points, np.ones(visible_count)))
+            target = np.sum(points * points, axis=1)
+            solution, _residuals, rank, _singular = np.linalg.lstsq(
+                design, target, rcond=None,
+            )
+            if rank < 3:
+                continue
+            fitted_center = (float(solution[0]), float(solution[1]))
+            fitted_radial = np.linalg.norm(
+                points - np.asarray(fitted_center), axis=1,
+            )
+            ring_radius = float(np.mean(fitted_radial))
+            ring_ratio = ring_radius / disk_radius
+            center_shift = math.dist(fitted_center, center) / disk_radius
+            radial_cv = float(np.std(fitted_radial) / max(1.0, ring_radius))
+            if (
+                not 0.35 <= ring_ratio <= 0.78
+                or center_shift > 0.45
+                or radial_cv > 0.12
+            ):
+                continue
+
+            ordered = sorted(
+                math.degrees(
+                    math.atan2(
+                        holes[index].y - fitted_center[1],
+                        holes[index].x - fitted_center[0],
+                    ),
+                ) % 360.0
+                for index in indices
+            )
+            circular_gaps = [
+                (
+                    ordered[(position + 1) % visible_count]
+                    - ordered[position]
+                ) % 360.0
+                for position in range(visible_count)
+            ]
+            outside_position = max(
+                range(visible_count), key=lambda position: circular_gaps[position],
+            )
+            coverage = 360.0 - circular_gaps[outside_position]
+            adjacent_gaps = [
+                gap for position, gap in enumerate(circular_gaps)
+                if position != outside_position
+            ]
+            if not (
+                15.0 * (visible_count - 1)
+                <= coverage
+                <= 55.0 * (visible_count - 1)
+            ) or min(adjacent_gaps) < 10.0:
+                continue
+            mean_gap = sum(adjacent_gaps) / len(adjacent_gaps)
+            gap_cv = math.sqrt(
+                sum((gap - mean_gap) ** 2 for gap in adjacent_gaps)
+                / len(adjacent_gaps)
+            ) / mean_gap
+            if gap_cv > 0.35 or max(adjacent_gaps) / min(adjacent_gaps) > 2.0:
+                continue
+
+            expected_coverage = 30.0 * (visible_count - 1)
+            score = (
+                radial_cv
+                + 0.35 * gap_cv
+                + abs(coverage - expected_coverage) / 1200.0
+                + 0.25 * abs(ring_ratio - 0.62)
+                + 0.10 * center_shift
+            )
+            candidate = (score, tuple(indices))
+            if best is None or candidate < best:
+                best = candidate
+        if best is not None:
+            return best[1]
+    return None
+
+
+def _local_angular_combinations(
+    angular_indices: Sequence[int],
+    visible_count: int,
+    *,
+    maximum_skips: int,
+) -> tuple[tuple[int, ...], ...]:
+    """Enumerate cyclic local arcs while allowing a few interleaved decoys."""
+    count = len(angular_indices)
+    if not 3 <= visible_count <= count or maximum_skips < 0:
+        return ()
+    window_size = min(count, visible_count + maximum_skips)
+    proposals: set[tuple[int, ...]] = set()
+    for start in range(count):
+        window = tuple(
+            angular_indices[(start + offset) % count]
+            for offset in range(window_size)
+        )
+        for proposal in combinations(window, visible_count):
+            proposals.add(tuple(sorted(proposal)))
+    return tuple(sorted(proposals))
+
+
+def _disk_has_circular_boundary(gray: np.ndarray, disk: MovingDisk) -> bool:
+    gradient = cv2.magnitude(
+        cv2.Sobel(gray, cv2.CV_32F, 1, 0),
+        cv2.Sobel(gray, cv2.CV_32F, 0, 1),
+    )
+    height, width = gray.shape
+    radial_tolerance = max(3, round(0.12 * disk.radius))
+    supported = 0
+    total = 120
+    for angle in np.linspace(0.0, 2.0 * math.pi, total, endpoint=False):
+        cosine = math.cos(float(angle))
+        sine = math.sin(float(angle))
+        strongest = 0.0
+        for offset in range(-radial_tolerance, radial_tolerance + 1):
+            radius = disk.radius + offset
+            x = round(disk.x + radius * cosine)
+            y = round(disk.y + radius * sine)
+            if 0 <= x < width and 0 <= y < height:
+                strongest = max(strongest, float(gradient[y, x]))
+        supported += strongest >= 35.0
+    return supported / total >= 0.60
 
 
 def locate_disk_layout_near(
@@ -427,11 +769,15 @@ def locate_disk_layout_near(
     if frame.ndim != 3 or frame.shape[2] != 3 or max_center_shift_radii <= 0:
         raise ValueError("BGR frame and positive tracking tolerance are required")
     height, width = frame.shape[:2]
-    extent = round(reference.radius * (max_center_shift_radii + 1.8))
-    x1 = max(0, round(reference.x) - extent)
-    x2 = min(width, round(reference.x) + extent + 1)
-    y1 = max(0, round(reference.y) - extent)
-    y2 = min(height, round(reference.y) + extent + 1)
+    extent = math.ceil(
+        reference.radius * (max_center_shift_radii + 1.8) / 32.0
+    ) * 32
+    # Quantized crop bounds keep Hough proposals stable when the coarse anchor
+    # jitters by a few pixels between adjacent source frames.
+    x1 = max(0, math.floor((reference.x - extent) / 32.0) * 32)
+    x2 = min(width, math.ceil((reference.x + extent + 1) / 32.0) * 32)
+    y1 = max(0, math.floor((reference.y - extent) / 32.0) * 32)
+    y2 = min(height, math.ceil((reference.y + extent + 1) / 32.0) * 32)
     crop = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
     circles = cv2.HoughCircles(
         cv2.medianBlur(crop, 7),
@@ -446,7 +792,15 @@ def locate_disk_layout_near(
     if circles is None:
         return None
     candidates: list[tuple[float, MovingDisk, DiskHoleLayout]] = []
-    for local_x, local_y, radius in np.round(circles[0]).astype(int):
+    proposals = list(np.round(circles[0]).astype(int))
+    proposals.sort(key=lambda item: (
+        math.dist(
+            (float(item[0] + x1), float(item[1] + y1)),
+            (reference.x, reference.y),
+        ) / reference.radius
+        + abs(math.log(max(1.0, float(item[2])) / reference.radius))
+    ))
+    for local_x, local_y, radius in proposals[:6]:
         x = float(local_x + x1)
         y = float(local_y + y1)
         border_clearance = min(
@@ -474,8 +828,38 @@ def locate_disk_layout_near(
             motion_ratio=reference.motion_ratio,
             surface_contrast=_disk_surface_contrast(frame, x, y, float(radius)),
         )
-        layout = measure_disk_holes(
-            frame, disk, expected_hole_count=expected_hole_count,
+        # Hole segmentation needs only the wheel and a narrow boundary ring.
+        # Cropping before HSV, Sobel and connected components avoids repeating
+        # full-HD processing for every Hough candidate.
+        margin = math.ceil(1.25 * radius) + 2
+        local_x1 = max(0, round(x) - margin)
+        local_x2 = min(width, round(x) + margin + 1)
+        local_y1 = max(0, round(y) - margin)
+        local_y2 = min(height, round(y) + margin + 1)
+        local_disk = MovingDisk(
+            frame_position=0,
+            x=x - local_x1,
+            y=y - local_y1,
+            radius=float(radius),
+            hole_count=expected_hole_count,
+            motion_ratio=reference.motion_ratio,
+            surface_contrast=disk.surface_contrast,
+        )
+        local_layout = measure_disk_holes(
+            frame[local_y1:local_y2, local_x1:local_x2],
+            local_disk,
+            expected_hole_count=expected_hole_count,
+        )
+        layout = DiskHoleLayout(
+            holes=tuple(
+                Hole(hole.x + local_x1, hole.y + local_y1, hole.radius)
+                for hole in local_layout.holes
+            ),
+            reliable=local_layout.reliable,
+            reason=local_layout.reason,
+            second_largest_index=local_layout.second_largest_index,
+            ranking_confidence=local_layout.ranking_confidence,
+            plane_axis_ratio=local_layout.plane_axis_ratio,
         )
         if not layout.reliable:
             continue

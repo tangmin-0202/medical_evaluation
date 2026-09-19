@@ -87,13 +87,23 @@ def sample_frames(
         sample_interval = 1.0 / sample_fps
         time_sec = start_sec
         previous_frame_index = -1
+        next_decode_index = -1
         while time_sec < end_sec - 1e-9:
             frame_index = min(round(time_sec * metadata.fps), metadata.frame_count - 1)
             if frame_index != previous_frame_index:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                if next_decode_index < 0:
+                    # Seek once per window. Repeated random seeks on compressed
+                    # video re-decode the same GOP for every dense CP02 frame.
+                    capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                    next_decode_index = frame_index
+                while next_decode_index < frame_index:
+                    if not capture.grab():
+                        raise ValueError(f"failed to skip frame {next_decode_index}")
+                    next_decode_index += 1
                 success, image = capture.read()
                 if not success or image is None:
                     raise ValueError(f"failed to decode frame {frame_index}")
+                next_decode_index = frame_index + 1
                 yield SampledFrame(
                     time_sec=frame_index / metadata.fps,
                     frame_index=frame_index,

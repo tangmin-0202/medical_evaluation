@@ -19,6 +19,10 @@ class FakeExtractor:
         self.fail_once_with_oom = False
         self.calls: list[tuple[str, float, int]] = []
 
+    @property
+    def model_version(self) -> str:
+        return "fake-cp02-cp09-cp10-cp11-v1"
+
     def extract(
         self,
         _video_path: Path,
@@ -213,12 +217,26 @@ def test_pipeline_can_enable_cp02_as_fourth_real_decision(tmp_path: Path) -> Non
     assert report.checkpoints[1].reason_code == "criteria_satisfied"
     assert report.summary.evaluated_count == 4
     assert report.summary.final_score is None
+    assert report.audit.model_versions == {
+        "pipeline": "vertical-cp02-cp09-cp10-cp11",
+        "extractor": "fake-cp02-cp09-cp10-cp11-v1",
+    }
     assert [call[0] for call in extractor.calls] == [
         "cp_02",
         "cp_09",
         "cp_10",
         "cp_11",
     ]
+
+
+def test_pipeline_audit_uses_extractor_created_by_factory(tmp_path: Path) -> None:
+    pipeline, extractor, _ = make_pipeline(tmp_path)
+    pipeline.extractor = None
+    pipeline.extractor_factory = lambda _job: extractor
+
+    report = pipeline.run(make_job(tmp_path))
+
+    assert report.audit.model_versions["extractor"] == extractor.model_version
 
 
 def test_pipeline_retries_oom_once_with_degraded_sampling(tmp_path: Path) -> None:

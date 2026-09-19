@@ -74,6 +74,19 @@ def test_cp11_uses_final_coverage_objects_and_thresholds() -> None:
     }
 
 
+def test_cp02_uses_final_prepunch_hole_state_without_cleanup_tracking() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp02 = next(cp for cp in rubric.checkpoints if cp.id == "cp_02")
+
+    assert cp02.required_objects == ["punch_disk", "punch_hole", "green_residue"]
+    criteria = "".join(cp02.criteria)
+    assert "进入 CP03 前" in criteria
+    assert "绿色" in criteria
+    assert "清理动作" not in criteria
+
+
 def test_cp10_defines_temporal_contact_threshold() -> None:
     from medical_evaluation.rubric import load_rubric
 

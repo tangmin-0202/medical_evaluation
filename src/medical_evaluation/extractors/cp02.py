@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,8 +16,9 @@ from medical_evaluation.features.cp02_punch import (
     aligned_hole_opposite_handle,
     locate_disk_layout_near,
     locate_last_moving_multihole_disk,
+    locate_moving_multihole_disk,
+    monotonic_arc_size_order,
     prepunch_scan_range,
-    probe_contacts_hole,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
@@ -36,13 +38,20 @@ class _HoleFrame:
 
 
 class Cp02FeatureExtractor:
-    coarse_fps = 2.0
-    # The five holes are only a few pixels wide. At 10 FPS a stable-looking
-    # frame can land between two clear source frames, so sample near the native
-    # 25 FPS rate and let the reliability gates discard blurred frames.
-    minimum_dense_fps = 50.0
+    locator_fps = 5.0
+    tail_search_chunk_sec = 5.0
+    coarse_locator_width = 960
+    coarse_chunk_frames = 8
+    # Half-native sampling on the 25 FPS source covers alternating source
+    # frames while avoiding repeated Hough work on every frame in each motion
+    # episode. Reliability gates still require repeated clear observations.
+    minimum_dense_fps = 12.5
+    final_refine_fps = 50.0
+    final_refine_lookback_sec = 1.0
     dense_radius_sec = 1.2
-    maximum_stable_gap_sec = 0.35
+    maximum_stable_gap_sec = 0.8
+    # Compatibility for the old, now-unused stable-pair helper.
+    maximum_prepunch_event_gap_sec = 4.0
     minimum_contact_visibility_gap_sec = 0.5
     maximum_exit_gap_sec = 0.4
     residue_absent_ratio = 0.10
@@ -54,7 +63,7 @@ class Cp02FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return "opencv-cp02-five-hole-v1"
+        return "opencv-cp02-five-hole-v2"
 
     def extract(
         self,
@@ -70,45 +79,88 @@ class Cp02FeatureExtractor:
         if dense_fps <= 0 or analysis_width <= 0:
             raise ValueError("analysis settings must be positive")
         scan_range = self._scan_range(time_range)
-        coarse = list(sample_frames(
-            video_path,
-            start_sec=scan_range.start_sec,
-            end_sec=scan_range.end_sec,
-            sample_fps=self.coarse_fps,
-        ))
-        empty = self._empty_features(stage_scan_reliable=bool(coarse))
-        if len(coarse) < 3:
-            return ExtractedEvidence(features=empty, evidence=[])
-        anchor = locate_last_moving_multihole_disk(
-            [item.image_bgr for item in coarse],
-        )
-        if anchor is None:
-            empty["punch_action_observed"] = False
-            return ExtractedEvidence(features=empty, evidence=[])
+        empty = self._empty_features(stage_scan_reliable=False)
+        visibility_seed: _HoleFrame | None = None
+        latest_frames: list[SampledFrame] = []
+        for window in self._tail_search_windows(scan_range):
+            chunk = list(sample_frames(
+                video_path,
+                start_sec=window.start_sec,
+                end_sec=window.end_sec,
+                sample_fps=self.locator_fps,
+            ))
+            if not latest_frames:
+                latest_frames = chunk
+            if len(chunk) < 3:
+                continue
+            source_width = chunk[0].image_bgr.shape[1]
+            locator_scale = min(1.0, self.coarse_locator_width / source_width)
+            locator_frames = [
+                cv2.resize(
+                    item.image_bgr, None, fx=locator_scale, fy=locator_scale,
+                    interpolation=cv2.INTER_AREA,
+                )
+                if locator_scale < 1.0 else item.image_bgr
+                for item in chunk
+            ]
+            locator_anchor = locate_last_moving_multihole_disk(locator_frames)
+            if locator_anchor is None:
+                continue
+            anchor = self._rescale_disk(locator_anchor, locator_scale)
+            visible = self._measure_dense(chunk, anchor)
+            if visible:
+                visibility_seed = visible[-1]
+                break
 
-        anchor_time = coarse[anchor.frame_position].time_sec
-        dense_start = max(scan_range.start_sec, anchor_time - self.dense_radius_sec)
-        dense_end = min(scan_range.end_sec, anchor_time + self.dense_radius_sec)
-        dense = list(sample_frames(
-            video_path,
-            start_sec=dense_start,
-            end_sec=dense_end,
-            sample_fps=max(dense_fps, self.minimum_dense_fps),
-        ))
-        observations = self._measure_dense(dense, anchor)
-        stable = self._final_prepunch_pair(observations)
-        if stable is None:
+        if visibility_seed is None:
+            self._write_table([], reason="automatic_disk_not_reliable")
+            return ExtractedEvidence(
+                features=empty,
+                evidence=self._write_diagnostic_frames(
+                    latest_frames, rule="automatic_disk_not_reliable",
+                ),
+            )
+
+        selection_boundary_time_sec = min(
+            scan_range.end_sec,
+            visibility_seed.frame.time_sec + 1.0 / self.locator_fps,
+        )
+        refine_start = max(
+            scan_range.start_sec,
+            selection_boundary_time_sec - self.final_refine_lookback_sec,
+        )
+        observations = self._measure_dense(
+            sample_frames(
+                video_path,
+                start_sec=refine_start,
+                end_sec=selection_boundary_time_sec,
+                sample_fps=self.final_refine_fps,
+            ),
+            visibility_seed.disk,
+        )
+        selected = self._last_clear_cp02_frame(
+            observations, boundary_time_sec=selection_boundary_time_sec,
+        )
+        if selected is None:
             features = dict(empty)
             features.update({
-                "punch_action_observed": True,
+                "selection_boundary_time_sec": selection_boundary_time_sec,
+                "last_visible_time_sec": visibility_seed.frame.time_sec,
                 "hole_valid_frame_count": float(len(observations)),
             })
-            self._write_table(observations, reason="final_selection_not_stable")
-            return ExtractedEvidence(features=features, evidence=[])
+            self._write_table(
+                observations, reason="final_selection_not_stable",
+                selection_boundary_time_sec=selection_boundary_time_sec,
+                last_visible_time_sec=visibility_seed.frame.time_sec,
+            )
+            evidence = self._write_unreliable_evidence(observations)
+            if not evidence:
+                evidence = self._write_diagnostic_frames(
+                    latest_frames, rule="no_reliable_hole_observations",
+                )
+            return ExtractedEvidence(features=features, evidence=evidence)
 
-        earlier, last = stable
-        ratios = [last.green_ratio] if last.green_ratio is not None else []
-        median_green = float(np.median(ratios)) if ratios else None
+        median_green = selected.green_ratio
         if median_green is None:
             residue: bool | None = None
         elif median_green <= self.residue_absent_ratio:
@@ -117,36 +169,27 @@ class Cp02FeatureExtractor:
             residue = True
         else:
             residue = None
-        cleanup_contact: bool | None = None
-        residue_after: bool | None = False if residue is False else None
-        cleanup_evidence: tuple[_HoleFrame, ...] = ()
-        if residue is True:
-            cleanup_contact, residue_after, cleanup_evidence = self._cleanup_status(
-                observations, last,
-            )
         features: dict[str, float | bool | None] = {
             "stage_scan_reliable": True,
-            "punch_action_observed": True,
-            "selected_second_largest": last.size_rank == 2,
-            "selected_hole_size_rank": float(last.size_rank),
-            "hole_ranking_confidence": float(min(
-                earlier.layout.ranking_confidence,
-                last.layout.ranking_confidence,
-            )),
+            "selection_boundary_time_sec": selection_boundary_time_sec,
+            "last_visible_time_sec": visibility_seed.frame.time_sec,
+            "selected_second_largest": selected.size_rank == 2,
+            "selected_hole_size_rank": float(selected.size_rank),
+            "hole_ranking_confidence": float(selected.layout.ranking_confidence),
             "hole_valid_frame_count": float(len(observations)),
-            "final_stable_start_sec": float(
-                earlier.frame.time_sec
-                if earlier.size_rank == last.size_rank
-                else last.frame.time_sec
-            ),
-            "final_stable_end_sec": float(last.frame.time_sec),
+            "final_stable_start_sec": float(selected.frame.time_sec),
+            "final_stable_end_sec": float(selected.frame.time_sec),
             "residue_green_ratio": median_green,
             "residue_before": residue,
-            "cleanup_contact_observed": cleanup_contact,
-            "residue_after": residue_after,
+            "cleanup_contact_observed": None,
+            "residue_after": None,
         }
-        evidence = self._write_evidence(stable, cleanup_evidence=cleanup_evidence)
-        self._write_table(observations, reason="criteria_satisfied")
+        evidence = self._write_evidence((selected,))
+        self._write_table(
+            observations, reason="criteria_satisfied",
+            selection_boundary_time_sec=selection_boundary_time_sec,
+            last_visible_time_sec=visibility_seed.frame.time_sec,
+        )
         return ExtractedEvidence(features=features, evidence=evidence)
 
     def _scan_range(self, cp02_range: TimeRange) -> TimeRange:
@@ -156,8 +199,15 @@ class Cp02FeatureExtractor:
         )
         return prepunch_scan_range(cp02_range, cp03) if cp03 is not None else cp02_range
 
+    def _tail_search_windows(self, scan_range: TimeRange) -> Iterable[TimeRange]:
+        end_sec = scan_range.end_sec
+        while end_sec > scan_range.start_sec:
+            start_sec = max(scan_range.start_sec, end_sec - self.tail_search_chunk_sec)
+            yield TimeRange(start_sec=start_sec, end_sec=end_sec)
+            end_sec = start_sec
+
     def _measure_dense(
-        self, frames: list[SampledFrame], anchor: MovingDisk,
+        self, frames: Iterable[SampledFrame], anchor: MovingDisk,
     ) -> list[_HoleFrame]:
         observations: list[_HoleFrame] = []
         for frame in frames:
@@ -168,11 +218,13 @@ class Cp02FeatureExtractor:
             aligned = aligned_hole_opposite_handle(frame.image_bgr, disk, layout.holes)
             if aligned is None or layout.second_largest_index is None:
                 continue
-            order = sorted(
-                range(len(layout.holes)),
-                key=lambda index: layout.holes[index].radius,
-                reverse=True,
-            )
+            order = monotonic_arc_size_order(layout.holes)
+            if order is None:
+                order = tuple(sorted(
+                    range(len(layout.holes)),
+                    key=lambda index: layout.holes[index].radius,
+                    reverse=True,
+                ))
             observations.append(_HoleFrame(
                 frame=frame,
                 disk=disk,
@@ -180,82 +232,150 @@ class Cp02FeatureExtractor:
                 aligned_index=aligned,
                 size_rank=order.index(aligned) + 1,
                 green_ratio=_hole_green_ratio(frame.image_bgr, layout.holes[aligned]),
-                probe_contact=probe_contacts_hole(
-                    frame.image_bgr, layout.holes[aligned],
-                ),
+                probe_contact=False,
             ))
         return observations
 
+    def _candidate_dense_windows(
+        self,
+        coarse: list[SampledFrame],
+        fallback_anchor: MovingDisk,
+        scan_range: TimeRange,
+        *,
+        locator_frames: list[np.ndarray] | None = None,
+        locator_scale: float = 1.0,
+    ) -> list[tuple[TimeRange, MovingDisk]]:
+        """Find every moving-disk episode cheaply, then densify only nearby."""
+        if locator_frames is None:
+            locator_frames = [item.image_bgr for item in coarse]
+        anchors: list[tuple[float, MovingDisk]] = []
+        for start in range(0, len(coarse), self.coarse_chunk_frames):
+            end = min(len(coarse), start + self.coarse_chunk_frames)
+            if end - start < 3:
+                continue
+            located = locate_moving_multihole_disk(
+                locator_frames[start:end],
+            )
+            if located is None:
+                continue
+            absolute_position = start + located.frame_position
+            if absolute_position >= len(coarse):
+                continue
+            anchors.append((
+                coarse[absolute_position].time_sec,
+                self._rescale_disk(located, locator_scale),
+            ))
+        fallback_position = min(
+            max(0, fallback_anchor.frame_position), len(coarse) - 1,
+        )
+        anchors.append((coarse[fallback_position].time_sec, fallback_anchor))
+        anchors.sort(key=lambda item: item[0])
+
+        windows: list[tuple[TimeRange, MovingDisk]] = []
+        for time_sec, candidate in anchors:
+            start_sec = max(scan_range.start_sec, time_sec - self.dense_radius_sec)
+            end_sec = min(scan_range.end_sec, time_sec + self.dense_radius_sec)
+            if end_sec <= start_sec:
+                continue
+            if windows and start_sec <= windows[-1][0].end_sec:
+                prior, _prior_anchor = windows[-1]
+                windows[-1] = (
+                    TimeRange(
+                        start_sec=prior.start_sec,
+                        end_sec=max(prior.end_sec, end_sec),
+                    ),
+                    candidate,
+                )
+            else:
+                windows.append((TimeRange(start_sec=start_sec, end_sec=end_sec), candidate))
+        return windows
+
+    @staticmethod
+    def _rescale_disk(disk: MovingDisk, scale: float) -> MovingDisk:
+        if not 0 < scale <= 1:
+            raise ValueError("locator scale must be in (0, 1]")
+        return MovingDisk(
+            frame_position=disk.frame_position,
+            x=disk.x / scale,
+            y=disk.y / scale,
+            # Downsampling makes the coarse Hough refinement lock onto the
+            # inner plate edge. Inflate only the tracking search reference;
+            # dense frames re-estimate the actual plate before measuring holes.
+            radius=(disk.radius / scale) * (1.5 if scale < 1.0 else 1.0),
+            hole_count=disk.hole_count,
+            motion_ratio=disk.motion_ratio,
+            surface_contrast=disk.surface_contrast,
+        )
+
     def _final_prepunch_pair(
-        self, observations: list[_HoleFrame],
-    ) -> tuple[_HoleFrame, _HoleFrame] | None:
-        """Return the last adjustment immediately before the contact/occlusion gap.
-
-        The die plate can reappear after punching.  The longest visibility gap
-        separates that post-contact view from the pre-contact adjustment.  A
-        rank change in the final two clear frames is allowed: it records the
-        wheel reaching its final hole immediately before contact, rather than
-        letting the earlier transient hole win.
-        """
-        if len(observations) < 2:
-            return None
-        gaps = [
-            observations[index + 1].frame.time_sec - observations[index].frame.time_sec
-            for index in range(len(observations) - 1)
-        ]
-        largest_gap = max(gaps)
-        if largest_gap >= self.minimum_contact_visibility_gap_sec:
-            split = gaps.index(largest_gap) + 1
-            before_contact = observations[:split]
-        else:
-            before_contact = observations
-        if len(before_contact) < 2:
-            return None
-        earlier, last = before_contact[-2:]
-        if last.frame.time_sec - earlier.frame.time_sec > self.maximum_stable_gap_sec:
-            return None
-        return earlier, last
-
-    def _cleanup_status(
         self,
         observations: list[_HoleFrame],
-        selected: _HoleFrame,
-    ) -> tuple[bool | None, bool | None, tuple[_HoleFrame, ...]]:
-        same_hole = [
-            item
-            for item in observations
-            if item.frame.time_sec > selected.frame.time_sec
-            and item.size_rank == selected.size_rank
+        *,
+        event_time_sec: float | None = None,
+    ) -> tuple[_HoleFrame, _HoleFrame] | None:
+        """Return the last repeated stable selection before a verified event."""
+        if event_time_sec is None:
+            return None
+        before_contact = [
+            item for item in observations if item.frame.time_sec < event_time_sec
         ]
-        if not same_hole:
-            return None, None, ()
-        contact_index = next(
-            (index for index, item in enumerate(same_hole) if item.probe_contact),
-            None,
-        )
-        if contact_index is None:
-            return False, None, (same_hole[-1],)
-        contact_frame = same_hole[contact_index]
-        after = [
-            item for item in same_hole[contact_index + 1:] if item.green_ratio is not None
-        ]
-        if not after:
-            return True, None, (contact_frame,)
-        result_frame = after[-1]
-        assert result_frame.green_ratio is not None
-        if result_frame.green_ratio <= self.residue_absent_ratio:
-            residue_after: bool | None = False
-        elif result_frame.green_ratio >= self.residue_present_ratio:
-            residue_after = True
-        else:
-            residue_after = None
-        return True, residue_after, (contact_frame, result_frame)
+        if len(before_contact) < 2:
+            return None
+        if event_time_sec - before_contact[-1].frame.time_sec > self.maximum_prepunch_event_gap_sec:
+            return None
+        for later_index in range(len(before_contact) - 1, 0, -1):
+            later = before_contact[later_index]
+            for earlier in reversed(before_contact[:later_index]):
+                elapsed = later.frame.time_sec - earlier.frame.time_sec
+                if elapsed > self.maximum_stable_gap_sec:
+                    break
+                if elapsed >= 0.04 and self._same_stable_selection(earlier, later):
+                    return earlier, later
+        return None
+
+    def _last_clear_cp02_frame(
+        self,
+        observations: list[_HoleFrame],
+        *,
+        boundary_time_sec: float | None,
+    ) -> _HoleFrame | None:
+        """Return the closest clear hole view before CP03 starts."""
+        if boundary_time_sec is None:
+            return None
+        for item in reversed(observations):
+            if item.frame.time_sec >= boundary_time_sec:
+                continue
+            if item.green_ratio is not None:
+                return item
+        return None
+
+    def _same_stable_selection(self, earlier: _HoleFrame, later: _HoleFrame) -> bool:
+        if earlier.size_rank != later.size_rank:
+            return False
+        elapsed = later.frame.time_sec - earlier.frame.time_sec
+        if not 0 < elapsed <= self.maximum_stable_gap_sec:
+            return False
+        scale = max(1.0, earlier.disk.radius, later.disk.radius)
+        center_shift = float(np.hypot(
+            later.disk.x - earlier.disk.x, later.disk.y - earlier.disk.y,
+        ))
+        if center_shift > 0.35 * scale:
+            return False
+        if abs(later.disk.radius - earlier.disk.radius) > 0.35 * scale:
+            return False
+        earlier_hole = earlier.layout.holes[earlier.aligned_index]
+        later_hole = later.layout.holes[later.aligned_index]
+        hole_shift = float(np.hypot(
+            later_hole.x - earlier_hole.x, later_hole.y - earlier_hole.y,
+        ))
+        return hole_shift <= 0.65 * scale
 
     @staticmethod
     def _empty_features(*, stage_scan_reliable: bool) -> dict[str, float | bool | None]:
         return {
             "stage_scan_reliable": stage_scan_reliable,
-            "punch_action_observed": None,
+            "selection_boundary_time_sec": None,
+            "last_visible_time_sec": None,
             "selected_second_largest": None,
             "selected_hole_size_rank": None,
             "hole_ranking_confidence": None,
@@ -270,15 +390,10 @@ class Cp02FeatureExtractor:
 
     def _write_evidence(
         self,
-        stable: tuple[_HoleFrame, _HoleFrame],
-        *,
-        cleanup_evidence: tuple[_HoleFrame, ...] = (),
+        stable: tuple[_HoleFrame, ...],
     ) -> list[EvidenceItem]:
         evidence = []
         items = list(stable)
-        for item in cleanup_evidence:
-            if all(item.frame.frame_index != prior.frame.frame_index for prior in items):
-                items.append(item)
         for position, item in enumerate(items):
             overlay = item.frame.image_bgr.copy()
             cv2.circle(
@@ -288,11 +403,13 @@ class Cp02FeatureExtractor:
                 (0, 255, 255),
                 3,
             )
-            order = sorted(
-                range(len(item.layout.holes)),
-                key=lambda index: item.layout.holes[index].radius,
-                reverse=True,
-            )
+            order = monotonic_arc_size_order(item.layout.holes)
+            if order is None:
+                order = tuple(sorted(
+                    range(len(item.layout.holes)),
+                    key=lambda index: item.layout.holes[index].radius,
+                    reverse=True,
+                ))
             hole_mask = np.zeros(overlay.shape[:2], np.uint8)
             for index, hole in enumerate(item.layout.holes):
                 rank = order.index(index) + 1
@@ -331,22 +448,71 @@ class Cp02FeatureExtractor:
                 time_sec=item.frame.time_sec,
                 overlay_path=relative,
                 rule=(
-                    "preceding_punch_disk_adjustment"
+                    "earlier_cp02_disk_adjustment"
                     if position < len(stable) - 1
-                    else "final_prepunch_selected_hole"
-                    if position == len(stable) - 1
-                    else "same_hole_cleanup_contact"
-                    if cleanup_evidence
-                    and item.frame.frame_index == cleanup_evidence[0].frame.frame_index
-                    else "same_hole_cleanup_result"
+                    else "final_cp02_selected_hole"
                 ),
             ))
         return evidence
 
-    def _write_table(self, observations: list[_HoleFrame], *, reason: str) -> None:
+    def _write_unreliable_evidence(
+        self, observations: list[_HoleFrame],
+    ) -> list[EvidenceItem]:
+        if not observations:
+            return []
+        items = observations[-3:]
+        evidence = self._write_evidence((items[0], items[-1]))
+        return [
+            item.model_copy(update={"rule": "unreliable_hole_selection"})
+            for item in evidence
+        ]
+
+    def _write_diagnostic_frames(
+        self, frames: list[SampledFrame], *, rule: str,
+    ) -> list[EvidenceItem]:
+        evidence: list[EvidenceItem] = []
+        if not frames:
+            return evidence
+        indices = sorted({0, len(frames) // 2, len(frames) - 1})
+        for index in indices:
+            item = frames[index]
+            overlay = item.image_bgr.copy()
+            cv2.putText(
+                overlay, rule, (12, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                0.65, (0, 0, 255), 2, cv2.LINE_AA,
+            )
+            relative = f"cp_02/overlays/{item.frame_index:08d}.jpg"
+            output = safe_child(self.evidence_root, relative)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(output), overlay):
+                raise OSError(f"could not write CP02 diagnostic evidence: {output}")
+            raw = safe_child(
+                self.evidence_root, f"cp_02/raw/{item.frame_index:08d}.jpg",
+            )
+            raw.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(raw), item.image_bgr):
+                raise OSError(f"could not write CP02 raw evidence: {raw}")
+            evidence.append(EvidenceItem(
+                time_sec=item.time_sec, overlay_path=relative, rule=rule,
+            ))
+        return evidence
+
+    def _write_table(
+        self,
+        observations: list[_HoleFrame],
+        *,
+        reason: str,
+        selection_boundary_time_sec: float | None = None,
+        last_visible_time_sec: float | None = None,
+    ) -> None:
         output = safe_child(self.evidence_root, "cp_02/hole_observations.json")
         atomic_write_json(output, {
             "reason": reason,
+            "selection_boundary": {
+                "time_sec": selection_boundary_time_sec,
+                "last_visible_time_sec": last_visible_time_sec,
+                "reason": "last_reliable_cp02_disk",
+            },
             "frames": [
                 {
                     "frame_index": item.frame.frame_index,
@@ -361,6 +527,7 @@ class Cp02FeatureExtractor:
                         for hole in item.layout.holes
                     ],
                     "ranking_confidence": item.layout.ranking_confidence,
+                    "plane_axis_ratio": item.layout.plane_axis_ratio,
                     "aligned_index": item.aligned_index,
                     "selected_size_rank": item.size_rank,
                     "green_ratio": item.green_ratio,
@@ -387,4 +554,25 @@ def _hole_green_ratio(frame_bgr: np.ndarray, hole: Hole) -> float | None:
     )
     if not interior.any():
         return None
-    return float(np.mean(green[interior]))
+    ratio = float(np.mean(green[interior]))
+    if ratio > 0:
+        return ratio
+    # An empty punch aperture is visibly dark. A bright, non-green interior is
+    # more likely glove/metal occlusion, so it cannot prove residue absence.
+    value = hsv[..., 2]
+    interior_value = float(np.median(value[interior]))
+    if interior_value > 90.0:
+        return None
+    radius_sq = (xx - hole.x) ** 2 + (yy - hole.y) ** 2
+    rim = (
+        (radius_sq >= (1.05 * hole.radius) ** 2)
+        & (radius_sq <= (1.35 * hole.radius) ** 2)
+    )
+    if not rim.any():
+        return None
+    rim_values = value[rim]
+    if float(np.median(rim_values)) - interior_value < 35.0:
+        return None
+    if float(np.mean(rim_values <= interior_value + 20.0)) > 0.08:
+        return None
+    return 0.0

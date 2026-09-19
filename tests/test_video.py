@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from tests.fixtures.make_test_video import make_test_video
@@ -18,6 +19,20 @@ def test_probe_and_sparse_sampling(tmp_path: Path) -> None:
     assert len(frames) == 4
     assert [round(item.time_sec, 1) for item in frames] == [0.0, 0.5, 1.0, 1.5]
     assert all(item.image_bgr.shape == (120, 160, 3) for item in frames)
+
+
+def test_sampling_matches_source_frames_across_nonzero_dense_window(tmp_path: Path) -> None:
+    from medical_evaluation.video import read_frame, sample_frames
+
+    path = make_test_video(tmp_path / "sample.mp4", fps=10, seconds=3, size=(160, 120))
+    frames = list(sample_frames(path, start_sec=0.65, end_sec=1.55, sample_fps=20))
+
+    assert frames
+    assert [item.frame_index for item in frames] == sorted({item.frame_index for item in frames})
+    assert all(
+        np.array_equal(item.image_bgr, read_frame(path, item.frame_index))
+        for item in frames
+    )
 
 
 def test_probe_rejects_unsupported_extension(tmp_path: Path) -> None:
