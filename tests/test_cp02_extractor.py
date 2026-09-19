@@ -442,7 +442,7 @@ def test_cp02_tail_windows_move_backward_without_scanning_future_cp03(tmp_path: 
     )._tail_search_windows(TimeRange(start_sec=10.0, end_sec=22.0)))
 
     assert [(item.start_sec, item.end_sec) for item in windows] == [
-        (17.0, 22.0), (12.0, 17.0), (10.0, 12.0),
+        (17.0, 22.0), (13.0, 18.0), (10.0, 14.0),
     ]
 
 

@@ -41,6 +41,7 @@ class Cp02FeatureExtractor:
     locator_fps = 2.0
     visibility_fps = 5.0
     tail_search_chunk_sec = 5.0
+    tail_search_overlap_sec = 1.0
     coarse_locator_width = 960
     coarse_chunk_frames = 8
     # Half-native sampling on the 25 FPS source covers alternating source
@@ -215,7 +216,9 @@ class Cp02FeatureExtractor:
         while end_sec > scan_range.start_sec:
             start_sec = max(scan_range.start_sec, end_sec - self.tail_search_chunk_sec)
             yield TimeRange(start_sec=start_sec, end_sec=end_sec)
-            end_sec = start_sec
+            if start_sec == scan_range.start_sec:
+                break
+            end_sec = start_sec + self.tail_search_overlap_sec
 
     def _measure_dense(
         self,
