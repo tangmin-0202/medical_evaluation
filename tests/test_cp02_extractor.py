@@ -42,7 +42,9 @@ def test_cp02_extractor_uses_last_stable_automatic_hole_rank(monkeypatch, tmp_pa
 
     def frames(_path, *, start_sec, end_sec, sample_fps):
         calls.append((start_sec, end_sec, sample_fps))
-        if sample_fps >= 49.0:
+        if sample_fps <= 2.1:
+            times = (18.0, 18.5, 19.0)
+        elif sample_fps >= 49.0:
             times = (19.15, 19.2)
         else:
             times = (18.8, 18.9, 19.0, 19.1)
@@ -90,7 +92,7 @@ def test_cp02_extractor_uses_last_stable_automatic_hole_rank(monkeypatch, tmp_pa
         (tmp_path / "evidence" / "cp_02" / "hole_observations.json").read_text()
     )
     assert table["selection_boundary"]["last_visible_time_sec"] == 19.1
-    assert calls[0] == (17.0, 22.0, 5.0)
+    assert calls[:2] == [(17.0, 22.0, 2.0), (17.0, 22.0, 5.0)]
     refinement = next(call for call in calls if call[2] >= 50.0)
     assert refinement[:2] == (18.3, 19.3)
 
@@ -378,9 +380,9 @@ def test_cp02_search_starts_from_final_five_seconds(
         dense_fps=5, analysis_width=1280,
     )
 
-    assert calls[0] == (17.0, 22.0, 5.0)
-    assert len(calls) == 2
-    assert calls[1] == (19.4, 20.4, 50.0)
+    assert calls[:2] == [(17.0, 22.0, 2.0), (17.0, 22.0, 5.0)]
+    assert len(calls) == 3
+    assert calls[2] == (19.4, 20.4, 50.0)
     assert result.features["selected_second_largest"] is None
 
 

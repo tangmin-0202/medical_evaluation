@@ -38,7 +38,8 @@ class _HoleFrame:
 
 
 class Cp02FeatureExtractor:
-    locator_fps = 5.0
+    locator_fps = 2.0
+    visibility_fps = 5.0
     tail_search_chunk_sec = 5.0
     coarse_locator_width = 960
     coarse_chunk_frames = 8
@@ -83,17 +84,17 @@ class Cp02FeatureExtractor:
         visibility_seed: _HoleFrame | None = None
         latest_frames: list[SampledFrame] = []
         for window in self._tail_search_windows(scan_range):
-            chunk = list(sample_frames(
+            locator_chunk = list(sample_frames(
                 video_path,
                 start_sec=window.start_sec,
                 end_sec=window.end_sec,
                 sample_fps=self.locator_fps,
             ))
             if not latest_frames:
-                latest_frames = chunk
-            if len(chunk) < 3:
+                latest_frames = locator_chunk
+            if len(locator_chunk) < 3:
                 continue
-            source_width = chunk[0].image_bgr.shape[1]
+            source_width = locator_chunk[0].image_bgr.shape[1]
             locator_scale = min(1.0, self.coarse_locator_width / source_width)
             locator_frames = [
                 cv2.resize(
@@ -101,13 +102,19 @@ class Cp02FeatureExtractor:
                     interpolation=cv2.INTER_AREA,
                 )
                 if locator_scale < 1.0 else item.image_bgr
-                for item in chunk
+                for item in locator_chunk
             ]
             locator_anchor = locate_last_moving_multihole_disk(locator_frames)
             if locator_anchor is None:
                 continue
             anchor = self._rescale_disk(locator_anchor, locator_scale)
-            visible = self._measure_dense(chunk, anchor)
+            visibility_chunk = list(sample_frames(
+                video_path,
+                start_sec=window.start_sec,
+                end_sec=window.end_sec,
+                sample_fps=self.visibility_fps,
+            ))
+            visible = self._measure_dense(visibility_chunk, anchor)
             if visible:
                 visibility_seed = visible[-1]
                 break
@@ -123,7 +130,7 @@ class Cp02FeatureExtractor:
 
         selection_boundary_time_sec = min(
             scan_range.end_sec,
-            visibility_seed.frame.time_sec + 1.0 / self.locator_fps,
+            visibility_seed.frame.time_sec + 1.0 / self.visibility_fps,
         )
         refine_start = max(
             scan_range.start_sec,
