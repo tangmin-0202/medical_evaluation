@@ -191,6 +191,7 @@ CP08_PASSING_FEATURES: dict[str, float | bool | None] = {
     "instrument_shape_reliable": True,
     "instrument_shape_match": True,
     "final_state_observable": True,
+    "rubber_dam_segmentation_conflict": False,
     "rubber_dam_positioned": True,
     "left_wing_complete": True,
     "right_wing_complete": True,
@@ -223,6 +224,14 @@ CP08_PASSING_FEATURES: dict[str, float | bool | None] = {
             {"final_state_observable": False},
             "needs_review",
             "final_state_unobservable",
+        ),
+        (
+            {
+                "rubber_dam_segmentation_conflict": True,
+                "rubber_dam_positioned": None,
+            },
+            "needs_review",
+            "rubber_dam_segmentation_unreliable",
         ),
         (
             {"rubber_dam_positioned": False},
@@ -259,6 +268,33 @@ def test_cp08_uses_ordered_instrument_and_two_hole_state_machine(
 
     assert result.status.value == status
     assert result.reason_code == reason_code
+
+
+def test_cp08_final_unobservable_precedes_segmentation_conflict(
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {
+        **CP08_PASSING_FEATURES,
+        "final_state_observable": False,
+        "rubber_dam_segmentation_conflict": True,
+        "rubber_dam_positioned": None,
+    }
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "needs_review"
+    assert result.reason_code == "final_state_unobservable"
+
+
+def test_cp08_missing_conflict_feature_keeps_backward_compatible_result(
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = dict(CP08_PASSING_FEATURES)
+    del features["rubber_dam_segmentation_conflict"]
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "correct"
 
 
 def test_cp08_checks_each_wing_hole_non_dam_ratio_independently(

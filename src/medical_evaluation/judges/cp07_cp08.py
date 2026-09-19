@@ -91,6 +91,14 @@ def judge_cp08(
             reason="CP09 末尾目标区域不可可靠观察。",
         )
 
+    if features.get("rubber_dam_segmentation_conflict") is True:
+        return needs_review(
+            "cp_08",
+            features,
+            reason_code="rubber_dam_segmentation_unreliable",
+            reason="CP09 末尾橡皮布分割与原帧绿色证据存在未解决冲突。",
+        )
+
     rubber_dam_positioned = features.get("rubber_dam_positioned")
     if rubber_dam_positioned is None:
         return needs_review(
