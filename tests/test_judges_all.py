@@ -82,16 +82,26 @@ CASES = [
     (
         judge_cp08,
         {
-            "blunt_tool_used": True,
-            "wings_exposed": True,
-            "neck_enclosed": True,
-            "green_wing_hole_ratio": 0.01,
+            "instrument_observed": True,
+            "instrument_shape_reliable": True,
+            "instrument_shape_match": True,
+            "final_state_observable": True,
+            "rubber_dam_positioned": True,
+            "left_wing_complete": True,
+            "right_wing_complete": True,
+            "left_wing_hole_detected": True,
+            "right_wing_hole_detected": True,
+            "left_wing_hole_dam_color_ratio": 0.9,
+            "right_wing_hole_dam_color_ratio": 0.9,
+            "left_wing_hole_non_dam_color_ratio": 0.05,
+            "right_wing_hole_non_dam_color_ratio": 0.05,
+            "left_wing_hole_valid_frame_count": 3.0,
+            "right_wing_hole_valid_frame_count": 3.0,
         },
         {
-            "blunt_tool_used": False,
-            "wings_exposed": True,
-            "neck_enclosed": True,
-            "green_wing_hole_ratio": 0.01,
+            "instrument_observed": True,
+            "instrument_shape_reliable": True,
+            "instrument_shape_match": False,
         },
     ),
     (judge_cp09, {"frame_oral_center_offset": 0.03}, {"frame_oral_center_offset": 0.6}),
@@ -174,6 +184,211 @@ def test_cp02_requires_cleaning_only_when_residue_is_present(
 
     assert result.status.value == "incorrect"
     assert result.reason_code == "residue_not_cleaned"
+
+
+CP08_PASSING_FEATURES: dict[str, float | bool | None] = {
+    "instrument_observed": True,
+    "instrument_shape_reliable": True,
+    "instrument_shape_match": True,
+    "final_state_observable": True,
+    "rubber_dam_positioned": True,
+    "left_wing_complete": True,
+    "right_wing_complete": True,
+    "left_wing_hole_detected": True,
+    "right_wing_hole_detected": True,
+    "left_wing_hole_dam_color_ratio": 0.9,
+    "right_wing_hole_dam_color_ratio": 0.9,
+    "left_wing_hole_non_dam_color_ratio": 0.05,
+    "right_wing_hole_non_dam_color_ratio": 0.05,
+    "left_wing_hole_valid_frame_count": 3.0,
+    "right_wing_hole_valid_frame_count": 3.0,
+}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "status", "reason_code"),
+    [
+        ({"instrument_observed": False}, "incomplete", "cp08_not_performed"),
+        (
+            {"instrument_shape_reliable": False},
+            "needs_review",
+            "unreliable_instrument_shape",
+        ),
+        (
+            {"instrument_shape_match": False},
+            "incorrect",
+            "wrong_instrument_shape",
+        ),
+        (
+            {"final_state_observable": False},
+            "needs_review",
+            "final_state_unobservable",
+        ),
+        (
+            {"rubber_dam_positioned": False},
+            "incorrect",
+            "rubber_dam_not_positioned",
+        ),
+        (
+            {"left_wing_complete": False},
+            "incorrect",
+            "clamp_wing_not_fully_visible",
+        ),
+        (
+            {"left_wing_hole_dam_color_ratio": 0.2},
+            "incorrect",
+            "non_dam_color_under_wing_hole",
+        ),
+        (
+            {"right_wing_hole_detected": False},
+            "needs_review",
+            "unreliable_wing_hole_color",
+        ),
+        ({}, "correct", "criteria_satisfied"),
+    ],
+)
+def test_cp08_uses_ordered_instrument_and_two_hole_state_machine(
+    overrides: dict[str, float | bool | None],
+    status: str,
+    reason_code: str,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {**CP08_PASSING_FEATURES, **overrides}
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == status
+    assert result.reason_code == reason_code
+
+
+def test_cp08_checks_each_wing_hole_non_dam_ratio_independently(
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {
+        **CP08_PASSING_FEATURES,
+        "right_wing_hole_non_dam_color_ratio": 0.8,
+    }
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "incorrect"
+    assert result.reason_code == "non_dam_color_under_wing_hole"
+
+
+def test_cp08_keeps_explicit_one_hole_failure_when_other_hole_is_unreliable(
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {
+        **CP08_PASSING_FEATURES,
+        "left_wing_hole_dam_color_ratio": 0.2,
+        "right_wing_hole_detected": False,
+        "right_wing_hole_dam_color_ratio": None,
+        "right_wing_hole_non_dam_color_ratio": None,
+        "right_wing_hole_valid_frame_count": 0.0,
+    }
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "incorrect"
+    assert result.reason_code == "non_dam_color_under_wing_hole"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "left_wing_hole_dam_color_ratio",
+        "right_wing_hole_dam_color_ratio",
+        "left_wing_hole_non_dam_color_ratio",
+        "right_wing_hole_non_dam_color_ratio",
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_ratio",
+    [float("nan"), float("inf"), float("-inf"), -0.1, 1.1],
+)
+def test_cp08_requests_review_for_invalid_per_side_color_ratios(
+    field: str,
+    invalid_ratio: float,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {**CP08_PASSING_FEATURES, field: invalid_ratio}
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "needs_review"
+    assert result.reason_code == "unreliable_wing_hole_color"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "left_wing_hole_valid_frame_count",
+        "right_wing_hole_valid_frame_count",
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_count",
+    [float("nan"), float("inf"), float("-inf"), -1.0],
+)
+def test_cp08_requests_review_for_invalid_wing_hole_frame_counts(
+    field: str,
+    invalid_count: float,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {**CP08_PASSING_FEATURES, field: invalid_count}
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "needs_review"
+    assert result.reason_code == "unreliable_wing_hole_color"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "left_wing_hole_dam_color_ratio",
+        "right_wing_hole_dam_color_ratio",
+        "left_wing_hole_non_dam_color_ratio",
+        "right_wing_hole_non_dam_color_ratio",
+    ],
+)
+@pytest.mark.parametrize("invalid_ratio", [False, True])
+def test_cp08_rejects_boolean_wing_hole_color_ratios(
+    field: str,
+    invalid_ratio: bool,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {**CP08_PASSING_FEATURES, field: invalid_ratio}
+
+    result = judge_cp08(features, thresholds["cp_08"])
+
+    assert result.status.value == "needs_review"
+    assert result.reason_code == "unreliable_wing_hole_color"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "left_wing_hole_valid_frame_count",
+        "right_wing_hole_valid_frame_count",
+    ],
+)
+@pytest.mark.parametrize("invalid_count", [False, True, 3.5])
+def test_cp08_requires_integer_non_boolean_wing_hole_frame_counts(
+    field: str,
+    invalid_count: float | bool,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    features = {**CP08_PASSING_FEATURES, field: invalid_count}
+    permissive_thresholds = {
+        **thresholds["cp_08"],
+        "min_wing_hole_valid_frames": 0.0,
+    }
+
+    result = judge_cp08(features, permissive_thresholds)
+
+    assert result.status.value == "needs_review"
+    assert result.reason_code == "unreliable_wing_hole_color"
 
 
 def test_pipeline_registers_all_11_judges() -> None:

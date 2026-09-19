@@ -97,6 +97,25 @@ def test_cp10_defines_temporal_contact_threshold() -> None:
     assert cp10.thresholds == {"min_contact_frames_per_side": 2.0}
 
 
+def test_cp08_uses_instrument_shape_and_two_hole_color_contract() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp08 = next(cp for cp in rubric.checkpoints if cp.id == "cp_08")
+
+    criteria = "".join(cp08.criteria)
+    assert "长金属柄、细工作杆和弯曲工作端" in criteria
+    assert "左右两个翼孔" in criteria
+    assert "钝头" not in criteria
+    assert "尖" not in criteria
+    assert "牙颈" not in criteria
+    assert cp08.thresholds == {
+        "min_wing_hole_dam_color_ratio": 0.7,
+        "max_wing_hole_non_dam_color_ratio": 0.3,
+        "min_wing_hole_valid_frames": 3.0,
+    }
+
+
 def test_parse_time_range_converts_excel_text_to_seconds() -> None:
     from medical_evaluation.rubric import parse_time_range
 

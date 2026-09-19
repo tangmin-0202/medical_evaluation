@@ -118,9 +118,9 @@ checkpoints:
 - id: cp_08
   name: 橡皮布就位
   criteria:
-  - 用钝头器械（不可用探针）翻转橡皮布至障夹翼部以下
-  - 翼部完全露出无遮挡
-  - 橡皮布孔缘包裹住隔离牙颈部，翼部的小洞下方看到的是绿色的橡皮布而非深色口腔区域。
+  - 操作阶段观察到符合长金属柄、细工作杆和弯曲工作端约定外形的器具
+  - 橡皮障夹左右翼部完整露出
+  - 左右两个翼孔内都呈现与同帧橡皮布一致的颜色，而非任何其他颜色
   weight: 0.09090909090909091
   judge_type: hybrid
   required_objects:
@@ -133,7 +133,9 @@ checkpoints:
     start_sec: 134.0
     end_sec: 174.0
   thresholds:
-    max_green_wing_hole_ratio: 0.05
+    min_wing_hole_dam_color_ratio: 0.7
+    max_wing_hole_non_dam_color_ratio: 0.3
+    min_wing_hole_valid_frames: 3.0
 - id: cp_09
   name: 安装支架（同最后一点合并评分，或者最后再评。）
   criteria:
