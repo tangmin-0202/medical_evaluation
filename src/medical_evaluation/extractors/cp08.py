@@ -35,7 +35,7 @@ from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame, sample_frames
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
-TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
+TOOTH_PROMPT = "tooth"
 CLAMP_PROMPT = "metal rubber dam clamp around the tooth"
 DAM_PROMPT = "large green sheet covering the mouth area"
 

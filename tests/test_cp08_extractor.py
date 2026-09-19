@@ -24,7 +24,7 @@ from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.video import SampledFrame
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
-TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
+TOOTH_PROMPT = "tooth"
 CLAMP_PROMPT = "metal rubber dam clamp around the tooth"
 DAM_PROMPT = "large green sheet covering the mouth area"
 
