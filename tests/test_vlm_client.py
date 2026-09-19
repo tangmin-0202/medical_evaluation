@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from medical_evaluation.vlm.client import QwenVlmClient, template_fallback
 from medical_evaluation.vlm.schemas import VlmReviewRequest
@@ -30,6 +31,91 @@ def test_fallback_messages_match_current_cp02_cp09_cp10_cp11_rules() -> None:
     assert "白色支架" in cp11.reason_zh
     assert "鼻部" in cp11.reason_zh
     assert "口鼻" not in cp11.reason_zh + cp11.suggestion_zh
+
+
+def test_cp08_commentary_uses_shape_proxy_without_claiming_tip_type() -> None:
+    review = template_fallback("criteria_satisfied", checkpoint_id="cp_08")
+
+    assert "符合约定外形" in review.reason_zh
+    assert "长柄细杆弯曲端" in review.reason_zh
+    assert "钝头" not in review.reason_zh + review.suggestion_zh
+    assert "尖锐" not in review.reason_zh + review.suggestion_zh
+
+
+def test_cp08_qwen_request_forbids_blunt_or_sharp_claims() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        content = json.dumps(
+            {
+                "evidence_supported": True,
+                "semantic_status": "supports",
+                "reason_zh": "符合约定外形，长柄细杆弯曲端证据一致。",
+                "suggestion_zh": "继续保持规范操作。",
+                "cited_evidence_indices": [],
+            },
+            ensure_ascii=False,
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    request = make_review_request().model_copy(
+        update={"checkpoint_id": "cp_08", "reason_code": "criteria_satisfied"}
+    )
+    client = QwenVlmClient(
+        "http://local/v1",
+        "Qwen3-VL-4B-Instruct",
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.review(request)
+
+    details = captured["messages"][1]["content"][0]["text"]
+    assert "符合约定外形" in details
+    assert "长柄细杆弯曲端" in details
+    assert "不能声称钝头或尖锐" in details
+    for forbidden_claim in ("圆钝", "钝性", "尖头", "锐利", "针尖", "探针"):
+        assert forbidden_claim in details
+
+
+@pytest.mark.parametrize(
+    "tip_claim",
+    ["钝头", "尖锐", "圆钝", "钝性", "尖头", "锐利", "针尖", "探针"],
+)
+def test_cp08_qwen_tip_claim_is_rejected_and_uses_safe_fallback(
+    tip_claim: str,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        content = json.dumps(
+            {
+                "evidence_supported": True,
+                "semantic_status": "supports",
+                "reason_zh": (
+                    "器具符合约定外形，长柄细杆弯曲端证据一致；"
+                    f"已经证明使用的是{tip_claim}器具。"
+                ),
+                "suggestion_zh": f"继续使用{tip_claim}器具。",
+                "cited_evidence_indices": [],
+            },
+            ensure_ascii=False,
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    request = make_review_request().model_copy(
+        update={"checkpoint_id": "cp_08", "reason_code": "criteria_satisfied"}
+    )
+    client = QwenVlmClient(
+        "http://local/v1",
+        "Qwen3-VL-4B-Instruct",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.review(request)
+
+    assert result.source == "template_fallback"
+    assert "符合约定外形" in result.reason_zh
+    assert "长柄细杆弯曲端" in result.reason_zh
+    assert tip_claim not in result.reason_zh + result.suggestion_zh
 
 
 def test_valid_structured_response_is_returned_without_score_override() -> None:

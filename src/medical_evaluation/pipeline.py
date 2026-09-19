@@ -24,7 +24,10 @@ from medical_evaluation.reporting import (
 )
 from medical_evaluation.rubric import CheckpointRule, Rubric
 from medical_evaluation.storage import atomic_write_json
-from medical_evaluation.vlm.client import template_fallback
+from medical_evaluation.vlm.client import (
+    template_fallback,
+    validate_checkpoint_commentary,
+)
 from medical_evaluation.vlm.schemas import VlmReview, VlmReviewRequest
 
 
@@ -191,7 +194,7 @@ class AnalysisPipeline:
             audit=RunAudit(
                 rubric_version=self.rubric.version,
                 model_versions={
-                    "pipeline": "vertical-cp02-cp09-cp10-cp11",
+                    "pipeline": "vertical-cp02-cp08-cp09-cp10-cp11",
                     "extractor": getattr(extractor, "model_version", "unknown"),
                 },
                 started_at=started,
@@ -228,11 +231,15 @@ class AnalysisPipeline:
         try:
             review = self.commentary_provider.review(request)
         except RuntimeError:
-            return template_fallback(result.reason_code)
+            return template_fallback(result.reason_code, checkpoint_id=checkpoint.id)
+        try:
+            validate_checkpoint_commentary(request, review)
+        except ValueError:
+            return template_fallback(result.reason_code, checkpoint_id=checkpoint.id)
         if result.status is not CheckpointStatus.NEEDS_REVIEW and (
             review.semantic_status != "supports"
         ):
-            return template_fallback(result.reason_code)
+            return template_fallback(result.reason_code, checkpoint_id=checkpoint.id)
         return review
 
     @staticmethod

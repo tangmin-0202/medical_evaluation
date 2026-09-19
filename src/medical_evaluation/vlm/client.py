@@ -14,6 +14,17 @@ from medical_evaluation.vlm.schemas import VlmReview, VlmReviewRequest
 
 LOGGER = logging.getLogger(__name__)
 
+_CP08_UNMEASURED_TIP_CLAIMS = (
+    "钝头",
+    "尖锐",
+    "圆钝",
+    "钝性",
+    "尖头",
+    "锐利",
+    "针尖",
+    "探针",
+)
+
 SYSTEM_PROMPT = """你是牙科操作考核的证据点评助手，现在需要对橡皮障隔离技术相关操作进行点评。
 只能使用请求中给出的考核标准、确定性规则结论、特征和证据图。
 必须引用使用过的证据图索引；证据不足时明确说明不确定。
@@ -51,6 +62,7 @@ class QwenVlmClient:
                 response.raise_for_status()
                 content = response.json()["choices"][0]["message"]["content"]
                 review = VlmReview.model_validate_json(content)
+                validate_checkpoint_commentary(request, review)
                 if any(
                     index < 0 or index >= len(selected_images)
                     for index in review.cited_evidence_indices
@@ -73,7 +85,7 @@ class QwenVlmClient:
                     attempt + 1,
                     type(exc).__name__,
                 )
-        return template_fallback(request.reason_code)
+        return template_fallback(request.reason_code, checkpoint_id=request.checkpoint_id)
 
     def _payload(
         self,
@@ -91,6 +103,12 @@ class QwenVlmClient:
             "features": request.features,
             "evidence_indices": list(range(len(images))),
         }
+        if request.checkpoint_id == "cp_08":
+            details["commentary_constraint"] = (
+                "使用‘符合约定外形’和‘长柄细杆弯曲端’描述器具；"
+                "不能声称钝头或尖锐，也不能声称圆钝、钝性、尖头、锐利、"
+                "针尖或探针。"
+            )
         instruction = "请严格返回 JSON。"
         if repair:
             instruction = "上一次响应未通过 JSON 模式校验。请修复格式，只返回合法 JSON。"
@@ -131,7 +149,58 @@ def _image_data_url(path: Path) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def template_fallback(reason_code: str) -> VlmReview:
+def validate_checkpoint_commentary(
+    request: VlmReviewRequest,
+    review: VlmReview,
+) -> None:
+    if request.checkpoint_id != "cp_08":
+        return
+    commentary = review.reason_zh + review.suggestion_zh
+    if any(claim in commentary for claim in _CP08_UNMEASURED_TIP_CLAIMS):
+        raise ValueError("CP08 commentary claims an unmeasured tip type")
+    if "符合约定外形" not in commentary or "长柄细杆弯曲端" not in commentary:
+        raise ValueError("CP08 commentary omits the instrument shape proxy")
+
+
+def template_fallback(
+    reason_code: str,
+    *,
+    checkpoint_id: str | None = None,
+) -> VlmReview:
+    if checkpoint_id == "cp_08":
+        cp08_templates = {
+            "criteria_satisfied": (
+                "器具符合约定外形，长柄细杆弯曲端证据与确定性结论一致。",
+                "继续按约定外形完成操作，并保持最终状态清晰可见。",
+            ),
+            "cp08_not_performed": (
+                "未观察到符合约定外形的器具操作，长柄细杆弯曲端证据缺失。",
+                "请使用符合约定外形的器具完成橡皮布就位操作。",
+            ),
+            "wrong_instrument_shape": (
+                "器具不符合约定外形，长柄细杆弯曲端证据未达到要求。",
+                "请改用符合约定外形的器具完成操作。",
+            ),
+            "unreliable_instrument_shape": (
+                "无法可靠确认器具符合约定外形，长柄细杆弯曲端证据不足。",
+                "请保留器具无遮挡且外形清晰的操作画面。",
+            ),
+        }
+        reason, suggestion = cp08_templates.get(
+            reason_code,
+            (
+                "器具是否符合约定外形由确定性规则判定；当前仅描述长柄细杆弯曲端证据。",
+                "请根据确定性结论和最终状态证据复核该步骤。",
+            ),
+        )
+        return VlmReview(
+            evidence_supported=False,
+            semantic_status="uncertain",
+            reason_zh=reason,
+            suggestion_zh=suggestion,
+            cited_evidence_indices=[],
+            source="template_fallback",
+        )
     templates = {
         "criteria_satisfied": (
             "现有证据支持确定性规则的通过结论。",

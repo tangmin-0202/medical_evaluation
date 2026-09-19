@@ -18,3 +18,8 @@ def test_real_runner_has_exact_three_demo_inputs() -> None:
         ["--video-id", "failure", "--no-commentary", "--only", "cp_02"]
     )
     assert cp02.only == "cp_02"
+
+    cp08 = build_parser().parse_args(
+        ["--video-id", "success", "--no-commentary", "--only", "cp_08"]
+    )
+    assert cp08.only == "cp_08"

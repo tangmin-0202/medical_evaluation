@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from medical_evaluation.jobs import JobRecord
 from medical_evaluation.pipeline import (
     AnalysisPipeline,
@@ -21,7 +23,7 @@ class FakeExtractor:
 
     @property
     def model_version(self) -> str:
-        return "fake-cp02-cp09-cp10-cp11-v1"
+        return "fake-cp02-cp08-cp09-cp10-cp11-v1"
 
     def extract(
         self,
@@ -45,6 +47,26 @@ class FakeExtractor:
                     "residue_before": False,
                     "cleanup_contact_observed": None,
                     "residue_after": False,
+                }
+            )
+        if checkpoint_id == "cp_08":
+            return ExtractedEvidence(
+                features={
+                    "instrument_observed": True,
+                    "instrument_shape_reliable": True,
+                    "instrument_shape_match": True,
+                    "final_state_observable": True,
+                    "rubber_dam_positioned": True,
+                    "left_wing_complete": True,
+                    "right_wing_complete": True,
+                    "left_wing_hole_detected": True,
+                    "right_wing_hole_detected": True,
+                    "left_wing_hole_valid_frame_count": 3.0,
+                    "right_wing_hole_valid_frame_count": 3.0,
+                    "left_wing_hole_dam_color_ratio": 0.9,
+                    "right_wing_hole_dam_color_ratio": 0.9,
+                    "left_wing_hole_non_dam_color_ratio": 0.1,
+                    "right_wing_hole_non_dam_color_ratio": 0.1,
                 }
             )
         if checkpoint_id == "cp_09":
@@ -160,6 +182,26 @@ class UncertainReviewer(FakeReviewer):
         )
 
 
+class UnsafeCp08Reviewer(FakeReviewer):
+    def __init__(self, tip_claim: str) -> None:
+        super().__init__()
+        self.tip_claim = tip_claim
+
+    def review(self, request):
+        review = super().review(request)
+        if request.checkpoint_id != "cp_08":
+            return review
+        return review.model_copy(
+            update={
+                "reason_zh": (
+                    "器具符合约定外形，长柄细杆弯曲端证据一致；"
+                    f"已经证明使用的是{self.tip_claim}器具。"
+                ),
+                "suggestion_zh": f"继续使用{self.tip_claim}器具。",
+            }
+        )
+
+
 def make_pipeline(
     tmp_path: Path,
     *,
@@ -207,22 +249,27 @@ def test_pipeline_writes_three_real_decisions_and_eight_review_results(tmp_path:
     assert len(stored["checkpoints"]) == 11
 
 
-def test_pipeline_can_enable_cp02_as_fourth_real_decision(tmp_path: Path) -> None:
+def test_pipeline_can_enable_cp08_as_fifth_real_decision(tmp_path: Path) -> None:
     pipeline, extractor, _ = make_pipeline(tmp_path)
-    pipeline.enabled_checkpoint_ids = frozenset({"cp_02", "cp_09", "cp_10", "cp_11"})
+    pipeline.enabled_checkpoint_ids = frozenset(
+        {"cp_02", "cp_08", "cp_09", "cp_10", "cp_11"}
+    )
 
     report = pipeline.run(make_job(tmp_path))
 
     assert report.checkpoints[1].status.value == "correct"
     assert report.checkpoints[1].reason_code == "criteria_satisfied"
-    assert report.summary.evaluated_count == 4
+    assert report.checkpoints[7].status.value == "correct"
+    assert report.checkpoints[7].reason_code == "criteria_satisfied"
+    assert report.summary.evaluated_count == 5
     assert report.summary.final_score is None
     assert report.audit.model_versions == {
-        "pipeline": "vertical-cp02-cp09-cp10-cp11",
-        "extractor": "fake-cp02-cp09-cp10-cp11-v1",
+        "pipeline": "vertical-cp02-cp08-cp09-cp10-cp11",
+        "extractor": "fake-cp02-cp08-cp09-cp10-cp11-v1",
     }
     assert [call[0] for call in extractor.calls] == [
         "cp_02",
+        "cp_08",
         "cp_09",
         "cp_10",
         "cp_11",
@@ -338,3 +385,30 @@ def test_uncertain_commentary_cannot_replace_deterministic_explanation(
     assert report.checkpoints[8].ai_commentary.reason_zh == (
         "现有证据支持确定性规则的通过结论。"
     )
+
+
+@pytest.mark.parametrize(
+    "tip_claim",
+    ["钝头", "尖锐", "圆钝", "钝性", "尖头", "锐利", "针尖", "探针"],
+)
+def test_cp08_commentary_cannot_claim_an_unmeasured_tip_type(
+    tmp_path: Path,
+    tip_claim: str,
+) -> None:
+    pipeline, _, _ = make_pipeline(
+        tmp_path,
+        reviewer=UnsafeCp08Reviewer(tip_claim),
+    )
+    pipeline.enabled_checkpoint_ids = frozenset({"cp_08"})
+
+    report = pipeline.run(make_job(tmp_path))
+
+    cp08 = report.checkpoints[7]
+    assert cp08.status.value == "correct"
+    assert cp08.reason_code == "criteria_satisfied"
+    assert cp08.ai_commentary is not None
+    assert cp08.ai_commentary.source == "template_fallback"
+    commentary = cp08.ai_commentary.reason_zh + cp08.ai_commentary.suggestion_zh
+    assert "符合约定外形" in commentary
+    assert "长柄细杆弯曲端" in commentary
+    assert tip_claim not in commentary
