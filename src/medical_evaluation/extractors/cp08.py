@@ -130,6 +130,20 @@ class Cp08FeatureExtractor:
                 sample_fps=self.sparse_fps,
             )
         )
+        if not sparse:
+            sparse = [
+                FrameMasks(
+                    frame_index=item.frame_index,
+                    frame_time_sec=item.time_sec,
+                    masks={},
+                )
+                for item in sample_frames(
+                    video_path,
+                    start_sec=time_range.start_sec,
+                    end_sec=time_range.end_sec,
+                    sample_fps=self.sparse_fps,
+                )
+            ]
         sparse_masks = [
             (item, self._mask(item, "cp08_instrument")) for item in sparse
         ]

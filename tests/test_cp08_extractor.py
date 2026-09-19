@@ -21,6 +21,7 @@ from medical_evaluation.features.cp08_positioning import (
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.segmentation.base import FrameMasks
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
+from medical_evaluation.video import SampledFrame
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
 TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
@@ -82,7 +83,13 @@ def _mask(kind: str) -> np.ndarray:
     return mask
 
 
-def test_text_prompts_use_the_requested_nonzero_stage_start(tmp_path: Path) -> None:
+def test_text_prompts_use_the_requested_nonzero_stage_start(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp08.read_frame",
+        lambda _path, _index: np.full((48, 64, 3), 120, np.uint8),
+    )
     annotations = VideoAnnotations(
         video_id="sample",
         steps=[
@@ -173,9 +180,26 @@ class RangeCheckingSegmenter:
     def track(self, _video_path, time_range, prompts, sample_fps):
         assert sample_fps > 0
         assert len(prompts) == 1
-        prompt_time = prompts[0].frame_time_sec
+        prompt = prompts[0]
+        prompt_time = prompt.frame_time_sec
         assert time_range.start_sec <= prompt_time <= time_range.end_sec
         self.calls.append((time_range, prompt_time, sample_fps))
+        return iter(
+            (
+                FrameMasks(
+                    frame_index=round(time_range.start_sec * 10),
+                    frame_time_sec=time_range.start_sec,
+                    masks={prompt.object_id: _mask("")},
+                ),
+            )
+        )
+
+
+class NoOutputSegmenter:
+    model_version = "no-output-sam3"
+
+    def track(self, _video_path, _time_range, _prompts, sample_fps):
+        assert sample_fps > 0
         return iter(())
 
 
@@ -954,6 +978,40 @@ def test_no_sparse_candidate_short_circuits_before_cp09_final_checks(
         .read_text("utf-8")
     )
     assert metrics["failure_reason"] == "instrument_not_observed_in_full_sparse_scan"
+
+
+def test_no_sam_candidate_keeps_raw_sparse_frames_as_negative_evidence(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from medical_evaluation.extractors import cp08
+
+    frames = [
+        SampledFrame(
+            time_sec=float(index),
+            frame_index=index,
+            image_bgr=np.full((48, 64, 3), 120, np.uint8),
+        )
+        for index in range(3)
+    ]
+    monkeypatch.setattr(cp08, "sample_frames", lambda *_args, **_kwargs: iter(frames))
+    monkeypatch.setattr(cp08, "read_frame", lambda _path, index: frames[index].image_bgr)
+
+    root = tmp_path / "evidence"
+    result = Cp08FeatureExtractor(
+        segmenter=NoOutputSegmenter(),
+        annotations=_annotations(),
+        evidence_root=root,
+    ).extract(
+        tmp_path / "unused.mp4",
+        "cp_08",
+        TimeRange(start_sec=0, end_sec=10),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["instrument_observed"] is False
+    assert len(result.evidence) == 3
+    assert all((root / item.overlay_path).is_file() for item in result.evidence)
 
 
 def test_reliable_missing_wing_is_preserved_as_incomplete_not_unknown(
