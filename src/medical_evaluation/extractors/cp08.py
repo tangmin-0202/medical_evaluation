@@ -737,7 +737,7 @@ class Cp08FeatureExtractor:
         hsv = cv2.cvtColor(np.asarray(frame, dtype=np.uint8), cv2.COLOR_BGR2HSV)
         return (
             (hsv[..., 0] >= 30)
-            & (hsv[..., 0] <= 100)
+            & (hsv[..., 0] <= 92)
             & (hsv[..., 1] >= 50)
             & (hsv[..., 2] >= 25)
         )

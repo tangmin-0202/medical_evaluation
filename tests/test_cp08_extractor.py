@@ -1014,6 +1014,15 @@ def test_no_sam_candidate_keeps_raw_sparse_frames_as_negative_evidence(
     assert all((root / item.overlay_path).is_file() for item in result.evidence)
 
 
+def test_dam_green_gate_accepts_real_dam_hue_but_rejects_blue_green_chair() -> None:
+    hsv = np.array([[[84, 180, 180], [99, 180, 180]]], dtype=np.uint8)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    result = Cp08FeatureExtractor._green_pixels(bgr)
+
+    assert result.tolist() == [[True, False]]
+
+
 def test_reliable_missing_wing_is_preserved_as_incomplete_not_unknown(
     monkeypatch, tmp_path: Path,
 ) -> None:
