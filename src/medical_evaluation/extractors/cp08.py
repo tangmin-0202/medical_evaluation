@@ -109,7 +109,11 @@ class Cp08FeatureExtractor:
             self.segmenter.track(
                 video_path,
                 time_range,
-                [self._text_prompt("cp08_instrument", INSTRUMENT_PROMPT)],
+                [
+                    self._text_prompt(
+                        "cp08_instrument", INSTRUMENT_PROMPT, time_range.start_sec
+                    )
+                ],
                 sample_fps=self.sparse_fps,
             )
         )
@@ -142,7 +146,13 @@ class Cp08FeatureExtractor:
                 self.segmenter.track(
                     video_path,
                     dense_range,
-                    [self._text_prompt("cp08_instrument", INSTRUMENT_PROMPT)],
+                    [
+                        self._text_prompt(
+                            "cp08_instrument",
+                            INSTRUMENT_PROMPT,
+                            dense_range.start_sec,
+                        )
+                    ],
                     sample_fps=dense_fps,
                 )
             )
@@ -164,7 +174,11 @@ class Cp08FeatureExtractor:
                 self.segmenter.track(
                     video_path,
                     final_range,
-                    [self._text_prompt("cp08_target_tooth", TOOTH_PROMPT)],
+                    [
+                        self._text_prompt(
+                            "cp08_target_tooth", TOOTH_PROMPT, final_range.start_sec
+                        )
+                    ],
                     sample_fps=dense_fps,
                 )
             ),
@@ -172,7 +186,11 @@ class Cp08FeatureExtractor:
                 self.segmenter.track(
                     video_path,
                     final_range,
-                    [self._text_prompt("cp08_full_clamp", CLAMP_PROMPT)],
+                    [
+                        self._text_prompt(
+                            "cp08_full_clamp", CLAMP_PROMPT, final_range.start_sec
+                        )
+                    ],
                     sample_fps=dense_fps,
                 )
             ),
@@ -180,7 +198,11 @@ class Cp08FeatureExtractor:
                 self.segmenter.track(
                     video_path,
                     final_range,
-                    [self._text_prompt("cp08_rubber_dam", DAM_PROMPT)],
+                    [
+                        self._text_prompt(
+                            "cp08_rubber_dam", DAM_PROMPT, final_range.start_sec
+                        )
+                    ],
                     sample_fps=dense_fps,
                 )
             ),
@@ -192,8 +214,17 @@ class Cp08FeatureExtractor:
         )
 
     @staticmethod
-    def _text_prompt(object_id: str, text: str) -> SegmentationPrompt:
-        return SegmentationPrompt(object_id=object_id, kind="text", text=text)
+    def _text_prompt(
+        object_id: str,
+        text: str,
+        frame_time_sec: float,
+    ) -> SegmentationPrompt:
+        return SegmentationPrompt(
+            object_id=object_id,
+            kind="text",
+            frame_time_sec=frame_time_sec,
+            text=text,
+        )
 
     @staticmethod
     def _mask(item: FrameMasks, object_id: str) -> np.ndarray | None:

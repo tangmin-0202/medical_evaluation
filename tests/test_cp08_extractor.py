@@ -12,6 +12,7 @@ from medical_evaluation.annotations import (
     VideoAnnotations,
 )
 from medical_evaluation.domain import CheckpointStatus, TimeRange
+from medical_evaluation.extractors.cp08 import Cp08FeatureExtractor
 from medical_evaluation.features.cp08_positioning import (
     ClampWingSplit,
     InstrumentShapeMeasurement,
@@ -80,6 +81,48 @@ def _mask(kind: str) -> np.ndarray:
     return mask
 
 
+def test_text_prompts_use_the_requested_nonzero_stage_start(tmp_path: Path) -> None:
+    annotations = VideoAnnotations(
+        video_id="sample",
+        steps=[
+            SegmentAnnotation(
+                checkpoint_id="cp_08",
+                time_range=TimeRange(start_sec=10, end_sec=20),
+                label=CheckpointStatus.NEEDS_REVIEW,
+                reason="test",
+            ),
+            SegmentAnnotation(
+                checkpoint_id="cp_09",
+                time_range=TimeRange(start_sec=30, end_sec=40),
+                label=CheckpointStatus.NEEDS_REVIEW,
+                reason="test",
+            ),
+        ],
+        prompts=[],
+    )
+    segmenter = RangeCheckingSegmenter()
+    extractor = Cp08FeatureExtractor(
+        segmenter=segmenter,
+        annotations=annotations,
+        evidence_root=tmp_path,
+    )
+
+    extractor.extract(
+        tmp_path / "unused.mp4",
+        "cp_08",
+        TimeRange(start_sec=10, end_sec=20),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert [(call[0].start_sec, call[1]) for call in segmenter.calls] == [
+        (10, 10),
+        (37, 37),
+        (37, 37),
+        (37, 37),
+    ]
+
+
 class FakeSegmenter:
     model_version = "fake-sam3"
 
@@ -121,6 +164,21 @@ class FakeSegmenter:
                 frame_time_sec=time_sec,
                 masks={prompt.object_id: _mask(kind)},
             )
+
+
+class RangeCheckingSegmenter:
+    model_version = "range-checking-sam3"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[TimeRange, float]] = []
+
+    def track(self, _video_path, time_range, prompts, sample_fps):
+        assert sample_fps > 0
+        assert len(prompts) == 1
+        prompt_time = prompts[0].frame_time_sec
+        assert time_range.start_sec <= prompt_time <= time_range.end_sec
+        self.calls.append((time_range, prompt_time))
+        return iter(())
 
 
 class ShapeSelectionSegmenter(FakeSegmenter):
