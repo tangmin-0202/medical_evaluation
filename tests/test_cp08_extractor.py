@@ -20,9 +20,10 @@ from medical_evaluation.features.cp08_positioning import (
 )
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.segmentation.base import FrameMasks
+from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
-TOOTH_PROMPT = "tooth"
+TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
 CLAMP_PROMPT = "metal rubber dam clamp around the tooth"
 DAM_PROMPT = "large green sheet covering the mouth area"
 
@@ -246,6 +247,13 @@ class DamConsensusSegmenter(FakeSegmenter):
             )
 
 
+class AmbiguousTailSegmenter(FakeSegmenter):
+    def track(self, video_path, time_range, prompts, sample_fps):
+        if prompts[0].object_id == "cp08_target_tooth":
+            raise Sam3AmbiguousTextResult("multiple unscored tooth candidates")
+        yield from super().track(video_path, time_range, prompts, sample_fps)
+
+
 class MultiCandidateSegmenter(FakeSegmenter):
     def __init__(self, *, later_matches: bool) -> None:
         super().__init__()
@@ -438,6 +446,29 @@ def test_cross_stage_extractor_uses_text_only_sparse_dense_and_independent_tail_
         "left_wing_hole_non_dam_color_ratio": 0.05,
         "right_wing_hole_non_dam_color_ratio": 0.05,
     }
+
+
+def test_ambiguous_tail_prompt_makes_final_state_unobservable_instead_of_crashing(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _patch_measurements(monkeypatch)
+
+    result = Cp08FeatureExtractor(
+        segmenter=AmbiguousTailSegmenter(),
+        annotations=_annotations(),
+        evidence_root=tmp_path / "evidence",
+    ).extract(
+        tmp_path / "unused.mp4",
+        "cp_08",
+        TimeRange(start_sec=0, end_sec=10),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["instrument_shape_match"] is True
+    assert result.features["final_state_observable"] is False
+    assert result.features["final_segmentation_conflict"] is True
+    assert result.features["final_segmentation_error_count"] == 1.0
 
 
 def test_dense_confirmation_uses_first_shape_plausible_not_first_nonempty_mask(

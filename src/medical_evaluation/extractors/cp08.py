@@ -30,11 +30,12 @@ from medical_evaluation.segmentation.base import (
     SegmentationPrompt,
     VideoSegmenter,
 )
+from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
 INSTRUMENT_PROMPT = "metal dental instrument with a long handle and curved working shaft"
-TOOTH_PROMPT = "tooth"
+TOOTH_PROMPT = "target tooth enclosed by the metal rubber dam clamp"
 CLAMP_PROMPT = "metal rubber dam clamp around the tooth"
 DAM_PROMPT = "large green sheet covering the mouth area"
 
@@ -171,45 +172,29 @@ class Cp08FeatureExtractor:
         )
 
         final_range = self._cp09_final_range()
-        final_frames = {
-            "tooth": list(
-                self.segmenter.track(
-                    video_path,
-                    final_range,
-                    [
-                        self._text_prompt(
-                            "cp08_target_tooth", TOOTH_PROMPT, final_range.end_sec
-                        )
-                    ],
-                    sample_fps=effective_dense_fps,
-                )
-            ),
-            "clamp": list(
-                self.segmenter.track(
-                    video_path,
-                    final_range,
-                    [
-                        self._text_prompt(
-                            "cp08_full_clamp", CLAMP_PROMPT, final_range.end_sec
-                        )
-                    ],
-                    sample_fps=effective_dense_fps,
-                )
-            ),
-            "dam": list(
-                self.segmenter.track(
-                    video_path,
-                    final_range,
-                    [
-                        self._text_prompt(
-                            "cp08_rubber_dam", DAM_PROMPT, final_range.end_sec
-                        )
-                    ],
-                    sample_fps=effective_dense_fps,
-                )
-            ),
+        final_frames: dict[str, list[FrameMasks]] = {}
+        final_errors: dict[str, str] = {}
+        final_objects = {
+            "tooth": ("cp08_target_tooth", TOOTH_PROMPT),
+            "clamp": ("cp08_full_clamp", CLAMP_PROMPT),
+            "dam": ("cp08_rubber_dam", DAM_PROMPT),
         }
-        final_features, final_evidence = self._extract_final(video_path, final_frames)
+        for name, (object_id, text) in final_objects.items():
+            try:
+                final_frames[name] = list(
+                    self.segmenter.track(
+                        video_path,
+                        final_range,
+                        [self._text_prompt(object_id, text, final_range.end_sec)],
+                        sample_fps=effective_dense_fps,
+                    )
+                )
+            except Sam3AmbiguousTextResult:
+                final_frames[name] = []
+                final_errors[name] = "ambiguous_unscored_candidates"
+        final_features, final_evidence = self._extract_final(
+            video_path, final_frames, segmentation_errors=final_errors
+        )
         return ExtractedEvidence(
             features={**action_features, **final_features},
             evidence=[*action_evidence, *final_evidence],
@@ -349,7 +334,10 @@ class Cp08FeatureExtractor:
         self,
         video_path: Path,
         frames: dict[str, list[FrameMasks]],
+        *,
+        segmentation_errors: dict[str, str] | None = None,
     ) -> tuple[dict[str, float | bool | None], list[EvidenceItem]]:
+        segmentation_errors = segmentation_errors or {}
         object_ids = {
             "tooth": "cp08_target_tooth",
             "clamp": "cp08_full_clamp",
@@ -422,6 +410,11 @@ class Cp08FeatureExtractor:
             "rubber_dam_positioned": rubber_dam_positioned,
             "final_state_valid_frame_count": float(len(measurements)),
         }
+        if segmentation_errors:
+            features["final_segmentation_conflict"] = True
+            features["final_segmentation_error_count"] = float(
+                len(segmentation_errors)
+            )
         conflict_count = sum(item.conflict for item in cross_checks.values())
         unresolved_conflict = conflict_count > 0 and rubber_dam_positioned is None
         features.update(
@@ -467,6 +460,10 @@ class Cp08FeatureExtractor:
                 }
             )
         failure_reasons: list[str] = []
+        failure_reasons.extend(
+            f"{name}_segmentation_{reason}"
+            for name, reason in sorted(segmentation_errors.items())
+        )
         if unresolved_conflict:
             failure_reasons.append("rubber_dam_color_conflict")
         if not final_observable:
