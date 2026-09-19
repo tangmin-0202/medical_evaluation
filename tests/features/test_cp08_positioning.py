@@ -93,6 +93,29 @@ def test_real_success_mask_matches_user_confirmed_instrument_shape():
     assert result.curvature_deg is not None
 
 
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_real_success_filled_sam_wing_finds_green_hole_from_original(side: str):
+    fixtures = Path(__file__).parents[1] / "fixtures/cp08"
+    frame = cv2.imread(str(fixtures / "real_success_final_frame.jpg"))
+    wing = cv2.imread(
+        str(fixtures / f"real_success_{side}_wing.png"), cv2.IMREAD_GRAYSCALE
+    )
+    dam = cv2.imread(
+        str(fixtures / "real_success_dam.png"), cv2.IMREAD_GRAYSCALE
+    )
+
+    result = measure_wing_hole_color(frame, wing, dam)
+
+    assert result.hole_detected is True
+    assert result.reliable is True
+    assert result.hole_area_px >= 20
+    assert result.sample_area_px >= 9
+    assert result.dam_color_ratio is not None
+    assert result.dam_color_ratio >= 0.7
+    assert result.non_dam_color_ratio is not None
+    assert result.non_dam_color_ratio <= 0.3
+
+
 def test_straight_rod_is_reliable_but_does_not_match():
     mask = np.zeros((160, 420), np.uint8)
     cv2.rectangle(mask, (30, 68), (380, 91), 1, -1)

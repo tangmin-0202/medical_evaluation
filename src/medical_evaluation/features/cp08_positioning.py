@@ -293,6 +293,21 @@ def measure_wing_hole_color(
     dam = _binary(dam_mask, "dam mask")
     if frame.shape[:2] != wing.shape or wing.shape != dam.shape:
         raise ValueError("frame and masks must have matching spatial dimensions")
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+    reference_hsv = hsv[dam.astype(bool)]
+    green_reference = ((reference_hsv[:, 0] >= 30.0)
+                       & (reference_hsv[:, 0] <= 100.0)
+                       & (reference_hsv[:, 1] >= 35.0))
+    if int(green_reference.sum()) < max(20, int(0.25 * len(reference_hsv))):
+        return WingHoleColorMeasurement(False, False, "dam_green_reference_unreliable",
+                                        None, None, 0, 0, None, None)
+    green_hsv = reference_hsv[green_reference]
+    hue_center = float(np.median(green_hsv[:, 0]))
+    hue_spread = np.abs(green_hsv[:, 0] - hue_center)
+    hue_tolerance = min(18.0, max(6.0, float(np.percentile(hue_spread, 90)) * 2.0 + 3.0))
+    hue_distance = np.abs(hsv[:, :, 0] - hue_center)
+    matching_image = ((hue_distance <= hue_tolerance)
+                      & (hsv[:, :, 1] >= 25.0))
     contours, _ = cv2.findContours(wing, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return WingHoleColorMeasurement(False, False, "wing_not_observed", None, None,
@@ -319,6 +334,45 @@ def measure_wing_hole_color(
         if (circularity >= 0.65 and axis_ratio >= 0.55 and enclosing_fill >= 0.78
                 and 0.005 <= relative_area <= 0.35):
             candidates.append((area, item))
+    if not candidates:
+        # SAM semantic masks commonly fill the tiny wing aperture.  In that
+        # case the wing mask is only an automatic ROI: find the compact green
+        # spot directly in the original frame instead of requiring a
+        # topological hole in the binary mask.
+        inner = cv2.erode(wing, np.ones((5, 5), np.uint8))
+        if inner.any():
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            dark_cutoff = float(np.percentile(gray[inner.astype(bool)], 25))
+            proposals = (
+                (gray < dark_cutoff) & inner.astype(bool)
+            ).astype(np.uint8)
+            appearance_candidates: list[tuple[float, int, np.ndarray]] = []
+            wing_area = max(int(wing.sum()), 1)
+            for area, item in _components(proposals):
+                item_contours, _ = cv2.findContours(
+                    item, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+                )
+                item_contour = max(item_contours, key=cv2.contourArea)
+                _, (box_width, box_height), _ = cv2.minAreaRect(item_contour)
+                axis_ratio = min(box_width, box_height) / max(
+                    max(box_width, box_height), 1.0
+                )
+                relative_area = area / wing_area
+                green_ratio = float(matching_image[item.astype(bool)].mean())
+                if (
+                    area >= 12
+                    and axis_ratio >= 0.45
+                    and relative_area <= 0.08
+                    and green_ratio >= 0.55
+                ):
+                    appearance_candidates.append(
+                        (green_ratio * axis_ratio * math.sqrt(area), area, item)
+                    )
+            if appearance_candidates:
+                _score, area, item = max(
+                    appearance_candidates, key=lambda value: value[0]
+                )
+                candidates.append((area, item))
     if len(candidates) != 1:
         if raw_candidates and not candidates:
             reason = "hole_geometry_invalid"
@@ -336,40 +390,10 @@ def measure_wing_hole_color(
         return WingHoleColorMeasurement(True, False, "insufficient_color_reference",
                                         None, None, hole_area, sample_area,
                                         _readonly(hole), _readonly(sample))
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
-    reference_hsv = hsv[dam.astype(bool)]
-    reference_lab = lab[dam.astype(bool)]
-
-    # The rubric requires green specifically.  Build the adaptive reference
-    # only from the dominant green-compatible chromatic population so a small
-    # red/metal/background leak in the dam mask cannot widen the match range.
-    green_reference = ((reference_hsv[:, 0] >= 30.0)
-                       & (reference_hsv[:, 0] <= 100.0)
-                       & (reference_hsv[:, 1] >= 35.0))
-    if int(green_reference.sum()) < max(20, int(0.25 * len(reference_hsv))):
-        return WingHoleColorMeasurement(True, False, "dam_green_reference_unreliable",
-                                        None, None, hole_area, sample_area,
-                                        _readonly(hole), _readonly(sample))
-    green_hsv = reference_hsv[green_reference]
-    green_lab = reference_lab[green_reference]
-    hue_center = float(np.median(green_hsv[:, 0]))
-    hue_spread = np.abs(green_hsv[:, 0] - hue_center)
-    hue_tolerance = min(18.0, max(6.0, float(np.percentile(hue_spread, 90)) * 2.0 + 3.0))
-    chroma_center = np.median(green_lab[:, 1:3], axis=0)
-    chroma_spread = np.linalg.norm(green_lab[:, 1:3] - chroma_center, axis=1)
-    chroma_tolerance = min(
-        35.0,
-        max(12.0, float(np.percentile(chroma_spread, 90)) * 2.0 + 5.0),
-    )
-
     sample_hsv = hsv[sample.astype(bool)]
-    sample_lab = lab[sample.astype(bool)]
     hue_distance = np.abs(sample_hsv[:, 0] - hue_center)
-    chroma_distance = np.linalg.norm(sample_lab[:, 1:3] - chroma_center, axis=1)
     matching = ((hue_distance <= hue_tolerance)
-                & (sample_hsv[:, 1] >= 25.0)
-                & (chroma_distance <= chroma_tolerance))
+                & (sample_hsv[:, 1] >= 25.0))
     dam_ratio = float(matching.mean())
     return WingHoleColorMeasurement(True, True, "hole_color_measured", dam_ratio,
                                     1.0 - dam_ratio, hole_area, sample_area,
