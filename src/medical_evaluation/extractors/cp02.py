@@ -217,11 +217,13 @@ class Cp02FeatureExtractor:
         self, frames: Iterable[SampledFrame], anchor: MovingDisk,
     ) -> list[_HoleFrame]:
         observations: list[_HoleFrame] = []
+        tracked_anchor = anchor
         for frame in frames:
-            located = locate_disk_layout_near(frame.image_bgr, anchor)
+            located = locate_disk_layout_near(frame.image_bgr, tracked_anchor)
             if located is None:
                 continue
             disk, layout = located
+            tracked_anchor = disk
             aligned = aligned_hole_opposite_handle(frame.image_bgr, disk, layout.holes)
             if aligned is None or layout.second_largest_index is None:
                 continue

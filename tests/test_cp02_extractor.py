@@ -560,6 +560,35 @@ def test_dense_measurement_uses_monotonic_arc_rank_not_raw_pixel_area(
     assert measured[0].size_rank == 2
 
 
+def test_dense_measurement_tracks_from_each_reliable_disk(monkeypatch, tmp_path: Path):
+    from medical_evaluation.extractors import cp02
+
+    image = np.zeros((120, 160, 3), np.uint8)
+    initial = MovingDisk(0, 50, 50, 25, 4, 0.5, 60)
+    moved = MovingDisk(0, 65, 55, 25, 4, 0.5, 60)
+    holes = tuple(Hole(40 + i * 9, 45, 8 - i) for i in range(4))
+    layout = DiskHoleLayout(holes, True, "criteria_satisfied", 1, 0.4)
+    references: list[MovingDisk] = []
+
+    def locate(_frame, reference):
+        references.append(reference)
+        return (moved, layout)
+
+    monkeypatch.setattr(cp02, "locate_disk_layout_near", locate)
+    monkeypatch.setattr(cp02, "aligned_hole_opposite_handle", lambda *_args: 1)
+    monkeypatch.setattr(cp02, "_hole_green_ratio", lambda *_args: 0.0)
+    frames = [
+        SampledFrame(time_sec=float(i), frame_index=i, image_bgr=image.copy())
+        for i in range(2)
+    ]
+
+    cp02.Cp02FeatureExtractor(
+        annotations=_annotations(), evidence_root=tmp_path,
+    )._measure_dense(frames, initial)
+
+    assert references == [initial, moved]
+
+
 def test_cp02_green_ratio_rejects_bright_occluded_target_hole() -> None:
     from medical_evaluation.extractors.cp02 import _hole_green_ratio
 
