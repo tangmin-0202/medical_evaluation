@@ -195,7 +195,15 @@ def measure_instrument_shape(mask: np.ndarray) -> InstrumentShapeMeasurement:
     narrow = float(np.percentile(widths, 25))
     broad = float(np.percentile(widths, 75))
     width_ratio = broad / max(narrow, 1.0)
-    matches = bool(elongation >= 4.0 and width_ratio >= 1.5 and curvature >= 15.0)
+    # The user-confirmed real instrument has a long straight handle and only a
+    # short curved/tapered working end.  Requiring large whole-silhouette
+    # curvature rejects that valid perspective.  Keep the strong elongation
+    # gate and require either measurable taper or measurable end curvature;
+    # a plain straight rod has neither.
+    matches = bool(
+        elongation >= 4.0
+        and (width_ratio >= 1.25 or curvature >= 5.0)
+    )
     reason = "shape_proxy_matched" if matches else "shape_proxy_not_matched"
     return InstrumentShapeMeasurement(True, True, matches, reason, len(parts), area,
                                       elongation, width_ratio, curvature,

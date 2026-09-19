@@ -63,6 +63,7 @@ class _DamCrossCheck:
 
 class Cp08FeatureExtractor:
     sparse_fps = 1.0
+    minimum_dense_fps = 5.0
     dense_window_sec = 1.0
     final_window_sec = 3.0
     minimum_valid_frames = 3
@@ -104,6 +105,7 @@ class Cp08FeatureExtractor:
             raise ValueError("analysis_width must be positive")
         if dense_fps <= 0:
             raise ValueError("dense_fps must be positive")
+        effective_dense_fps = max(dense_fps, self.minimum_dense_fps)
 
         sparse = list(
             self.segmenter.track(
@@ -111,7 +113,7 @@ class Cp08FeatureExtractor:
                 time_range,
                 [
                     self._text_prompt(
-                        "cp08_instrument", INSTRUMENT_PROMPT, time_range.start_sec
+                        "cp08_instrument", INSTRUMENT_PROMPT, time_range.end_sec
                     )
                 ],
                 sample_fps=self.sparse_fps,
@@ -150,10 +152,10 @@ class Cp08FeatureExtractor:
                         self._text_prompt(
                             "cp08_instrument",
                             INSTRUMENT_PROMPT,
-                            dense_range.start_sec,
+                            dense_range.end_sec,
                         )
                     ],
-                    sample_fps=dense_fps,
+                    sample_fps=effective_dense_fps,
                 )
             )
             dense_sessions.append(dense)
@@ -176,10 +178,10 @@ class Cp08FeatureExtractor:
                     final_range,
                     [
                         self._text_prompt(
-                            "cp08_target_tooth", TOOTH_PROMPT, final_range.start_sec
+                            "cp08_target_tooth", TOOTH_PROMPT, final_range.end_sec
                         )
                     ],
-                    sample_fps=dense_fps,
+                    sample_fps=effective_dense_fps,
                 )
             ),
             "clamp": list(
@@ -188,10 +190,10 @@ class Cp08FeatureExtractor:
                     final_range,
                     [
                         self._text_prompt(
-                            "cp08_full_clamp", CLAMP_PROMPT, final_range.start_sec
+                            "cp08_full_clamp", CLAMP_PROMPT, final_range.end_sec
                         )
                     ],
-                    sample_fps=dense_fps,
+                    sample_fps=effective_dense_fps,
                 )
             ),
             "dam": list(
@@ -200,10 +202,10 @@ class Cp08FeatureExtractor:
                     final_range,
                     [
                         self._text_prompt(
-                            "cp08_rubber_dam", DAM_PROMPT, final_range.start_sec
+                            "cp08_rubber_dam", DAM_PROMPT, final_range.end_sec
                         )
                     ],
-                    sample_fps=dense_fps,
+                    sample_fps=effective_dense_fps,
                 )
             ),
         }

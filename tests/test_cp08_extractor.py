@@ -111,15 +111,15 @@ def test_text_prompts_use_the_requested_nonzero_stage_start(tmp_path: Path) -> N
         tmp_path / "unused.mp4",
         "cp_08",
         TimeRange(start_sec=10, end_sec=20),
-        dense_fps=5,
+        dense_fps=2,
         analysis_width=1280,
     )
 
-    assert [(call[0].start_sec, call[1]) for call in segmenter.calls] == [
-        (10, 10),
-        (37, 37),
-        (37, 37),
-        (37, 37),
+    assert [(call[0].start_sec, call[1], call[2]) for call in segmenter.calls] == [
+        (10, 20, 1.0),
+        (37, 40, 5.0),
+        (37, 40, 5.0),
+        (37, 40, 5.0),
     ]
 
 
@@ -170,14 +170,14 @@ class RangeCheckingSegmenter:
     model_version = "range-checking-sam3"
 
     def __init__(self) -> None:
-        self.calls: list[tuple[TimeRange, float]] = []
+        self.calls: list[tuple[TimeRange, float, float]] = []
 
     def track(self, _video_path, time_range, prompts, sample_fps):
         assert sample_fps > 0
         assert len(prompts) == 1
         prompt_time = prompts[0].frame_time_sec
         assert time_range.start_sec <= prompt_time <= time_range.end_sec
-        self.calls.append((time_range, prompt_time))
+        self.calls.append((time_range, prompt_time, sample_fps))
         return iter(())
 
 

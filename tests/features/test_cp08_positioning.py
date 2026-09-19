@@ -80,6 +80,19 @@ def test_real_gate_mask_excludes_u_clamp_and_matches_agreed_proxy():
     assert result.component_mask[:, mask.shape[1] // 2 :].any()
 
 
+def test_real_success_mask_matches_user_confirmed_instrument_shape():
+    fixture = Path(__file__).parents[1] / "fixtures/cp08/real_success_instrument_148.png"
+    mask = cv2.imread(str(fixture), cv2.IMREAD_GRAYSCALE)
+
+    result = measure_instrument_shape(mask)
+
+    assert result.reliable is True
+    assert result.matches_proxy is True
+    assert result.elongation is not None and result.elongation > 8.0
+    assert result.handle_to_shaft_width_ratio is not None
+    assert result.curvature_deg is not None
+
+
 def test_straight_rod_is_reliable_but_does_not_match():
     mask = np.zeros((160, 420), np.uint8)
     cv2.rectangle(mask, (30, 68), (380, 91), 1, -1)
