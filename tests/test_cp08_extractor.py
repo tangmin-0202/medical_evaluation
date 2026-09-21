@@ -1120,12 +1120,14 @@ def test_composite_optional_cp08_delegate_changes_no_existing_dispatch() -> None
     assert cp09.calls == []
     assert cp11.calls == []
     assert extractor.model_version == (
-        "cp02=disabled;cp08=cp08-v1;cp09=cp09-v1;cp10=disabled;cp11=cp11-v1"
+        "cp02=disabled;cp03=disabled;cp08=cp08-v1;"
+        "cp09=cp09-v1;cp10=disabled;cp11=cp11-v1"
     )
 
     legacy = Cp09Cp11FeatureExtractor(
         cp09=cp09, cp11=cp11, annotations=_annotations(),
     )
     assert legacy.model_version == (
-        "cp02=disabled;cp09=cp09-v1;cp10=disabled;cp11=cp11-v1"
+        "cp02=disabled;cp03=disabled;"
+        "cp09=cp09-v1;cp10=disabled;cp11=cp11-v1"
     )

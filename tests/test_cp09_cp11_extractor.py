@@ -51,16 +51,22 @@ def annotations(*, include_oral_box: bool = True) -> VideoAnnotations:
     return VideoAnnotations(video_id="success", prompts=prompts)
 
 
-def test_dispatches_to_matching_cp02_cp09_cp10_and_cp11_extractors() -> None:
+def test_dispatches_to_matching_cp02_cp03_cp09_cp10_and_cp11_extractors() -> None:
     cp02 = RecordingExtractor()
+    cp03 = RecordingExtractor()
     cp09 = RecordingExtractor()
     cp10 = RecordingExtractor()
     cp11 = RecordingExtractor()
     extractor = Cp09Cp11FeatureExtractor(
-        cp02=cp02, cp09=cp09, cp10=cp10, cp11=cp11, annotations=annotations()
+        cp02=cp02,
+        cp03=cp03,
+        cp09=cp09,
+        cp10=cp10,
+        cp11=cp11,
+        annotations=annotations(),
     )
 
-    for checkpoint_id in ("cp_02", "cp_09", "cp_10", "cp_11"):
+    for checkpoint_id in ("cp_02", "cp_03", "cp_09", "cp_10", "cp_11"):
         extractor.extract(
             Path("video.mp4"),
             checkpoint_id,
@@ -70,6 +76,7 @@ def test_dispatches_to_matching_cp02_cp09_cp10_and_cp11_extractors() -> None:
         )
 
     assert cp02.calls == ["cp_02"]
+    assert cp03.calls == ["cp_03"]
     assert cp09.calls == ["cp_09"]
     assert cp10.calls == ["cp_10"]
     assert cp11.calls == ["cp_11"]

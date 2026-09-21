@@ -11,8 +11,9 @@ from medical_evaluation.annotations import AnnotationStore
 from medical_evaluation.domain import CheckpointStatus, TimeRange
 from medical_evaluation.jobs import JobRecord
 from medical_evaluation.judges.base import JudgeDecision
-from medical_evaluation.judges.cp01_cp03 import judge_cp01, judge_cp03
+from medical_evaluation.judges.cp01_cp03 import judge_cp01
 from medical_evaluation.judges.cp02_punch import judge_cp02_punch
+from medical_evaluation.judges.cp03_hole import judge_cp03_hole
 from medical_evaluation.judges.cp04_cp06 import judge_cp04, judge_cp05, judge_cp06
 from medical_evaluation.judges.cp07_cp08 import judge_cp07, judge_cp08
 from medical_evaluation.judges.cp09_cp11 import judge_cp09, judge_cp10, judge_cp11
@@ -65,7 +66,7 @@ Judge = Callable[[dict[str, float | bool | None], dict[str, float]], JudgeDecisi
 JUDGES: dict[str, Judge] = {
     "cp_01": judge_cp01,
     "cp_02": judge_cp02_punch,
-    "cp_03": judge_cp03,
+    "cp_03": judge_cp03_hole,
     "cp_04": judge_cp04,
     "cp_05": judge_cp05,
     "cp_06": judge_cp06,
@@ -194,7 +195,7 @@ class AnalysisPipeline:
             audit=RunAudit(
                 rubric_version=self.rubric.version,
                 model_versions={
-                    "pipeline": "vertical-cp02-cp08-cp09-cp10-cp11",
+                    "pipeline": "vertical-cp02-cp03-cp08-cp09-cp10-cp11",
                     "extractor": getattr(extractor, "model_version", "unknown"),
                 },
                 started_at=started,

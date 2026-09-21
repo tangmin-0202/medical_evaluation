@@ -5,6 +5,7 @@ import pytest
 from medical_evaluation.annotations import SegmentAnnotation, VideoAnnotations
 from medical_evaluation.app import create_app
 from medical_evaluation.domain import CheckpointStatus, TimeRange
+from medical_evaluation.extractors.cp03 import Cp03FeatureExtractor
 from medical_evaluation.extractors.cp08 import Cp08FeatureExtractor
 from medical_evaluation.extractors.cp09_cp11 import Cp09Cp11FeatureExtractor
 from medical_evaluation.jobs import JobRecord
@@ -72,6 +73,9 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
 
     assert isinstance(extractor, Cp09Cp11FeatureExtractor)
     assert extractor.cp02.evidence_root == settings.data_dir / "jobs" / "job-1"
+    assert isinstance(extractor.cp03, Cp03FeatureExtractor)
+    assert extractor.cp03.evidence_root == settings.data_dir / "jobs" / "job-1"
+    assert extractor.cp03.segmenter is extractor.cp09.segmenter
     assert isinstance(extractor.cp08, Cp08FeatureExtractor)
     assert extractor.cp08.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp08.segmenter is extractor.cp09.segmenter
@@ -80,7 +84,7 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
     assert extractor.cp11.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert pipeline.commentary_provider.model == "Qwen-Test"
     assert pipeline.enabled_checkpoint_ids == frozenset(
-        {"cp_02", "cp_08", "cp_09", "cp_10", "cp_11"}
+        {"cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"}
     )
     assert backend_calls == [
         (
@@ -127,6 +131,7 @@ def test_runtime_builds_sam3_without_validating_sam2(tmp_path: Path) -> None:
     assert calls[0][1]["bpe_path"] == settings.sam3_bpe_path
     assert calls[0][1]["grounding_batch_size"] == 3
     assert isinstance(extractor.cp08, Cp08FeatureExtractor)
+    assert isinstance(extractor.cp03, Cp03FeatureExtractor)
     assert extractor.cp08.segmenter is extractor.cp09.segmenter
     assert extractor.cp09.prompt_policy.__class__.__name__ == "TextPromptPolicy"
     assert "cp08=" in extractor.model_version

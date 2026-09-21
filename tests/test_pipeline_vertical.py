@@ -69,6 +69,16 @@ class FakeExtractor:
                     "right_wing_hole_non_dam_color_ratio": 0.1,
                 }
             )
+        if checkpoint_id == "cp_03":
+            return ExtractedEvidence(
+                features={
+                    "final_scan_reliable": True,
+                    "hole_observed": True,
+                    "hole_clear_consecutive_frames": 3.0,
+                    "hole_adhesion_free": True,
+                    "adhesion_observed_frame_count": 0.0,
+                }
+            )
         if checkpoint_id == "cp_09":
             return ExtractedEvidence(features={"frame_oral_center_offset": 0.03})
         if checkpoint_id == "cp_10":
@@ -249,26 +259,29 @@ def test_pipeline_writes_three_real_decisions_and_eight_review_results(tmp_path:
     assert len(stored["checkpoints"]) == 11
 
 
-def test_pipeline_can_enable_cp08_as_fifth_real_decision(tmp_path: Path) -> None:
+def test_pipeline_can_enable_cp03_and_cp08_as_six_real_decisions(tmp_path: Path) -> None:
     pipeline, extractor, _ = make_pipeline(tmp_path)
     pipeline.enabled_checkpoint_ids = frozenset(
-        {"cp_02", "cp_08", "cp_09", "cp_10", "cp_11"}
+        {"cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"}
     )
 
     report = pipeline.run(make_job(tmp_path))
 
     assert report.checkpoints[1].status.value == "correct"
     assert report.checkpoints[1].reason_code == "criteria_satisfied"
+    assert report.checkpoints[2].status.value == "correct"
+    assert report.checkpoints[2].reason_code == "criteria_satisfied"
     assert report.checkpoints[7].status.value == "correct"
     assert report.checkpoints[7].reason_code == "criteria_satisfied"
-    assert report.summary.evaluated_count == 5
+    assert report.summary.evaluated_count == 6
     assert report.summary.final_score is None
     assert report.audit.model_versions == {
-        "pipeline": "vertical-cp02-cp08-cp09-cp10-cp11",
+        "pipeline": "vertical-cp02-cp03-cp08-cp09-cp10-cp11",
         "extractor": "fake-cp02-cp08-cp09-cp10-cp11-v1",
     }
     assert [call[0] for call in extractor.calls] == [
         "cp_02",
+        "cp_03",
         "cp_08",
         "cp_09",
         "cp_10",

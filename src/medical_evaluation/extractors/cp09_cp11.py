@@ -35,6 +35,7 @@ class Cp09Cp11FeatureExtractor:
         self,
         *,
         cp02: CheckpointExtractor | None = None,
+        cp03: CheckpointExtractor | None = None,
         cp08: CheckpointExtractor | None = None,
         cp09: CheckpointExtractor,
         cp10: CheckpointExtractor | None = None,
@@ -43,6 +44,7 @@ class Cp09Cp11FeatureExtractor:
         prompt_policy: Cp09Cp11PromptPolicy | None = None,
     ) -> None:
         self.cp02 = cp02
+        self.cp03 = cp03
         self.cp08 = cp08
         self.cp09 = cp09
         self.cp10 = cp10
@@ -53,11 +55,13 @@ class Cp09Cp11FeatureExtractor:
     @property
     def model_version(self) -> str:
         cp02_version = self.cp02.model_version if self.cp02 is not None else "disabled"
+        cp03_version = self.cp03.model_version if self.cp03 is not None else "disabled"
         cp08_version = self.cp08.model_version if self.cp08 is not None else "disabled"
         cp10_version = self.cp10.model_version if self.cp10 is not None else "disabled"
         cp08_part = f";cp08={cp08_version}" if self.cp08 is not None else ""
         return (
-            f"cp02={cp02_version}{cp08_part};cp09={self.cp09.model_version};"
+            f"cp02={cp02_version};cp03={cp03_version}{cp08_part};"
+            f"cp09={self.cp09.model_version};"
             f"cp10={cp10_version};cp11={self.cp11.model_version}"
         )
 
@@ -72,6 +76,8 @@ class Cp09Cp11FeatureExtractor:
     ) -> ExtractedEvidence:
         if checkpoint_id == "cp_02" and self.cp02 is not None:
             delegate = self.cp02
+        elif checkpoint_id == "cp_03" and self.cp03 is not None:
+            delegate = self.cp03
         elif checkpoint_id == "cp_08" and self.cp08 is not None:
             delegate = self.cp08
         elif checkpoint_id == "cp_09":
