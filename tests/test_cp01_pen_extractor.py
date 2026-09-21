@@ -26,10 +26,7 @@ def _video(path: Path, *, pen_positions: set[int], frame_count: int = 6) -> Path
 
 
 def _make_extractor(root: Path) -> Cp01PenGateExtractor:
-    return Cp01PenGateExtractor(
-        evidence_root=root,
-        minimum_consecutive_frames=3,
-    )
+    return Cp01PenGateExtractor(evidence_root=root)
 
 
 def test_three_consecutive_automatic_pen_frames_pass_gate(tmp_path: Path) -> None:
@@ -78,3 +75,16 @@ def test_single_pen_frame_fails_gate_and_keeps_negative_evidence(
     assert list((root / "cp_01/pen_gate/raw").glob("*.jpg"))
     assert list((root / "cp_01/pen_gate/masks/raw").glob("*.png"))
     assert list((root / "cp_01/pen_gate/overlays").glob("*.jpg"))
+
+
+def test_two_consecutive_pen_frames_pass_default_gate(tmp_path: Path) -> None:
+    result = _make_extractor(tmp_path / "evidence").extract(
+        _video(tmp_path / "video.avi", pen_positions={2, 3}),
+        "cp_01",
+        TimeRange(start_sec=0, end_sec=5),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["pen_presence_detected"] is True
+    assert result.features["pen_max_consecutive_valid_frames"] == 2.0

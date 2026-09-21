@@ -17,6 +17,14 @@ def segment_pen_candidate(frame_bgr: np.ndarray) -> np.ndarray:
     green = cv2.inRange(hsv, (30, 35, 25), (100, 255, 255)) > 0
     if int(green.sum()) < max(100, int(height * width * 0.01)):
         return np.zeros((height, width), dtype=bool)
+    green_count, green_labels, green_stats, _ = cv2.connectedComponentsWithStats(
+        green.astype(np.uint8), connectivity=8
+    )
+    if green_count <= 1:
+        return np.zeros((height, width), dtype=bool)
+    green_areas = green_stats[1:, cv2.CC_STAT_AREA]
+    main_green_label = int(np.argmax(green_areas)) + 1
+    main_green = green_labels == main_green_label
 
     value = hsv[..., 2]
     dark = (value < 105).astype(np.uint8)
@@ -35,7 +43,7 @@ def segment_pen_candidate(frame_bgr: np.ndarray) -> np.ndarray:
     )
     proximity_size = max(5, round(min(height, width) * 0.10))
     near_green = cv2.dilate(
-        green.astype(np.uint8),
+        main_green.astype(np.uint8),
         cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (proximity_size | 1, proximity_size | 1)
         ),

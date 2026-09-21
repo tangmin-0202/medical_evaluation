@@ -81,3 +81,14 @@ def test_opencv_ignores_template_cross_and_border_sleeve() -> None:
     mask = segment_pen_candidate(frame)
 
     assert not mask.any()
+
+
+def test_opencv_ignores_dark_tool_beside_small_green_distractor() -> None:
+    frame = np.full((240, 360, 3), (180, 150, 120), dtype=np.uint8)
+    cv2.rectangle(frame, (55, 45), (245, 210), (45, 155, 55), -1)
+    cv2.rectangle(frame, (320, 30), (350, 55), (45, 155, 55), -1)
+    cv2.rectangle(frame, (315, 55), (340, 205), (25, 25, 25), -1)
+
+    mask = segment_pen_candidate(frame)
+
+    assert not mask.any()

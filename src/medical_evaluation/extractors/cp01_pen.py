@@ -31,7 +31,7 @@ class Cp01PenGateExtractor:
         self,
         *,
         evidence_root: Path,
-        minimum_consecutive_frames: int = 3,
+        minimum_consecutive_frames: int = 2,
     ) -> None:
         if minimum_consecutive_frames <= 0:
             raise ValueError("minimum_consecutive_frames must be positive")
