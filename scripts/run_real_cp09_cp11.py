@@ -22,14 +22,14 @@ VIDEO_FILENAMES = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the real CP02/CP08/CP09/CP10/CP11 report pipeline",
+        description="Run the real CP02/CP03/CP08/CP09/CP10/CP11 report pipeline",
     )
     parser.add_argument("--video-id", choices=tuple(VIDEO_FILENAMES), required=True)
     parser.add_argument("--job-id", default=None)
     parser.add_argument("--no-commentary", action="store_true")
     parser.add_argument(
         "--only",
-        choices=("cp_02", "cp_08", "cp_09", "cp_10", "cp_11"),
+        choices=("cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"),
         default=None,
     )
     return parser
@@ -81,7 +81,8 @@ def main() -> int:
             ),
         }
         for item in report.checkpoints
-        if item.checkpoint_id in {"cp_02", "cp_08", "cp_09", "cp_10", "cp_11"}
+        if item.checkpoint_id
+        in {"cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"}
     }
     print(json.dumps({"job_id": job.id, "results": selected}, ensure_ascii=False))
     return 0
