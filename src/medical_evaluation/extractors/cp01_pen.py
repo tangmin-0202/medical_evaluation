@@ -9,18 +9,18 @@ import cv2
 import numpy as np
 
 from medical_evaluation.domain import TimeRange
-from medical_evaluation.features.cp01_pen import measure_pen_candidate
+from medical_evaluation.features.cp01_pen import (
+    measure_pen_candidate,
+    segment_pen_candidate,
+)
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import (
     FrameMasks,
-    SegmentationPrompt,
-    VideoSegmenter,
 )
 from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame, sample_frames
 
-PEN_PROMPT = "black pen held in a gloved hand"
 PEN_OBJECT_ID = "cp01_marking_pen"
 
 
@@ -30,19 +30,17 @@ class Cp01PenGateExtractor:
     def __init__(
         self,
         *,
-        segmenter: VideoSegmenter,
         evidence_root: Path,
         minimum_consecutive_frames: int = 3,
     ) -> None:
         if minimum_consecutive_frames <= 0:
             raise ValueError("minimum_consecutive_frames must be positive")
-        self.segmenter = segmenter
         self.evidence_root = evidence_root
         self.minimum_consecutive_frames = minimum_consecutive_frames
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+cp01-pen-gate-v1"
+        return "opencv-cp01-pen-gate-v2"
 
     def extract(
         self,
@@ -58,36 +56,23 @@ class Cp01PenGateExtractor:
         if dense_fps <= 0 or analysis_width <= 0:
             raise ValueError("sampling and analysis dimensions must be positive")
 
-        prompt = SegmentationPrompt(
-            object_id=PEN_OBJECT_ID,
-            kind="text",
-            text=PEN_PROMPT,
-            frame_time_sec=time_range.end_sec,
-        )
-        tracked = list(
-            self.segmenter.track(
-                video_path,
-                time_range,
-                [prompt],
-                sample_fps=self.sparse_fps,
-            )
-        )
         decoded: dict[int, np.ndarray] = {}
-        if not tracked:
-            for sampled in sample_frames(
-                video_path,
-                start_sec=time_range.start_sec,
-                end_sec=time_range.end_sec,
-                sample_fps=self.sparse_fps,
-            ):
-                tracked.append(
-                    FrameMasks(
-                        frame_index=sampled.frame_index,
-                        frame_time_sec=sampled.time_sec,
-                        masks={},
-                    )
+        tracked: list[FrameMasks] = []
+        for sampled in sample_frames(
+            video_path,
+            start_sec=time_range.start_sec,
+            end_sec=time_range.end_sec,
+            sample_fps=self.sparse_fps,
+        ):
+            mask = segment_pen_candidate(sampled.image_bgr)
+            tracked.append(
+                FrameMasks(
+                    frame_index=sampled.frame_index,
+                    frame_time_sec=sampled.time_sec,
+                    masks={PEN_OBJECT_ID: mask},
                 )
-                decoded[sampled.frame_index] = sampled.image_bgr
+            )
+            decoded[sampled.frame_index] = sampled.image_bgr
 
         rows: list[dict[str, Any]] = []
         overlays: list[tuple[FrameMasks, str, bool]] = []
@@ -151,7 +136,7 @@ class Cp01PenGateExtractor:
         atomic_write_json(
             safe_child(self.evidence_root, "cp_01/pen_gate/metrics.json"),
             {
-                "prompt": PEN_PROMPT,
+                "detector": "opencv_dark_elongated_near_green_v2",
                 "minimum_consecutive_frames": self.minimum_consecutive_frames,
                 "features": features,
                 "failure_reason": failure_reason,

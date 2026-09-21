@@ -44,19 +44,18 @@ def test_cp01_pen_only_uses_production_gate_without_other_objects(
             )
 
     monkeypatch.setattr(gate, "Cp01PenGateExtractor", Extractor)
-    backend = SimpleNamespace(model_version="test")
     result = gate.collect_cp01_pen_gate(
-        backend,
         Path("video.mp4"),
         TimeRange(start_sec=0, end_sec=14),
         tmp_path,
     )
 
-    assert observed["init"] == {"segmenter": backend, "evidence_root": tmp_path}
+    assert observed["init"] == {"evidence_root": tmp_path}
     assert observed["extract"][1] == "cp_01"
     assert result["features"]["pen_presence_detected"] is False
-    assert result["objects"] == {"marking_pen": gate.PEN_PROMPT}
-    assert gate.PEN_PROMPT == "black pen held in a gloved hand"
+    assert result["objects"] == {
+        "marking_pen": "opencv_dark_elongated_near_green_v2"
+    }
 
 
 def test_gate_objects_are_independent_and_text_only(tmp_path):

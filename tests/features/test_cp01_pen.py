@@ -1,7 +1,10 @@
 import cv2
 import numpy as np
 
-from medical_evaluation.features.cp01_pen import measure_pen_candidate
+from medical_evaluation.features.cp01_pen import (
+    measure_pen_candidate,
+    segment_pen_candidate,
+)
 
 
 def _frame_and_mask(*, value: int = 25) -> tuple[np.ndarray, np.ndarray]:
@@ -55,3 +58,26 @@ def test_dark_dominant_elongated_mask_is_accepted() -> None:
     assert result.dark_pixel_ratio == 1.0
     assert result.dominant_component_ratio == 1.0
     assert result.elongation > 5.0
+
+
+def test_opencv_segments_black_pen_over_green_dam() -> None:
+    frame = np.full((240, 360, 3), (180, 150, 120), dtype=np.uint8)
+    cv2.rectangle(frame, (70, 55), (300, 205), (45, 155, 55), -1)
+    cv2.rectangle(frame, (125, 118), (285, 142), (25, 25, 25), -1)
+
+    mask = segment_pen_candidate(frame)
+    result = measure_pen_candidate(frame, mask)
+
+    assert result.accepted is True
+    assert mask[130, 180]
+
+
+def test_opencv_ignores_template_cross_and_border_sleeve() -> None:
+    frame = np.full((240, 360, 3), (180, 150, 120), dtype=np.uint8)
+    cv2.rectangle(frame, (70, 55), (300, 205), (45, 155, 55), -1)
+    cv2.line(frame, (180, 60), (180, 200), (20, 20, 20), 2)
+    cv2.rectangle(frame, (0, 170), (115, 239), (20, 20, 20), -1)
+
+    mask = segment_pen_candidate(frame)
+
+    assert not mask.any()

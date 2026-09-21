@@ -12,10 +12,7 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
-from medical_evaluation.extractors.cp01_pen import (
-    PEN_PROMPT,
-    Cp01PenGateExtractor,
-)
+from medical_evaluation.extractors.cp01_pen import Cp01PenGateExtractor
 from medical_evaluation.features.cp02_punch import (
     locate_held_punch_box,
     locate_moving_multihole_disk,
@@ -340,13 +337,11 @@ def _run_automatic_punch_box(
 
 
 def collect_cp01_pen_gate(
-    backend,
     video_path: Path,
     time_range: TimeRange,
     output_dir: Path,
 ) -> dict[str, object]:
     extractor = Cp01PenGateExtractor(
-        segmenter=backend,
         evidence_root=output_dir,
     )
     extracted = extractor.extract(
@@ -361,7 +356,7 @@ def collect_cp01_pen_gate(
         "checkpoint_id": "cp_01",
         "time_range": time_range.model_dump(mode="json"),
         "model_version": extractor.model_version,
-        "objects": {"marking_pen": PEN_PROMPT},
+        "objects": {"marking_pen": "opencv_dark_elongated_near_green_v2"},
         "features": extracted.features,
         "evidence": [item.model_dump(mode="json") for item in extracted.evidence],
         "visual_review_status": "pending",
@@ -406,16 +401,15 @@ def main(argv=None):
         localization_window = resolve_gate_window(
             annotations, args.checkpoint_id,
         )
-        _support._reset_cuda_peak_memory()
-        backend = _support._build_backend(args)
         if args.cp01_pen_only:
             result = collect_cp01_pen_gate(
-                backend,
                 args.videos / PRESETS[args.video_id],
                 window,
                 args.output_dir,
             )
         else:
+            _support._reset_cuda_peak_memory()
+            backend = _support._build_backend(args)
             result = collect_gate(
                 backend, args.videos / PRESETS[args.video_id],
                 args.checkpoint_id, window, args.output_dir, sample_fps=args.sample_fps,
