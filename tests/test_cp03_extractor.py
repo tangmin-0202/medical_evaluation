@@ -8,6 +8,7 @@ from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp03 import Cp03FeatureExtractor
 from medical_evaluation.segmentation.base import FrameMasks
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
+from medical_evaluation.video import SampledFrame
 
 
 def _frame_and_mask(*, flap: bool = False, hole: bool = True):
@@ -179,8 +180,12 @@ def test_reliable_frames_without_a_hole_are_incomplete_features(
 
 
 def test_ambiguous_sam_dam_candidates_return_review_instead_of_crashing(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp03.sample_frames",
+        lambda *_args, **_kwargs: iter(()),
+    )
     result = Cp03FeatureExtractor(
         segmenter=AmbiguousSegmenter(), evidence_root=tmp_path
     ).extract(
@@ -195,3 +200,36 @@ def test_ambiguous_sam_dam_candidates_return_review_instead_of_crashing(
     assert result.features["hole_observed"] is None
     assert result.features["hole_adhesion_free"] is None
     assert result.evidence == []
+
+
+def test_text_miss_falls_back_to_automatic_green_box(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frame, mask = _frame_and_mask()
+    segmenter = FakeSegmenter([[], _tracked([mask], start_sec=3.5)])
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp03.sample_frames",
+        lambda *_args, **_kwargs: iter(
+            [SampledFrame(time_sec=3.5, frame_index=7, image_bgr=frame.copy())]
+        ),
+    )
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp03.read_frame", lambda _path, _index: frame.copy()
+    )
+
+    result = Cp03FeatureExtractor(segmenter=segmenter, evidence_root=tmp_path).extract(
+        tmp_path / "video.mp4",
+        "cp_03",
+        TimeRange(start_sec=0, end_sec=4),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert len(segmenter.calls) == 2
+    assert segmenter.calls[0][2][0].kind == "text"
+    assert segmenter.calls[0][2][0].text == "green dental rubber dam cloth"
+    box_prompt = segmenter.calls[1][2][0]
+    assert box_prompt.kind == "box"
+    assert box_prompt.frame_time_sec == 3.5
+    assert box_prompt.coordinates is not None
+    assert result.features["hole_adhesion_free"] is True

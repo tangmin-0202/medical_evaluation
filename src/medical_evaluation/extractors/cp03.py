@@ -22,9 +22,9 @@ from medical_evaluation.segmentation.base import (
 )
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json, safe_child
-from medical_evaluation.video import read_frame
+from medical_evaluation.video import read_frame, sample_frames
 
-DAM_PROMPT = "green dental rubber dam sheet"
+DAM_PROMPT = "green dental rubber dam cloth"
 
 
 @dataclass(frozen=True)
@@ -113,12 +113,26 @@ class Cp03FeatureExtractor:
     def _scan_window(
         self, video_path: Path, time_range: TimeRange
     ) -> list[_FrameObservation]:
-        prompt = SegmentationPrompt(
+        text_prompt = SegmentationPrompt(
             object_id="rubber_dam",
             kind="text",
             frame_time_sec=time_range.start_sec,
             text=DAM_PROMPT,
         )
+        observations = self._observe_prompt(video_path, time_range, text_prompt)
+        if observations:
+            return observations
+        box_prompt = self._automatic_green_box_prompt(video_path, time_range)
+        if box_prompt is None:
+            return []
+        return self._observe_prompt(video_path, time_range, box_prompt)
+
+    def _observe_prompt(
+        self,
+        video_path: Path,
+        time_range: TimeRange,
+        prompt: SegmentationPrompt,
+    ) -> list[_FrameObservation]:
         observations: list[_FrameObservation] = []
         try:
             for item in self.segmenter.track(
@@ -142,6 +156,45 @@ class Cp03FeatureExtractor:
             # Multiple unranked SAM candidates are not safe to guess between.
             return []
         return observations
+
+    def _automatic_green_box_prompt(
+        self, video_path: Path, time_range: TimeRange
+    ) -> SegmentationPrompt | None:
+        best: tuple[int, float, tuple[float, float, float, float]] | None = None
+        for sampled in sample_frames(
+            video_path,
+            start_sec=time_range.start_sec,
+            end_sec=time_range.end_sec,
+            sample_fps=self.sample_fps,
+        ):
+            frame = sampled.image_bgr
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            green = cv2.inRange(hsv, (35, 55, 35), (95, 255, 255))
+            count, _, stats, _ = cv2.connectedComponentsWithStats(green)
+            if count <= 1:
+                continue
+            index = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            x, y, width, height, area = (int(value) for value in stats[index])
+            if area < frame.shape[0] * frame.shape[1] * 0.01:
+                continue
+            frame_height, frame_width = frame.shape[:2]
+            box = (
+                max(0, x - 4) / frame_width,
+                max(0, y - 4) / frame_height,
+                min(frame_width, x + width + 4) / frame_width,
+                min(frame_height, y + height + 4) / frame_height,
+            )
+            candidate = (area, sampled.time_sec, box)
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+        if best is None:
+            return None
+        return SegmentationPrompt(
+            object_id="rubber_dam",
+            kind="box",
+            frame_time_sec=best[1],
+            coordinates=best[2],
+        )
 
     @staticmethod
     def _tail_range(stage: TimeRange, seconds: float) -> TimeRange:
