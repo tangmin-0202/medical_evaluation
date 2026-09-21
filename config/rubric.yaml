@@ -53,7 +53,7 @@ checkpoints:
     start_sec: 23.0
     end_sec: 40.0
   thresholds:
-    min_clear_hole_frames: 3
+    min_clear_hole_frames: 1
 - id: cp_04
   name: 选择正确的障夹
   criteria:

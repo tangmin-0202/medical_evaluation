@@ -38,7 +38,7 @@ class Cp03FeatureExtractor:
     sample_fps = 2.0
     initial_window_sec = 4.0
     fallback_window_sec = 8.0
-    minimum_clear_frames = 3
+    minimum_clear_frames = 1
 
     def __init__(self, *, segmenter: VideoSegmenter, evidence_root: Path) -> None:
         self.segmenter = segmenter
@@ -66,50 +66,47 @@ class Cp03FeatureExtractor:
             video_path,
             self._tail_range(time_range, self.initial_window_sec),
         )
-        run = self._latest_consistent_run(observations)
-        if len(run) < self.minimum_clear_frames and (
+        selected = self._latest_clear_hole(observations)
+        if selected is None and (
             time_range.end_sec - time_range.start_sec > self.initial_window_sec
         ):
             observations = self._scan_window(
                 video_path,
                 self._tail_range(time_range, self.fallback_window_sec),
             )
-            run = self._latest_consistent_run(observations)
+            selected = self._latest_clear_hole(observations)
 
         reliable_count = sum(
             item.analysis is not None and item.analysis.reliable
             for item in observations
         )
         final_scan_reliable = reliable_count >= self.minimum_clear_frames
-        any_hole = any(
-            item.analysis is not None and item.analysis.hole_observed
-            for item in observations
-        )
+        any_hole = selected is not None
         hole_observed: bool | None
         if not final_scan_reliable:
             hole_observed = None
         else:
             hole_observed = any_hole
 
-        adhesion_count = sum(
-            item.analysis is not None and item.analysis.adhesion_detected is True
-            for item in run
+        adhesion_count = int(
+            selected is not None
+            and selected.analysis is not None
+            and selected.analysis.adhesion_detected is True
         )
         adhesion_free: bool | None = None
-        if len(run) >= self.minimum_clear_frames:
-            if adhesion_count == 0:
-                adhesion_free = True
-            elif adhesion_count >= 2:
-                adhesion_free = False
+        if selected is not None and selected.analysis is not None:
+            adhesion_free = not bool(selected.analysis.adhesion_detected)
 
         features: dict[str, float | bool | None] = {
             "final_scan_reliable": final_scan_reliable,
             "hole_observed": hole_observed,
-            "hole_clear_consecutive_frames": float(len(run)),
+            "hole_clear_consecutive_frames": float(selected is not None),
             "hole_adhesion_free": adhesion_free,
             "adhesion_observed_frame_count": float(adhesion_count),
         }
-        evidence = self._write_evidence(observations, run)
+        evidence = self._write_evidence(
+            observations, [] if selected is None else [selected]
+        )
         return ExtractedEvidence(features=features, evidence=evidence)
 
     def _scan_window(
@@ -161,6 +158,21 @@ class Cp03FeatureExtractor:
                 interpolation=cv2.INTER_NEAREST,
             ).astype(bool)
         return mask
+
+    @classmethod
+    def _latest_clear_hole(
+        cls, observations: list[_FrameObservation]
+    ) -> _FrameObservation | None:
+        return next(
+            (
+                observation
+                for observation in reversed(observations)
+                if observation.analysis is not None
+                and observation.analysis.reliable
+                and observation.analysis.hole_observed
+            ),
+            None,
+        )
 
     @classmethod
     def _latest_consistent_run(

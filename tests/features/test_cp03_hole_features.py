@@ -105,3 +105,37 @@ def test_opening_clipped_by_frame_edge_is_unreliable() -> None:
     result = hole.analyze_hole_adhesion(image, dam_mask)
 
     assert result.hole_observed is False
+
+
+def test_source_pixels_reveal_hole_when_sam_mask_fills_small_opening() -> None:
+    image = np.full((160, 200, 3), (40, 160, 40), np.uint8)
+    dam_mask = np.ones((160, 200), np.uint8)
+    cv2.circle(image, (100, 80), 8, (225, 225, 225), -1)
+
+    result = hole.analyze_hole_adhesion(image, dam_mask)
+
+    assert result.hole_observed is True
+    assert result.center_xy == pytest.approx((100, 80), abs=1)
+    assert result.adhesion_detected is False
+
+
+def test_source_pixels_detect_connected_flap_when_sam_mask_fills_hole() -> None:
+    image = np.full((160, 200, 3), (40, 160, 40), np.uint8)
+    dam_mask = np.ones((160, 200), np.uint8)
+    cv2.circle(image, (100, 80), 12, (225, 225, 225), -1)
+    cv2.rectangle(image, (97, 68), (103, 80), (40, 160, 40), -1)
+
+    result = hole.analyze_hole_adhesion(image, dam_mask)
+
+    assert result.hole_observed is True
+    assert result.adhesion_detected is True
+
+
+def test_black_pen_dot_inside_dam_is_not_a_hole() -> None:
+    image = np.full((160, 200, 3), (40, 160, 40), np.uint8)
+    dam_mask = np.ones((160, 200), np.uint8)
+    cv2.circle(image, (100, 80), 8, (20, 20, 20), -1)
+
+    result = hole.analyze_hole_adhesion(image, dam_mask)
+
+    assert result.hole_observed is False

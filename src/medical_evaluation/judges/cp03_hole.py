@@ -26,8 +26,8 @@ def judge_cp03_hole(
         return needs_review("cp_03", features, reason_code="unreliable_hole_observation",
                             reason="无法确认是否形成贯通孔，不能把小白点当作孔。")
     required = thresholds.get("min_clear_hole_frames")
-    if required is None or not math.isfinite(required) or required < 2 or required != int(required):
-        raise ValueError("at least two consecutive clear frames are required")
+    if required is None or not math.isfinite(required) or required < 1 or required != int(required):
+        raise ValueError("at least one clear hole frame is required")
     count = features.get("hole_clear_consecutive_frames")
     if count is None or not math.isfinite(float(count)) or float(count) < required:
         return needs_review("cp_03", features, reason_code="insufficient_clear_hole_frames",

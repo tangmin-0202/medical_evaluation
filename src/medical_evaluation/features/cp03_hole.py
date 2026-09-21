@@ -82,16 +82,56 @@ def analyze_hole_adhesion(
     outer_fill = np.zeros(binary.shape, np.uint8)
     cv2.drawContours(outer_fill, [outer], -1, 1, thickness=-1)
     openings = outer_fill.astype(bool) & ~main_dam
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    source_green = (
+        (hsv[..., 0] >= 35)
+        & (hsv[..., 0] <= 95)
+        & (hsv[..., 1] >= 50)
+        & (hsv[..., 2] >= 40)
+    )
+    interior = cv2.erode(
+        main_dam.astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+    ).astype(bool)
+    bright_opening = (hsv[..., 1] <= 100) & (hsv[..., 2] >= 140)
+    blue_opening = (
+        (hsv[..., 0] >= 90)
+        & (hsv[..., 0] <= 130)
+        & (hsv[..., 1] >= 40)
+        & (hsv[..., 2] >= 50)
+    )
+    openings |= interior & (bright_opening | blue_opening)
+
+    green_count, green_labels, green_stats, _ = cv2.connectedComponentsWithStats(
+        (source_green & main_dam).astype(np.uint8), connectivity=8
+    )
+    connected_green = np.zeros(binary.shape, dtype=bool)
+    if green_count > 1:
+        green_label = 1 + int(np.argmax(green_stats[1:, cv2.CC_STAT_AREA]))
+        connected_green = green_labels == green_label
     candidate_count, candidate_labels, candidate_stats, _ = (
         cv2.connectedComponentsWithStats(openings.astype(np.uint8), connectivity=8)
     )
-    candidates: list[tuple[int, int]] = []
+    candidates: list[tuple[float, int]] = []
     height, width = binary.shape
     for label in range(1, candidate_count):
         x, y, w, h, area = candidate_stats[label]
         touches_edge = x == 0 or y == 0 or x + w >= width or y + h >= height
-        if area >= min_hole_area_px and not touches_edge:
-            candidates.append((int(area), label))
+        if area < min_hole_area_px or touches_edge:
+            continue
+        component = candidate_labels == label
+        source_candidate = float(main_dam[component].mean()) >= 0.5
+        if source_candidate:
+            fill_ratio = float(area / max(w * h, 1))
+            axis_ratio = min(w, h) / max(w, h)
+            if area > 600 or max(w, h) > 30 or fill_ratio < 0.4 or axis_ratio < 0.45:
+                continue
+            mean_saturation = float(hsv[..., 1][component].mean())
+            mean_value = float(hsv[..., 2][component].mean())
+            score = mean_value - mean_saturation + 50.0 * fill_ratio
+        else:
+            score = float(area)
+        candidates.append((score, label))
     if not candidates:
         return HoleAdhesionAnalysis(
             reliable=reliable,
@@ -106,6 +146,13 @@ def analyze_hole_adhesion(
 
     _, selected_label = max(candidates)
     hole_mask = candidate_labels == selected_label
+    x, y, component_width, component_height, component_area = candidate_stats[
+        selected_label
+    ]
+    source_candidate = float(main_dam[hole_mask].mean()) >= 0.5
+    source_fill_ratio = float(
+        component_area / max(component_width * component_height, 1)
+    )
     hole_contours, _ = cv2.findContours(
         hole_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
     )
@@ -113,9 +160,18 @@ def analyze_hole_adhesion(
     hull_mask = np.zeros(binary.shape, np.uint8)
     cv2.drawContours(hull_mask, [cv2.convexHull(contour)], -1, 1, thickness=-1)
     hull = hull_mask.astype(bool)
-    adhesion_mask = hull & main_dam
+    hull_interior = cv2.erode(
+        hull_mask,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    ).astype(bool)
+    adhesion_mask = hull_interior & connected_green
     hull_area = int(hull.sum())
     adhesion_ratio = float(adhesion_mask.sum() / hull_area) if hull_area else 0.0
+    adhesion_detected = (
+        source_fill_ratio < 0.65
+        if source_candidate
+        else adhesion_ratio >= min_adhesion_area_ratio
+    )
     moments = cv2.moments(hole_mask.astype(np.uint8), binaryImage=True)
     center = (
         float(moments["m10"] / moments["m00"]),
@@ -125,7 +181,7 @@ def analyze_hole_adhesion(
     return HoleAdhesionAnalysis(
         reliable=True,
         hole_observed=True,
-        adhesion_detected=adhesion_ratio >= min_adhesion_area_ratio,
+        adhesion_detected=adhesion_detected,
         center_xy=center,
         radius_px=radius,
         adhesion_area_ratio=adhesion_ratio,
