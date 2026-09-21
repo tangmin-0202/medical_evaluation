@@ -20,6 +20,7 @@ from medical_evaluation.segmentation.base import (
     SegmentationPrompt,
     VideoSegmenter,
 )
+from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
@@ -119,23 +120,27 @@ class Cp03FeatureExtractor:
             text=DAM_PROMPT,
         )
         observations: list[_FrameObservation] = []
-        for item in self.segmenter.track(
-            video_path,
-            time_range,
-            [prompt],
-            sample_fps=self.sample_fps,
-        ):
-            frame = read_frame(video_path, item.frame_index)
-            mask = self._dam_mask(item, frame.shape[:2])
-            analysis = None if mask is None else analyze_hole_adhesion(frame, mask)
-            observations.append(
-                _FrameObservation(
-                    item=item,
-                    frame=frame,
-                    dam_mask=mask,
-                    analysis=analysis,
+        try:
+            for item in self.segmenter.track(
+                video_path,
+                time_range,
+                [prompt],
+                sample_fps=self.sample_fps,
+            ):
+                frame = read_frame(video_path, item.frame_index)
+                mask = self._dam_mask(item, frame.shape[:2])
+                analysis = None if mask is None else analyze_hole_adhesion(frame, mask)
+                observations.append(
+                    _FrameObservation(
+                        item=item,
+                        frame=frame,
+                        dam_mask=mask,
+                        analysis=analysis,
+                    )
                 )
-            )
+        except Sam3AmbiguousTextResult:
+            # Multiple unranked SAM candidates are not safe to guess between.
+            return []
         return observations
 
     @staticmethod
@@ -173,46 +178,6 @@ class Cp03FeatureExtractor:
             ),
             None,
         )
-
-    @classmethod
-    def _latest_consistent_run(
-        cls, observations: list[_FrameObservation]
-    ) -> list[_FrameObservation]:
-        current: list[_FrameObservation] = []
-        best: list[_FrameObservation] = []
-        for observation in observations:
-            analysis = observation.analysis
-            if (
-                analysis is None
-                or not analysis.reliable
-                or not analysis.hole_observed
-                or analysis.center_xy is None
-                or analysis.radius_px is None
-            ):
-                current = []
-                continue
-            if current and not cls._same_hole(current[-1], observation):
-                current = []
-            current.append(observation)
-            if len(current) >= len(best):
-                best = list(current)
-        return best
-
-    @staticmethod
-    def _same_hole(left: _FrameObservation, right: _FrameObservation) -> bool:
-        first = left.analysis
-        second = right.analysis
-        assert first is not None and second is not None
-        assert first.center_xy is not None and second.center_xy is not None
-        assert first.radius_px is not None and second.radius_px is not None
-        if right.item.frame_time_sec - left.item.frame_time_sec > 0.75:
-            return False
-        distance = float(np.linalg.norm(np.subtract(first.center_xy, second.center_xy)))
-        max_distance = max(12.0, 0.75 * max(first.radius_px, second.radius_px))
-        radius_ratio = min(first.radius_px, second.radius_px) / max(
-            first.radius_px, second.radius_px
-        )
-        return distance <= max_distance and radius_ratio >= 0.5
 
     def _write_evidence(
         self,

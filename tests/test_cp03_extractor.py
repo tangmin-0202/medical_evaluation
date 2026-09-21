@@ -7,6 +7,7 @@ import pytest
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp03 import Cp03FeatureExtractor
 from medical_evaluation.segmentation.base import FrameMasks
+from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 
 
 def _frame_and_mask(*, flap: bool = False, hole: bool = True):
@@ -31,6 +32,13 @@ class FakeSegmenter:
     def track(self, video_path, time_range, prompts, sample_fps):
         self.calls.append((video_path, time_range, prompts, sample_fps))
         return iter(self.windows[len(self.calls) - 1])
+
+
+class AmbiguousSegmenter:
+    model_version = "fake-sam3"
+
+    def track(self, video_path, time_range, prompts, sample_fps):
+        raise Sam3AmbiguousTextResult("multiple unranked candidates")
 
 
 def _tracked(masks: list[np.ndarray], *, start_sec: float = 6.0):
@@ -168,3 +176,22 @@ def test_reliable_frames_without_a_hole_are_incomplete_features(
     assert result.features["final_scan_reliable"] is True
     assert result.features["hole_observed"] is False
     assert result.features["hole_adhesion_free"] is None
+
+
+def test_ambiguous_sam_dam_candidates_return_review_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    result = Cp03FeatureExtractor(
+        segmenter=AmbiguousSegmenter(), evidence_root=tmp_path
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_03",
+        TimeRange(start_sec=0, end_sec=10),
+        dense_fps=5,
+        analysis_width=1280,
+    )
+
+    assert result.features["final_scan_reliable"] is False
+    assert result.features["hole_observed"] is None
+    assert result.features["hole_adhesion_free"] is None
+    assert result.evidence == []
