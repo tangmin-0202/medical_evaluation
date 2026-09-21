@@ -12,6 +12,10 @@ import numpy as np
 
 from medical_evaluation.annotations import VideoAnnotations
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.extractors.cp01_pen import (
+    PEN_PROMPT,
+    Cp01PenGateExtractor,
+)
 from medical_evaluation.features.cp02_punch import (
     locate_held_punch_box,
     locate_moving_multihole_disk,
@@ -335,18 +339,51 @@ def _run_automatic_punch_box(
     }
 
 
+def collect_cp01_pen_gate(
+    backend,
+    video_path: Path,
+    time_range: TimeRange,
+    output_dir: Path,
+) -> dict[str, object]:
+    extractor = Cp01PenGateExtractor(
+        segmenter=backend,
+        evidence_root=output_dir,
+    )
+    extracted = extractor.extract(
+        video_path,
+        "cp_01",
+        time_range,
+        dense_fps=1.0,
+        analysis_width=1280,
+    )
+    return {
+        "status": "completed",
+        "checkpoint_id": "cp_01",
+        "time_range": time_range.model_dump(mode="json"),
+        "model_version": extractor.model_version,
+        "objects": {"marking_pen": PEN_PROMPT},
+        "features": extracted.features,
+        "evidence": [item.model_dump(mode="json") for item in extracted.evidence],
+        "visual_review_status": "pending",
+        "score": None,
+    }
+
+
 def main(argv=None):
     parser = _support.build_parser()
     parser.description = "SAM3 CP01/CP02 object gate only; no automatic grading."
     parser.add_argument("--checkpoint-id", choices=tuple(CATALOG), required=True)
     parser.add_argument("--sample-fps", type=float, default=2)
     parser.add_argument("--automatic-punch-only", action="store_true")
+    parser.add_argument("--cp01-pen-only", action="store_true")
     parser.add_argument("--include-prepunch-gap", action="store_true")
     args = parser.parse_args(argv)
     if args.sample_fps <= 0:
         parser.error("sample-fps must be positive")
     if args.include_prepunch_gap and args.checkpoint_id != "cp_02":
         parser.error("pre-punch gap is CP02-only")
+    if args.cp01_pen_only and args.checkpoint_id != "cp_01":
+        parser.error("cp01-pen-only requires cp_01")
     _support._prepare_output(args.output_dir)
     started = time.perf_counter()
     provenance = {
@@ -370,12 +407,21 @@ def main(argv=None):
             annotations, args.checkpoint_id,
         )
         _support._reset_cuda_peak_memory()
-        result = collect_gate(
-            _support._build_backend(args), args.videos / PRESETS[args.video_id],
-            args.checkpoint_id, window, args.output_dir, sample_fps=args.sample_fps,
-            automatic_punch_only=args.automatic_punch_only,
-            localization_time_range=localization_window,
-        )
+        backend = _support._build_backend(args)
+        if args.cp01_pen_only:
+            result = collect_cp01_pen_gate(
+                backend,
+                args.videos / PRESETS[args.video_id],
+                window,
+                args.output_dir,
+            )
+        else:
+            result = collect_gate(
+                backend, args.videos / PRESETS[args.video_id],
+                args.checkpoint_id, window, args.output_dir, sample_fps=args.sample_fps,
+                automatic_punch_only=args.automatic_punch_only,
+                localization_time_range=localization_window,
+            )
         result.update(provenance=provenance, elapsed_seconds=time.perf_counter() - started,
                       cuda_peak_memory=_support.cuda_peak_memory())
         atomic_write_json(args.output_dir / "summary.json", result)

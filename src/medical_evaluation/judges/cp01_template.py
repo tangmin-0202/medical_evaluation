@@ -17,9 +17,9 @@ def judge_cp01_template(
     if features.get("stage_scan_reliable") is not True:
         return needs_review("cp_01", features, reason_code="unreliable_stage_scan",
                             reason="阶段覆盖或分割不可靠，不能据此认定未标记。")
-    if features.get("pen_dam_contact_observed") is not True:
-        return incomplete("cp_01", features, reason_code="marking_contact_not_observed",
-                          reason="可靠阶段扫描中未观察到笔尖到达橡皮布。",
+    if features.get("pen_presence_detected") is not True:
+        return incomplete("cp_01", features, reason_code="cp01_not_performed",
+                          reason="可靠阶段扫描中未观察到标记笔，操作未进行。",
                           suggestion="请用标记笔在橡皮布上完成目标牙位标记。")
     if features.get("template_reference_reliable") is not True:
         return needs_review("cp_01", features, reason_code="unreliable_template_reference",

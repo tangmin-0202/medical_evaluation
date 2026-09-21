@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from medical_evaluation.domain import TimeRange
+from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.segmentation.base import FrameMasks
 
 
@@ -17,6 +18,45 @@ def load_gate():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_cp01_pen_only_uses_production_gate_without_other_objects(
+    tmp_path, monkeypatch,
+):
+    gate = load_gate()
+    observed = {}
+
+    class Extractor:
+        model_version = "test+cp01-pen-gate-v1"
+
+        def __init__(self, **kwargs):
+            observed["init"] = kwargs
+
+        def extract(self, video_path, checkpoint_id, time_range, **kwargs):
+            observed["extract"] = (
+                video_path, checkpoint_id, time_range, kwargs,
+            )
+            return ExtractedEvidence(
+                features={
+                    "stage_scan_reliable": True,
+                    "pen_presence_detected": False,
+                }
+            )
+
+    monkeypatch.setattr(gate, "Cp01PenGateExtractor", Extractor)
+    backend = SimpleNamespace(model_version="test")
+    result = gate.collect_cp01_pen_gate(
+        backend,
+        Path("video.mp4"),
+        TimeRange(start_sec=0, end_sec=14),
+        tmp_path,
+    )
+
+    assert observed["init"] == {"segmenter": backend, "evidence_root": tmp_path}
+    assert observed["extract"][1] == "cp_01"
+    assert result["features"]["pen_presence_detected"] is False
+    assert result["objects"] == {"marking_pen": gate.PEN_PROMPT}
+    assert gate.PEN_PROMPT == "black pen held in a gloved hand"
 
 
 def test_gate_objects_are_independent_and_text_only(tmp_path):
