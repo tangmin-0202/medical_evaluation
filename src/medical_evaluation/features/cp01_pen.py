@@ -41,7 +41,7 @@ def segment_pen_candidate(frame_bgr: np.ndarray) -> np.ndarray:
         cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
     )
-    proximity_size = max(5, round(min(height, width) * 0.10))
+    proximity_size = max(5, round(min(height, width) * 0.22))
     near_green = cv2.dilate(
         main_green.astype(np.uint8),
         cv2.getStructuringElement(

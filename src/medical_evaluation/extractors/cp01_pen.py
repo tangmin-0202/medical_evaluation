@@ -25,7 +25,7 @@ PEN_OBJECT_ID = "cp01_marking_pen"
 
 
 class Cp01PenGateExtractor:
-    sparse_fps = 1.0
+    sparse_fps = 2.0
 
     def __init__(
         self,

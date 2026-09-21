@@ -92,3 +92,13 @@ def test_opencv_ignores_dark_tool_beside_small_green_distractor() -> None:
     mask = segment_pen_candidate(frame)
 
     assert not mask.any()
+
+
+def test_opencv_segments_pen_just_outside_main_dam() -> None:
+    frame = np.full((240, 360, 3), (180, 150, 120), dtype=np.uint8)
+    cv2.rectangle(frame, (45, 45), (230, 210), (45, 155, 55), -1)
+    cv2.rectangle(frame, (252, 105), (345, 122), (25, 25, 25), -1)
+
+    mask = segment_pen_candidate(frame)
+
+    assert mask[114, 290]

@@ -26,7 +26,13 @@ def _video(path: Path, *, pen_positions: set[int], frame_count: int = 6) -> Path
 
 
 def _make_extractor(root: Path) -> Cp01PenGateExtractor:
-    return Cp01PenGateExtractor(evidence_root=root)
+    extractor = Cp01PenGateExtractor(evidence_root=root)
+    extractor.sparse_fps = 1.0
+    return extractor
+
+
+def test_production_gate_scans_two_frames_per_second(tmp_path: Path) -> None:
+    assert Cp01PenGateExtractor(evidence_root=tmp_path).sparse_fps == 2.0
 
 
 def test_three_consecutive_automatic_pen_frames_pass_gate(tmp_path: Path) -> None:
