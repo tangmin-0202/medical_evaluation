@@ -6,6 +6,7 @@ from medical_evaluation.annotations import SegmentAnnotation, VideoAnnotations
 from medical_evaluation.app import create_app
 from medical_evaluation.domain import CheckpointStatus, TimeRange
 from medical_evaluation.extractors.cp03 import Cp03FeatureExtractor
+from medical_evaluation.extractors.cp04 import Cp04FeatureExtractor
 from medical_evaluation.extractors.cp08 import Cp08FeatureExtractor
 from medical_evaluation.extractors.cp09_cp11 import Cp09Cp11FeatureExtractor
 from medical_evaluation.jobs import JobRecord
@@ -76,6 +77,10 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
     assert isinstance(extractor.cp03, Cp03FeatureExtractor)
     assert extractor.cp03.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp03.segmenter is extractor.cp09.segmenter
+    assert isinstance(extractor.cp04, Cp04FeatureExtractor)
+    assert extractor.cp04.evidence_root == settings.data_dir / "jobs" / "job-1"
+    assert extractor.cp04.segmenter is extractor.cp09.segmenter
+    assert extractor.cp04.reference_dir == settings.cp04_reference_dir
     assert isinstance(extractor.cp08, Cp08FeatureExtractor)
     assert extractor.cp08.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert extractor.cp08.segmenter is extractor.cp09.segmenter
@@ -84,7 +89,7 @@ def test_runtime_builds_job_scoped_cp09_cp11_extractor(tmp_path: Path) -> None:
     assert extractor.cp11.evidence_root == settings.data_dir / "jobs" / "job-1"
     assert pipeline.commentary_provider.model == "Qwen-Test"
     assert pipeline.enabled_checkpoint_ids == frozenset(
-        {"cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"}
+        {"cp_02", "cp_03", "cp_04", "cp_08", "cp_09", "cp_10", "cp_11"}
     )
     assert backend_calls == [
         (
@@ -132,9 +137,18 @@ def test_runtime_builds_sam3_without_validating_sam2(tmp_path: Path) -> None:
     assert calls[0][1]["grounding_batch_size"] == 3
     assert isinstance(extractor.cp08, Cp08FeatureExtractor)
     assert isinstance(extractor.cp03, Cp03FeatureExtractor)
+    assert isinstance(extractor.cp04, Cp04FeatureExtractor)
     assert extractor.cp08.segmenter is extractor.cp09.segmenter
     assert extractor.cp09.prompt_policy.__class__.__name__ == "TextPromptPolicy"
     assert "cp08=" in extractor.model_version
+
+
+def test_cp04_reference_dir_resolves_under_project_root(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+
+    assert settings.cp04_reference_dir == (
+        tmp_path / "config" / "cp04_reference.v1"
+    ).resolve()
 
 
 @pytest.mark.parametrize("missing", ["checkpoint", "bpe"])

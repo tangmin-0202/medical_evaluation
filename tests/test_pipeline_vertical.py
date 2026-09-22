@@ -23,7 +23,7 @@ class FakeExtractor:
 
     @property
     def model_version(self) -> str:
-        return "fake-cp02-cp08-cp09-cp10-cp11-v1"
+        return "fake-cp02-cp04-cp08-cp09-cp10-cp11-v1"
 
     def extract(
         self,
@@ -77,6 +77,17 @@ class FakeExtractor:
                     "hole_clear_consecutive_frames": 3.0,
                     "hole_adhesion_free": True,
                     "adhesion_observed_frame_count": 0.0,
+                }
+            )
+        if checkpoint_id == "cp_04":
+            return ExtractedEvidence(
+                features={
+                    "clamp_observed": True,
+                    "shape_evidence_reliable": True,
+                    "clear_frame_count": 3.0,
+                    "matching_frame_count": 3.0,
+                    "clamp_reference_similarity": 0.9,
+                    "evidence_consistent": True,
                 }
             )
         if checkpoint_id == "cp_09":
@@ -259,10 +270,10 @@ def test_pipeline_writes_three_real_decisions_and_eight_review_results(tmp_path:
     assert len(stored["checkpoints"]) == 11
 
 
-def test_pipeline_can_enable_cp03_and_cp08_as_six_real_decisions(tmp_path: Path) -> None:
+def test_pipeline_can_enable_cp04_as_seven_real_decisions(tmp_path: Path) -> None:
     pipeline, extractor, _ = make_pipeline(tmp_path)
     pipeline.enabled_checkpoint_ids = frozenset(
-        {"cp_02", "cp_03", "cp_08", "cp_09", "cp_10", "cp_11"}
+        {"cp_02", "cp_03", "cp_04", "cp_08", "cp_09", "cp_10", "cp_11"}
     )
 
     report = pipeline.run(make_job(tmp_path))
@@ -271,17 +282,20 @@ def test_pipeline_can_enable_cp03_and_cp08_as_six_real_decisions(tmp_path: Path)
     assert report.checkpoints[1].reason_code == "criteria_satisfied"
     assert report.checkpoints[2].status.value == "correct"
     assert report.checkpoints[2].reason_code == "criteria_satisfied"
+    assert report.checkpoints[3].status.value == "correct"
+    assert report.checkpoints[3].reason_code == "criteria_satisfied"
     assert report.checkpoints[7].status.value == "correct"
     assert report.checkpoints[7].reason_code == "criteria_satisfied"
-    assert report.summary.evaluated_count == 6
+    assert report.summary.evaluated_count == 7
     assert report.summary.final_score is None
     assert report.audit.model_versions == {
-        "pipeline": "vertical-cp02-cp03-cp08-cp09-cp10-cp11",
-        "extractor": "fake-cp02-cp08-cp09-cp10-cp11-v1",
+        "pipeline": "vertical-cp02-cp03-cp04-cp08-cp09-cp10-cp11",
+        "extractor": "fake-cp02-cp04-cp08-cp09-cp10-cp11-v1",
     }
     assert [call[0] for call in extractor.calls] == [
         "cp_02",
         "cp_03",
+        "cp_04",
         "cp_08",
         "cp_09",
         "cp_10",

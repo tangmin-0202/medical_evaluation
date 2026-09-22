@@ -195,7 +195,7 @@ class AnalysisPipeline:
             audit=RunAudit(
                 rubric_version=self.rubric.version,
                 model_versions={
-                    "pipeline": "vertical-cp02-cp03-cp08-cp09-cp10-cp11",
+                    "pipeline": "vertical-cp02-cp03-cp04-cp08-cp09-cp10-cp11",
                     "extractor": getattr(extractor, "model_version", "unknown"),
                 },
                 started_at=started,

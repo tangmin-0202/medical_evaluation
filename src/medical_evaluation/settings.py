@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     mannequin_template_path: Path = Path(
         "config/mannequin_template.registration-gate.v1.json"
     )
+    cp04_reference_dir: Path = Path("config/cp04_reference.v1")
     sam3_output_prob_threshold: float = Field(default=0.2, ge=0, le=1)
     sam3_grounding_batch_size: int = Field(default=4, gt=0)
     sam3_source_revision: str = "660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7"
@@ -67,5 +68,9 @@ class Settings(BaseSettings):
         if not self.mannequin_template_path.is_absolute():
             self.mannequin_template_path = (
                 self.project_root / self.mannequin_template_path
+            ).resolve()
+        if not self.cp04_reference_dir.is_absolute():
+            self.cp04_reference_dir = (
+                self.project_root / self.cp04_reference_dir
             ).resolve()
         return self
