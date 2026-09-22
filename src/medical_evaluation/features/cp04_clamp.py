@@ -16,6 +16,7 @@ class ClampDisplayMeasurement:
     relative_area: float | None
     boundary_touch: bool
     sharpness: float | None
+    elongation_ratio: float | None
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,13 @@ def measure_display_candidate(
     hand = _as_mask(hand_mask, shape)
     clamp = _largest_component(_as_mask(clamp_mask, shape))
     if not hand.any():
-        return ClampDisplayMeasurement(False, "gloved_hand_not_observed", None, None, False, None)
+        return ClampDisplayMeasurement(
+            False, "gloved_hand_not_observed", None, None, False, None, None
+        )
     if not clamp.any():
-        return ClampDisplayMeasurement(False, "clamp_not_observed", None, None, False, None)
+        return ClampDisplayMeasurement(
+            False, "clamp_not_observed", None, None, False, None, None
+        )
 
     boundary_touch = bool(
         clamp[0].any() or clamp[-1].any() or clamp[:, 0].any() or clamp[:, -1].any()
@@ -56,6 +61,7 @@ def measure_display_candidate(
     near_hand = cv2.dilate(hand.astype(np.uint8), kernel).astype(bool)
     proximity = float(np.logical_and(clamp, near_hand).sum() / clamp_area)
     sharpness = _masked_sharpness(frame_bgr, clamp)
+    elongation_ratio = _elongation_ratio(clamp)
 
     if boundary_touch:
         reason = "clamp_touches_frame_boundary"
@@ -65,6 +71,9 @@ def measure_display_candidate(
         reliable = False
     elif not 0.002 <= relative_area <= 0.35:
         reason = "implausible_clamp_size"
+        reliable = False
+    elif elongation_ratio > 2.5:
+        reason = "elongated_non_clamp_object"
         reliable = False
     else:
         reason = "reliable_display_candidate"
@@ -76,6 +85,7 @@ def measure_display_candidate(
         relative_area,
         boundary_touch,
         sharpness,
+        elongation_ratio,
     )
 
 
@@ -182,6 +192,16 @@ def _crop(mask: np.ndarray) -> np.ndarray:
     if len(xs) == 0:
         return np.zeros((0, 0), dtype=bool)
     return mask[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+
+def _elongation_ratio(mask: np.ndarray) -> float:
+    points_yx = np.argwhere(mask)
+    if len(points_yx) < 3:
+        return float("inf")
+    rectangle = cv2.minAreaRect(points_yx[:, ::-1].astype(np.float32))
+    width, height = rectangle[1]
+    shorter = min(width, height)
+    return float("inf") if shorter <= 0 else float(max(width, height) / shorter)
 
 
 def _orientation_variants(mask: np.ndarray) -> tuple[np.ndarray, ...]:

@@ -83,3 +83,18 @@ def test_display_candidate_rejects_boundary_clipped_mask() -> None:
     assert measurement.reliable is False
     assert measurement.boundary_touch is True
     assert measurement.reason == "clamp_touches_frame_boundary"
+
+
+def test_display_candidate_rejects_long_handled_plier_on_glove() -> None:
+    frame = np.full((220, 220, 3), 120, np.uint8)
+    hand = np.ones((220, 220), bool)
+    plier = np.zeros((220, 220), np.uint8)
+    cv2.rectangle(plier, (25, 101), (198, 119), 1, -1)
+    cv2.ellipse(plier, (35, 110), (28, 34), 0, 210, 330, 1, 9)
+
+    measurement = measure_display_candidate(frame, hand, plier.astype(bool))
+
+    assert measurement.reliable is False
+    assert measurement.reason == "elongated_non_clamp_object"
+    assert measurement.elongation_ratio is not None
+    assert measurement.elongation_ratio > 2.5

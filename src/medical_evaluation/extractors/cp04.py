@@ -343,6 +343,7 @@ class Cp04FeatureExtractor:
                     "relative_area": observation.display.relative_area,
                     "hand_proximity_ratio": observation.display.hand_proximity_ratio,
                     "sharpness": observation.display.sharpness,
+                    "elongation_ratio": observation.display.elongation_ratio,
                     "similarity": similarity,
                     "matches_reference": (
                         None if similarity is None else similarity >= self.min_similarity
