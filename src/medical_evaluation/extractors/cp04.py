@@ -178,6 +178,7 @@ class Cp04FeatureExtractor:
                 {
                     "frame_index": observation.item.frame_index,
                     "time_sec": observation.item.frame_time_sec,
+                    "crop_clip_position": int(observation.crop_clip_position or 0),
                     "mask_path": f"masks/{name}",
                 }
             )

@@ -10,7 +10,13 @@ import numpy as np
 import pytest
 
 from medical_evaluation.domain import TimeRange
-from medical_evaluation.extractors.cp04 import Cp04FeatureExtractor
+from medical_evaluation.extractors.cp04 import (
+    HAND_PROMPT,
+    LOCAL_CLAMP_OBJECT_ID,
+    LOCAL_CLAMP_PROMPT,
+    LOCAL_CLAMP_SOURCE,
+    Cp04FeatureExtractor,
+)
 from medical_evaluation.segmentation.base import FrameMasks
 from scripts.build_cp04_reference import build_parser
 
@@ -44,17 +50,33 @@ class FakeSegmenter:
     model_version = "fake-sam3-reference"
 
     def __init__(self) -> None:
-        self.outputs = [
-            _tracked("cp04_gloved_hand", [_hand_mask()] * 3),
-            _tracked("cp04_clamp_refined", [_clamp_mask()] * 3),
-        ]
-        self.calls = 0
+        self.hand_outputs = _tracked("cp04_gloved_hand", [_hand_mask()] * 3)
+        self.calls = []
 
-    def track(self, _video_path, _time_range, _prompts, sample_fps):
+    def track(self, video_path, time_range, prompts, sample_fps):
         assert sample_fps == 2.0
-        output = self.outputs[self.calls]
-        self.calls += 1
-        return iter(output)
+        self.calls.append((video_path, time_range, prompts))
+        if len(self.calls) == 1:
+            return iter(self.hand_outputs)
+        capture = cv2.VideoCapture(str(video_path))
+        outputs = []
+        position = 0
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            mask = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) < 105
+            outputs.append(
+                FrameMasks(
+                    frame_index=position,
+                    frame_time_sec=position / 2,
+                    sample_position=position,
+                    masks={LOCAL_CLAMP_OBJECT_ID: mask},
+                )
+            )
+            position += 1
+        capture.release()
+        return iter(outputs)
 
 
 def _frame() -> np.ndarray:
@@ -91,8 +113,9 @@ def test_build_reference_writes_versioned_masks_and_manifest(
         lambda _path, _index: _frame().copy(),
     )
     reference_dir = tmp_path / "reference"
+    segmenter = FakeSegmenter()
     extractor = Cp04FeatureExtractor(
-        segmenter=FakeSegmenter(),
+        segmenter=segmenter,
         evidence_root=tmp_path / "evidence",
         reference_dir=reference_dir,
     )
@@ -110,9 +133,42 @@ def test_build_reference_writes_versioned_masks_and_manifest(
     assert manifest["video_filename"] == "success.mp4"
     assert "video_path" not in manifest
     assert manifest["model_version"] == extractor.model_version
+    assert manifest["candidate_source"] == LOCAL_CLAMP_SOURCE
     assert len(manifest["frames"]) == 3
     assert [row["frame_index"] for row in manifest["frames"]] == [10, 11, 12]
+    assert [row["crop_clip_position"] for row in manifest["frames"]] == [0, 1, 2]
     assert all((reference_dir / row["mask_path"]).is_file() for row in manifest["frames"])
+    assert [call[2][0].text for call in segmenter.calls] == [
+        HAND_PROMPT,
+        LOCAL_CLAMP_PROMPT,
+    ]
+
+
+def test_build_reference_requires_two_complete_local_sam3_masks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OneMaskSegmenter(FakeSegmenter):
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter(outputs[:1] if len(self.calls) == 2 else outputs)
+
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame().copy(),
+    )
+    extractor = Cp04FeatureExtractor(
+        segmenter=OneMaskSegmenter(),
+        evidence_root=tmp_path / "evidence",
+        reference_dir=tmp_path / "reference",
+    )
+
+    with pytest.raises(RuntimeError, match="fewer than two reliable"):
+        extractor.build_reference(
+            tmp_path / "success.mp4",
+            TimeRange(start_sec=41, end_sec=47),
+            video_id="success",
+            replace=False,
+        )
 
 
 def test_build_reference_refuses_silent_overwrite(
