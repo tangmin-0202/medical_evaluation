@@ -10,6 +10,7 @@ from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp04 import (
     HAND_PROMPT,
     Cp04FeatureExtractor,
+    _shape_evidence_consistent,
 )
 from medical_evaluation.segmentation.base import FrameMasks
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
@@ -17,6 +18,12 @@ from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 
 def test_hand_prompt_targets_the_open_display_palm() -> None:
     assert HAND_PROMPT == "open white gloved palm holding a small shiny metal clip"
+
+
+def test_consistency_tolerates_one_noisy_candidate_after_two_matches() -> None:
+    assert _shape_evidence_consistent([0.95, 0.91, 0.32], 0.8) is True
+    assert _shape_evidence_consistent([0.95, 0.32, 0.30], 0.8) is False
+    assert _shape_evidence_consistent([0.42, 0.32, 0.30], 0.8) is True
 
 
 def _clamp_mask() -> np.ndarray:

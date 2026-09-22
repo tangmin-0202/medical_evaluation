@@ -29,6 +29,15 @@ OPENCV_CANDIDATE_SOURCE = "opencv:compact-metal-object-on-glove"
 BOX_REFINEMENT_SOURCE = "sam3:opencv-local-box-refinement"
 
 
+def _shape_evidence_consistent(
+    similarities: list[float], min_similarity: float
+) -> bool | None:
+    if len(similarities) < 2:
+        return None
+    matching_count = sum(value >= min_similarity for value in similarities)
+    return matching_count == 0 or matching_count >= 2
+
+
 @dataclass(frozen=True)
 class _ClampObservation:
     item: FrameMasks
@@ -103,10 +112,11 @@ class Cp04FeatureExtractor:
             if item.match is not None and item.match.similarity is not None
         ]
         matching_count = sum(value >= self.min_similarity for value in similarities)
-        evidence_consistent: bool | None = None
-        if len(similarities) >= 2:
-            states = {value >= self.min_similarity for value in similarities}
-            evidence_consistent = len(states) == 1
+        # Two independent matches tolerate occasional noisy OpenCV candidates.
+        # Zero matches is a consistent mismatch; exactly one remains ambiguous.
+        evidence_consistent = _shape_evidence_consistent(
+            similarities, self.min_similarity
+        )
         features: dict[str, float | bool | None] = {
             "clamp_observed": observed_any,
             "shape_evidence_reliable": bool(comparable),
