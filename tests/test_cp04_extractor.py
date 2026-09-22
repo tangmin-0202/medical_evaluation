@@ -180,6 +180,7 @@ def test_uncertain_opencv_core_is_refined_with_local_box_prompt(
         evidence_root=tmp_path / "evidence",
         reference_dir=_reference_dir(tmp_path),
         min_similarity=0.8,
+        enable_local_box_refinement=True,
     ).extract(
         tmp_path / "video.mp4",
         "cp_04",

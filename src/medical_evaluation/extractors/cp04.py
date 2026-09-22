@@ -60,11 +60,13 @@ class Cp04FeatureExtractor:
         evidence_root: Path,
         reference_dir: Path,
         min_similarity: float = 0.8,
+        enable_local_box_refinement: bool = False,
     ) -> None:
         self.segmenter = segmenter
         self.evidence_root = evidence_root
         self.reference_dir = reference_dir
         self.min_similarity = min_similarity
+        self.enable_local_box_refinement = enable_local_box_refinement
 
     @property
     def model_version(self) -> str:
@@ -92,7 +94,11 @@ class Cp04FeatureExtractor:
         )
         references = self._load_reference_masks()
         chosen = self._measure_hand_items(video_path, hand_items, references)
-        if chosen and not self._has_reference_match(chosen):
+        if (
+            self.enable_local_box_refinement
+            and chosen
+            and not self._has_reference_match(chosen)
+        ):
             refined = self._refine_from_local_box(
                 video_path, time_range, hand_items, chosen, references
             )
@@ -157,11 +163,12 @@ class Cp04FeatureExtractor:
             prompt_text=HAND_PROMPT,
         )
         observations = self._measure_hand_items(video_path, hand_items, [])
-        refined = self._refine_from_local_box(
-            video_path, time_range, hand_items, observations, []
-        )
-        if refined:
-            observations = refined
+        if self.enable_local_box_refinement:
+            refined = self._refine_from_local_box(
+                video_path, time_range, hand_items, observations, []
+            )
+            if refined:
+                observations = refined
         reliable = [item for item in observations if item.display.reliable]
         reliable.sort(key=self._quality_score, reverse=True)
         selected_observations = reliable[: self.maximum_evidence_frames]
