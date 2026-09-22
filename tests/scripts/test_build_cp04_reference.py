@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -66,6 +68,18 @@ def test_builder_cli_is_fixed_to_success_reference() -> None:
 
     assert args.video_id == "success"
     assert args.replace is True
+
+
+def test_builder_can_be_executed_directly() -> None:
+    completed = subprocess.run(
+        [sys.executable, "scripts/build_cp04_reference.py", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "CP04 clamp reference" in completed.stdout
 
 
 def test_build_reference_writes_versioned_masks_and_manifest(

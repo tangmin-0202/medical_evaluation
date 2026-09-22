@@ -8,7 +8,8 @@ from medical_evaluation.annotations import AnnotationStore
 from medical_evaluation.jobs import JobRecord
 from medical_evaluation.runtime import build_analysis_pipeline
 from medical_evaluation.settings import Settings
-from scripts.run_real_cp09_cp11 import VIDEO_FILENAMES
+
+SUCCESS_VIDEO_FILENAME = "橡皮障完整.mp4"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,7 +29,7 @@ def main() -> int:
     job = JobRecord(
         id=args.job_id or f"cp04-reference-{uuid4().hex[:12]}",
         video_id="success",
-        video_path=str(settings.videos_dir / VIDEO_FILENAMES["success"]),
+        video_path=str(settings.videos_dir / SUCCESS_VIDEO_FILENAME),
     )
     composite = pipeline.extractor_factory(job)
     if composite.cp04 is None:
