@@ -57,16 +57,19 @@ checkpoints:
 - id: cp_04
   name: 选择正确的障夹
   criteria:
-  - 应选择下颌磨牙橡皮障夹
+  - 学员在白色手套掌心上清晰展示的障夹，经旋转、尺度和翻面归一化后应与 success 视频参考障夹外形一致
   weight: 0.09090909090909091
-  judge_type: reference_vlm
+  judge_type: hybrid
   required_objects:
-  - clamp
+  - gloved_hand
+  - displayed_clamp
   reference_time:
     start_sec: 41.0
     end_sec: 47.0
   thresholds:
     min_clamp_similarity: 0.8
+    min_clear_clamp_frames: 2
+    min_matching_clamp_frames: 2
 - id: cp_05
   name: 将橡皮障夹套入橡皮布孔洞
   criteria:

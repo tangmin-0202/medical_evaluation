@@ -61,8 +61,22 @@ CASES = [
     ),
     (
         judge_cp04,
-        {"clamp_reference_similarity": 0.9, "semantic_confirmed": True},
-        {"clamp_reference_similarity": 0.5, "semantic_confirmed": True},
+        {
+            "clamp_observed": True,
+            "shape_evidence_reliable": True,
+            "clear_frame_count": 3.0,
+            "matching_frame_count": 3.0,
+            "clamp_reference_similarity": 0.9,
+            "evidence_consistent": True,
+        },
+        {
+            "clamp_observed": True,
+            "shape_evidence_reliable": True,
+            "clear_frame_count": 3.0,
+            "matching_frame_count": 0.0,
+            "clamp_reference_similarity": 0.5,
+            "evidence_consistent": True,
+        },
     ),
     (
         judge_cp05,
@@ -184,6 +198,53 @@ def test_cp02_requires_cleaning_only_when_residue_is_present(
 
     assert result.status.value == "incorrect"
     assert result.reason_code == "residue_not_cleaned"
+
+
+CP04_PASSING_FEATURES: dict[str, float | bool | None] = {
+    "clamp_observed": True,
+    "shape_evidence_reliable": True,
+    "clear_frame_count": 3.0,
+    "matching_frame_count": 3.0,
+    "clamp_reference_similarity": 0.9,
+    "evidence_consistent": True,
+}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "status", "reason_code"),
+    [
+        ({"clamp_observed": False}, "incomplete", "clamp_not_observed"),
+        (
+            {"shape_evidence_reliable": False, "clear_frame_count": 0.0},
+            "needs_review",
+            "unreliable_clamp_shape",
+        ),
+        (
+            {"evidence_consistent": False},
+            "needs_review",
+            "inconsistent_clamp_evidence",
+        ),
+        (
+            {"matching_frame_count": 0.0, "clamp_reference_similarity": 0.5},
+            "incorrect",
+            "wrong_clamp_type",
+        ),
+        ({}, "correct", "criteria_satisfied"),
+    ],
+)
+def test_cp04_uses_displayed_reference_shape_state_machine(
+    overrides: dict[str, float | bool | None],
+    status: str,
+    reason_code: str,
+    thresholds: dict[str, dict[str, float]],
+) -> None:
+    result = judge_cp04(
+        {**CP04_PASSING_FEATURES, **overrides},
+        thresholds["cp_04"],
+    )
+
+    assert result.status.value == status
+    assert result.reason_code == reason_code
 
 
 CP08_PASSING_FEATURES: dict[str, float | bool | None] = {

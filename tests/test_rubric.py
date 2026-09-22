@@ -97,6 +97,21 @@ def test_cp10_defines_temporal_contact_threshold() -> None:
     assert cp10.thresholds == {"min_contact_frames_per_side": 2.0}
 
 
+def test_cp04_uses_versioned_success_reference_shape_contract() -> None:
+    from medical_evaluation.rubric import load_rubric
+
+    rubric = load_rubric(Path("config/rubric.yaml"))
+    cp04 = next(cp for cp in rubric.checkpoints if cp.id == "cp_04")
+
+    assert cp04.required_objects == ["gloved_hand", "displayed_clamp"]
+    assert "success" in "".join(cp04.criteria)
+    assert cp04.thresholds == {
+        "min_clamp_similarity": 0.8,
+        "min_clear_clamp_frames": 2.0,
+        "min_matching_clamp_frames": 2.0,
+    }
+
+
 def test_cp08_uses_instrument_shape_and_two_hole_color_contract() -> None:
     from medical_evaluation.rubric import load_rubric
 
