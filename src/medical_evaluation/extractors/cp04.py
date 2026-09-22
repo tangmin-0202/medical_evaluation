@@ -23,7 +23,7 @@ from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
-HAND_PROMPT = "white gloved hand showing an object on the palm"
+HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
 CLAMP_PROMPTS = (
     "small shiny metal clip resting on a white gloved palm",
     "small silver U-shaped metal clip held by a white gloved hand",
@@ -217,7 +217,7 @@ class Cp04FeatureExtractor:
             {
                 "reference_version": "cp04-reference-v1",
                 "video_id": video_id,
-                "video_path": str(video_path),
+                "video_filename": video_path.name,
                 "prompt": selected_prompt,
                 "model_version": self.model_version,
                 "frames": rows,

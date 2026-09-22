@@ -106,6 +106,8 @@ def test_build_reference_writes_versioned_masks_and_manifest(
     manifest = json.loads(manifest_path.read_text("utf-8"))
     assert manifest["reference_version"] == "cp04-reference-v1"
     assert manifest["video_id"] == "success"
+    assert manifest["video_filename"] == "success.mp4"
+    assert "video_path" not in manifest
     assert manifest["model_version"] == extractor.model_version
     assert len(manifest["frames"]) == 3
     assert [row["frame_index"] for row in manifest["frames"]] == [10, 11, 12]

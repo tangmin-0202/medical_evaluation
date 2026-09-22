@@ -16,6 +16,10 @@ from medical_evaluation.segmentation.base import FrameMasks
 from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 
 
+def test_hand_prompt_targets_the_open_display_palm() -> None:
+    assert HAND_PROMPT == "open white gloved palm holding a small shiny metal clip"
+
+
 def _clamp_mask() -> np.ndarray:
     mask = np.zeros((220, 220), np.uint8)
     cv2.ellipse(mask, (110, 118), (48, 62), 0, 205, 335, 1, 16)
