@@ -17,6 +17,12 @@ from medical_evaluation.features.cp04_clamp import (
     measure_display_candidate,
     normalize_clamp_mask,
 )
+from medical_evaluation.features.cp04_display import (
+    DisplayFrameCandidate,
+    HandObjectCrop,
+    build_hand_object_crop,
+    select_stable_display_frames,
+)
 from medical_evaluation.pipeline import ExtractedEvidence
 from medical_evaluation.reporting import EvidenceItem
 from medical_evaluation.segmentation.base import FrameMasks, SegmentationPrompt, VideoSegmenter
@@ -25,8 +31,9 @@ from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
 HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
-OPENCV_CANDIDATE_SOURCE = "opencv:compact-metal-object-on-glove"
-BOX_REFINEMENT_SOURCE = "sam3:opencv-local-box-refinement"
+LOCAL_CLAMP_PROMPT = "small metal object on white glove"
+LOCAL_CLAMP_OBJECT_ID = "cp04_clamp_local"
+LOCAL_CLAMP_SOURCE = "sam3:local-hand-crop"
 
 
 def _shape_evidence_consistent(
@@ -47,6 +54,7 @@ class _ClampObservation:
     display: ClampDisplayMeasurement
     match: ClampMatchMeasurement | None
     prompt_text: str
+    crop_clip_position: int | None = None
 
 
 class Cp04FeatureExtractor:
@@ -60,17 +68,15 @@ class Cp04FeatureExtractor:
         evidence_root: Path,
         reference_dir: Path,
         min_similarity: float = 0.8,
-        enable_local_box_refinement: bool = False,
     ) -> None:
         self.segmenter = segmenter
         self.evidence_root = evidence_root
         self.reference_dir = reference_dir
         self.min_similarity = min_similarity
-        self.enable_local_box_refinement = enable_local_box_refinement
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+cp04-glove-opencv-box-v1+cp04-reference-v1"
+        return f"{self.segmenter.model_version}+cp04-local-hand-crop-v1+cp04-reference-v1"
 
     def extract(
         self,
@@ -94,16 +100,6 @@ class Cp04FeatureExtractor:
         )
         references = self._load_reference_masks()
         chosen = self._measure_hand_items(video_path, hand_items, references)
-        if (
-            self.enable_local_box_refinement
-            and chosen
-            and not self._has_reference_match(chosen)
-        ):
-            refined = self._refine_from_local_box(
-                video_path, time_range, hand_items, chosen, references
-            )
-            if refined:
-                chosen = refined
         observed_any = bool(chosen)
 
         comparable = [
@@ -125,7 +121,7 @@ class Cp04FeatureExtractor:
         )
         features: dict[str, float | bool | None] = {
             "clamp_observed": observed_any,
-            "shape_evidence_reliable": bool(comparable),
+            "shape_evidence_reliable": len(comparable) >= 2,
             "clear_frame_count": float(len(comparable)),
             "matching_frame_count": float(matching_count),
             "clamp_reference_similarity": (
@@ -163,12 +159,6 @@ class Cp04FeatureExtractor:
             prompt_text=HAND_PROMPT,
         )
         observations = self._measure_hand_items(video_path, hand_items, [])
-        if self.enable_local_box_refinement:
-            refined = self._refine_from_local_box(
-                video_path, time_range, hand_items, observations, []
-            )
-            if refined:
-                observations = refined
         reliable = [item for item in observations if item.display.reliable]
         reliable.sort(key=self._quality_score, reverse=True)
         selected_observations = reliable[: self.maximum_evidence_frames]
@@ -237,88 +227,119 @@ class Cp04FeatureExtractor:
         items: list[FrameMasks],
         references: list[np.ndarray],
     ) -> list[_ClampObservation]:
-        observations: list[_ClampObservation] = []
+        candidates: list[DisplayFrameCandidate] = []
+        item_by_frame: dict[int, FrameMasks] = {}
         for item in items:
             raw_hand = self._mask(item, "cp04_gloved_hand")
             if raw_hand is None:
                 continue
             frame = read_frame(video_path, item.frame_index)
             hand = self._resize_mask(raw_hand, frame.shape[:2])
-            candidates = extract_metal_candidates_from_glove(frame, hand)
-            if not candidates:
+            metal_candidates = extract_metal_candidates_from_glove(frame, hand)
+            if not metal_candidates:
                 continue
-            score_floor = candidates[0].score - 0.20
-            eligible = [candidate for candidate in candidates if candidate.score >= score_floor]
+            score_floor = metal_candidates[0].score - 0.20
+            eligible = [
+                candidate
+                for candidate in metal_candidates
+                if candidate.score >= score_floor
+            ]
             candidate = max(eligible, key=lambda value: int(value.object_mask.sum()))
-            display = measure_display_candidate(frame, candidate.hand_mask, candidate.object_mask)
+            seed_display = measure_display_candidate(
+                frame, candidate.hand_mask, candidate.object_mask
+            )
+            hand_component = np.asarray(candidate.hand_mask, dtype=bool)
+            boundary_clipped = bool(
+                hand_component[0].any()
+                or hand_component[-1].any()
+                or hand_component[:, 0].any()
+                or hand_component[:, -1].any()
+            )
+            candidates.append(
+                DisplayFrameCandidate(
+                    frame_index=item.frame_index,
+                    frame_time_sec=item.frame_time_sec,
+                    frame_bgr=frame,
+                    hand_mask=hand_component,
+                    seed_mask=np.asarray(candidate.object_mask, dtype=bool),
+                    sharpness=float(seed_display.sharpness or 0.0),
+                    boundary_clipped=boundary_clipped,
+                    score=float(candidate.score),
+                )
+            )
+            item_by_frame[item.frame_index] = item
+
+        selected = select_stable_display_frames(
+            candidates, maximum_frames=5, minimum_stable_frames=2
+        )
+        if len(selected) < 2:
+            return []
+        crops = [
+            build_hand_object_crop(
+                item.frame_bgr, item.hand_mask, item.seed_mask, output_size=640
+            )
+            for item in selected
+        ]
+        clip_path = safe_child(
+            self.evidence_root, "cp_04/local_input/display_clip.mp4"
+        )
+        self._write_local_clip(clip_path, crops)
+        local_items = self._track_local_clip(clip_path, len(crops))
+        observations: list[_ClampObservation] = []
+        for local_item in local_items:
+            position = self._local_position(local_item, len(crops))
+            if position is None:
+                continue
+            raw_clamp = self._mask(local_item, LOCAL_CLAMP_OBJECT_ID)
+            if raw_clamp is None:
+                continue
+            crop = crops[position]
+            local_mask = self._resize_mask(raw_clamp, crop.image_bgr.shape[:2])
+            if self._touches_boundary(local_mask):
+                continue
+            clamp = crop.restore_mask(local_mask)
+            support_overlap = float(
+                np.logical_and(clamp, crop.support_mask).sum() / max(int(clamp.sum()), 1)
+            )
+            if support_overlap < 0.8:
+                continue
+            source = selected[position]
+            display = measure_display_candidate(
+                source.frame_bgr, source.hand_mask, clamp
+            )
             match = (
-                compare_clamp_mask(candidate.object_mask, references)
-                if display.reliable
+                compare_clamp_mask(clamp, references)
+                if display.reliable and references
                 else None
             )
             observations.append(
                 _ClampObservation(
-                    item,
-                    frame,
-                    candidate.hand_mask,
-                    candidate.object_mask,
-                    display,
-                    match,
-                    OPENCV_CANDIDATE_SOURCE,
+                    item=item_by_frame[source.frame_index],
+                    frame=source.frame_bgr,
+                    hand_mask=source.hand_mask,
+                    clamp_mask=clamp,
+                    display=display,
+                    match=match,
+                    prompt_text=LOCAL_CLAMP_SOURCE,
+                    crop_clip_position=position,
                 )
             )
         return observations
 
-    def _has_reference_match(self, observations: list[_ClampObservation]) -> bool:
-        return any(
-            item.display.reliable
-            and item.match is not None
-            and item.match.reliable
-            and item.match.similarity is not None
-            and item.match.similarity >= self.min_similarity
-            for item in observations
-        )
-
-    def _refine_from_local_box(
-        self,
-        video_path: Path,
-        time_range: TimeRange,
-        hand_items: list[FrameMasks],
-        observations: list[_ClampObservation],
-        references: list[np.ndarray],
-    ) -> list[_ClampObservation]:
-        reliable = [item for item in observations if item.display.reliable]
-        if not reliable:
-            return []
-        seed = max(reliable, key=lambda item: int(item.clamp_mask.sum()))
-        ys, xs = np.nonzero(seed.clamp_mask)
-        if len(xs) == 0:
-            return []
-        height, width = seed.frame.shape[:2]
-        object_width = int(xs.max() - xs.min() + 1)
-        object_height = int(ys.max() - ys.min() + 1)
-        margin = max(
-            8,
-            round(min(height, width) * 0.05),
-            round(max(object_width, object_height) * 0.5),
-        )
-        coordinates = [
-            max(0, int(xs.min()) - margin) / width,
-            max(0, int(ys.min()) - margin) / height,
-            min(width, int(xs.max()) + margin + 1) / width,
-            min(height, int(ys.max()) + margin + 1) / height,
-        ]
+    def _track_local_clip(
+        self, clip_path: Path, frame_count: int
+    ) -> list[FrameMasks]:
         prompt = SegmentationPrompt(
-            object_id="cp04_clamp_refined",
-            kind="box",
-            frame_time_sec=seed.item.frame_time_sec,
-            coordinates=coordinates,
+            object_id=LOCAL_CLAMP_OBJECT_ID,
+            kind="text",
+            frame_time_sec=0.0,
+            text=LOCAL_CLAMP_PROMPT,
         )
         try:
-            refined_items = list(
+            return list(
                 self.segmenter.track(
-                    video_path,
-                    time_range,
+                    clip_path,
+                    TimeRange(start_sec=0.0, end_sec=frame_count / self.sample_fps),
                     [prompt],
                     sample_fps=self.sample_fps,
                 )
@@ -326,34 +347,39 @@ class Cp04FeatureExtractor:
         except Sam3AmbiguousTextResult:
             return []
 
-        hands_by_frame = {
-            item.frame_index: self._mask(item, "cp04_gloved_hand") for item in hand_items
-        }
-        refined: list[_ClampObservation] = []
-        for item in refined_items:
-            raw_clamp = self._mask(item, "cp04_clamp_refined")
-            raw_hand = hands_by_frame.get(item.frame_index)
-            if raw_clamp is None or raw_hand is None:
-                continue
-            frame = read_frame(video_path, item.frame_index)
-            hand = self._resize_mask(raw_hand, frame.shape[:2])
-            clamp = self._resize_mask(raw_clamp, frame.shape[:2])
-            display = measure_display_candidate(frame, hand, clamp)
-            if not display.reliable:
-                continue
-            match = compare_clamp_mask(clamp, references) if references else None
-            refined.append(
-                _ClampObservation(
-                    item,
-                    frame,
-                    hand,
-                    clamp,
-                    display,
-                    match,
-                    BOX_REFINEMENT_SOURCE,
-                )
-            )
-        return refined
+    @staticmethod
+    def _write_local_clip(path: Path, crops: list[HandObjectCrop]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        height, width = crops[0].image_bgr.shape[:2]
+        writer = cv2.VideoWriter(
+            str(path), cv2.VideoWriter_fourcc(*"mp4v"), 2.0, (width, height)
+        )
+        if not writer.isOpened():
+            raise OSError(f"could not create CP04 local display clip: {path}")
+        try:
+            for crop in crops:
+                writer.write(crop.image_bgr)
+        finally:
+            writer.release()
+
+    @staticmethod
+    def _local_position(item: FrameMasks, frame_count: int) -> int | None:
+        candidates = [item.sample_position, item.frame_index]
+        for value in candidates:
+            if value is not None and 0 <= value < frame_count:
+                return int(value)
+        derived = round(item.frame_time_sec * 2.0)
+        return derived if 0 <= derived < frame_count else None
+
+    @staticmethod
+    def _touches_boundary(mask: np.ndarray) -> bool:
+        value = np.asarray(mask, dtype=bool)
+        return bool(
+            value[0].any()
+            or value[-1].any()
+            or value[:, 0].any()
+            or value[:, -1].any()
+        )
 
     def _load_reference_masks(self) -> list[np.ndarray]:
         masks: list[np.ndarray] = []

@@ -101,9 +101,8 @@ def build_hand_object_crop(
     kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
     )
-    support = cv2.dilate(
-        np.logical_or(filled_hand, seed).astype(np.uint8), kernel
-    ).astype(bool)
+    content = np.logical_or(filled_hand, seed)
+    support = cv2.dilate(content.astype(np.uint8), kernel).astype(bool)
 
     ys, xs = np.nonzero(hand)
     hand_width = int(xs.max() - xs.min() + 1)
@@ -116,7 +115,7 @@ def build_hand_object_crop(
 
     background_bgr = (127, 127, 127)
     isolated = np.full_like(frame_bgr, background_bgr)
-    isolated[support] = frame_bgr[support]
+    isolated[content] = frame_bgr[content]
     region = isolated[y1:y2, x1:x2]
     scale = min(output_size / region.shape[1], output_size / region.shape[0])
     resized_width = max(1, round(region.shape[1] * scale))
@@ -125,7 +124,7 @@ def build_hand_object_crop(
         region, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR
     )
     resized_support = cv2.resize(
-        support[y1:y2, x1:x2].astype(np.uint8),
+        content[y1:y2, x1:x2].astype(np.uint8),
         (resized_width, resized_height),
         interpolation=cv2.INTER_NEAREST,
     ).astype(bool)

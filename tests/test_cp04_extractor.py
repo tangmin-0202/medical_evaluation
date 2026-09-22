@@ -9,6 +9,8 @@ import pytest
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp04 import (
     HAND_PROMPT,
+    LOCAL_CLAMP_OBJECT_ID,
+    LOCAL_CLAMP_PROMPT,
     Cp04FeatureExtractor,
     _shape_evidence_consistent,
 )
@@ -72,6 +74,37 @@ class FakeSegmenter:
         return iter(output)
 
 
+class LocalClipSegmenter(FakeSegmenter):
+    def __init__(self, hand_outputs: list[FrameMasks]) -> None:
+        super().__init__([hand_outputs])
+        self.local_frames: list[np.ndarray] = []
+
+    def track(self, video_path, time_range, prompts, sample_fps):
+        self.calls.append((video_path, time_range, prompts, sample_fps))
+        if len(self.calls) == 1:
+            return iter(self.outputs[0])
+        capture = cv2.VideoCapture(str(video_path))
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            self.local_frames.append(frame)
+        capture.release()
+        outputs = []
+        for index, frame in enumerate(self.local_frames):
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            mask = gray < 105
+            outputs.append(
+                FrameMasks(
+                    frame_index=index,
+                    frame_time_sec=index / 2,
+                    sample_position=index,
+                    masks={LOCAL_CLAMP_OBJECT_ID: mask},
+                )
+            )
+        return iter(outputs)
+
+
 def _reference_dir(tmp_path: Path) -> Path:
     root = tmp_path / "reference"
     (root / "masks").mkdir(parents=True)
@@ -90,12 +123,12 @@ def _frame(
     return frame
 
 
-def test_extracts_matching_clamp_from_single_hand_segmentation_session(
+def test_extracts_matching_clamp_from_one_hand_and_one_local_sam3_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hand = _hand_mask()
     clamp = _clamp_mask()
-    segmenter = FakeSegmenter([_tracked("cp04_gloved_hand", [hand] * 3)])
+    segmenter = LocalClipSegmenter(_tracked("cp04_gloved_hand", [hand] * 3))
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
         lambda _path, _index: _frame(hand=hand, clamp=clamp),
@@ -105,7 +138,7 @@ def test_extracts_matching_clamp_from_single_hand_segmentation_session(
         segmenter=segmenter,
         evidence_root=tmp_path / "evidence",
         reference_dir=_reference_dir(tmp_path),
-        min_similarity=0.8,
+        min_similarity=0.7,
     ).extract(
         tmp_path / "video.mp4",
         "cp_04",
@@ -114,14 +147,23 @@ def test_extracts_matching_clamp_from_single_hand_segmentation_session(
         analysis_width=1280,
     )
 
-    assert [call[2][0].text for call in segmenter.calls] == [HAND_PROMPT]
+    assert [call[2][0].text for call in segmenter.calls] == [
+        HAND_PROMPT,
+        LOCAL_CLAMP_PROMPT,
+    ]
+    assert segmenter.calls[1][2][0].object_id == LOCAL_CLAMP_OBJECT_ID
+    assert segmenter.calls[1][2][0].kind == "text"
+    assert segmenter.calls[1][2][0].frame_time_sec == 0.0
+    assert segmenter.calls[1][0] == tmp_path / "evidence" / "cp_04" / "local_input" / "display_clip.mp4"
     assert all(call[3] == 2.0 for call in segmenter.calls)
+    assert 3 <= len(segmenter.local_frames) <= 5
+    assert all(frame.shape[:2] == (640, 640) for frame in segmenter.local_frames)
     assert result.features == {
         "clamp_observed": True,
         "shape_evidence_reliable": True,
         "clear_frame_count": 3.0,
         "matching_frame_count": 3.0,
-        "clamp_reference_similarity": pytest.approx(0.96, abs=0.03),
+        "clamp_reference_similarity": pytest.approx(0.76, abs=0.03),
         "evidence_consistent": True,
     }
     assert len(result.evidence) == 3
@@ -157,30 +199,22 @@ def test_empty_open_glove_does_not_start_another_sam3_session(
     assert result.features["clear_frame_count"] == 0.0
 
 
-def test_uncertain_opencv_core_is_refined_with_local_box_prompt(
+def test_local_sam3_masks_are_mapped_back_to_original_frame(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hand = _hand_mask()
     full_clamp = _clamp_mask()
-    metal_core = np.zeros_like(full_clamp)
-    cv2.rectangle(metal_core.view(np.uint8), (102, 102), (118, 118), 1, -1)
-    segmenter = FakeSegmenter(
-        [
-            _tracked("cp04_gloved_hand", [hand] * 2),
-            _tracked("cp04_clamp_refined", [full_clamp] * 2),
-        ]
-    )
+    segmenter = LocalClipSegmenter(_tracked("cp04_gloved_hand", [hand] * 2))
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
-        lambda _path, _index: _frame(hand=hand, clamp=metal_core),
+        lambda _path, _index: _frame(hand=hand, clamp=full_clamp),
     )
 
     result = Cp04FeatureExtractor(
         segmenter=segmenter,
         evidence_root=tmp_path / "evidence",
         reference_dir=_reference_dir(tmp_path),
-        min_similarity=0.8,
-        enable_local_box_refinement=True,
+        min_similarity=0.7,
     ).extract(
         tmp_path / "video.mp4",
         "cp_04",
@@ -191,12 +225,51 @@ def test_uncertain_opencv_core_is_refined_with_local_box_prompt(
 
     assert len(segmenter.calls) == 2
     prompt = segmenter.calls[1][2][0]
-    assert prompt.kind == "box"
-    assert prompt.object_id == "cp04_clamp_refined"
-    assert prompt.coordinates is not None
-    assert prompt.coordinates[0] < 0.5 < prompt.coordinates[2]
-    assert prompt.coordinates[1] < 0.5 < prompt.coordinates[3]
+    assert prompt.kind == "text"
+    assert prompt.object_id == LOCAL_CLAMP_OBJECT_ID
+    assert prompt.text == LOCAL_CLAMP_PROMPT
     assert result.features["matching_frame_count"] == 2.0
+    saved = cv2.imread(
+        str(tmp_path / "evidence" / "cp_04" / "masks" / "clamp" / "00000000.png"),
+        cv2.IMREAD_GRAYSCALE,
+    )
+    assert saved is not None
+    assert saved.shape == full_clamp.shape
+    assert np.logical_and(saved > 0, full_clamp).sum() > 0.8 * full_clamp.sum()
+
+
+def test_one_local_sam3_mask_is_not_reliable_shape_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    clamp = _clamp_mask()
+
+    class OneMaskSegmenter(LocalClipSegmenter):
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter(outputs[:1] if len(self.calls) == 2 else outputs)
+
+    segmenter = OneMaskSegmenter(_tracked("cp04_gloved_hand", [hand] * 3))
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
+    )
+
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=_reference_dir(tmp_path),
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_04",
+        TimeRange(start_sec=41, end_sec=47),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["clamp_observed"] is True
+    assert result.features["shape_evidence_reliable"] is False
+    assert result.features["clear_frame_count"] == 1.0
 
 
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(
