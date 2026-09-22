@@ -5,6 +5,7 @@ import numpy as np
 
 from medical_evaluation.features.cp04_clamp import (
     compare_clamp_mask,
+    extract_metal_candidate_from_glove,
     measure_display_candidate,
     normalize_clamp_mask,
 )
@@ -98,3 +99,64 @@ def test_display_candidate_rejects_long_handled_plier_on_glove() -> None:
     assert measurement.reason == "elongated_non_clamp_object"
     assert measurement.elongation_ratio is not None
     assert measurement.elongation_ratio > 2.5
+
+
+def _glove_scene(*, object_center: tuple[int, int] | None) -> tuple[np.ndarray, np.ndarray]:
+    frame = np.full((240, 320, 3), (180, 110, 45), np.uint8)
+    hand = np.zeros(frame.shape[:2], np.uint8)
+    cv2.ellipse(hand, (145, 145), (72, 82), 0, 0, 360, 1, -1)
+    for x in (105, 130, 155, 180):
+        cv2.rectangle(hand, (x, 35), (x + 22, 135), 1, -1)
+    frame[hand.astype(bool)] = (220, 225, 230)
+    if object_center is not None:
+        x, y = object_center
+        cv2.ellipse(frame, (x, y), (22, 16), 0, 0, 360, (82, 86, 90), -1)
+        cv2.circle(frame, (x, y), 7, (220, 225, 230), -1)
+    return frame, hand.astype(bool)
+
+
+def test_extracts_compact_metal_object_from_gloved_palm() -> None:
+    frame, hand = _glove_scene(object_center=(145, 145))
+
+    candidate = extract_metal_candidate_from_glove(frame, hand)
+
+    assert candidate is not None
+    assert candidate.object_mask[145, 125:166].any()
+    assert candidate.hand_mask[145, 145]
+
+
+def test_extracts_metal_object_displayed_on_gloved_fingers() -> None:
+    frame, hand = _glove_scene(object_center=(155, 82))
+
+    candidate = extract_metal_candidate_from_glove(frame, hand)
+
+    assert candidate is not None
+    assert candidate.object_mask[82, 135:176].any()
+
+
+def test_extracts_bright_neutral_metal_against_warm_glove() -> None:
+    frame, hand = _glove_scene(object_center=None)
+    cv2.ellipse(frame, (145, 145), (24, 18), 0, 0, 360, (185, 185, 185), -1)
+    cv2.circle(frame, (145, 145), 8, (220, 225, 230), -1)
+
+    candidate = extract_metal_candidate_from_glove(frame, hand)
+
+    assert candidate is not None
+    assert candidate.object_mask[145, 121:170].any()
+
+
+def test_extracts_object_excluded_as_hole_from_sam_hand_mask() -> None:
+    frame, hand = _glove_scene(object_center=(145, 145))
+    cv2.ellipse(hand.view(np.uint8), (145, 145), (25, 19), 0, 0, 360, 0, -1)
+
+    candidate = extract_metal_candidate_from_glove(frame, hand)
+
+    assert candidate is not None
+    assert candidate.object_mask[145, 123:168].any()
+
+
+def test_ignores_metal_plier_outside_glove() -> None:
+    frame, hand = _glove_scene(object_center=None)
+    cv2.rectangle(frame, (260, 45), (275, 210), (75, 80, 85), -1)
+
+    assert extract_metal_candidate_from_glove(frame, hand) is None

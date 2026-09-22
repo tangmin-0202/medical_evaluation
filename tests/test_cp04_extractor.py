@@ -8,7 +8,6 @@ import pytest
 
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp04 import (
-    CLAMP_PROMPTS,
     HAND_PROMPT,
     Cp04FeatureExtractor,
 )
@@ -27,7 +26,10 @@ def _clamp_mask() -> np.ndarray:
     cv2.rectangle(mask, (132, 76), (171, 103), 1, -1)
     cv2.rectangle(mask, (67, 95), (84, 151), 1, -1)
     cv2.rectangle(mask, (136, 95), (153, 151), 1, -1)
-    return mask.astype(bool)
+    matrix = cv2.getRotationMatrix2D((110, 110), 0, 0.55)
+    return cv2.warpAffine(
+        mask, matrix, (220, 220), flags=cv2.INTER_NEAREST
+    ).astype(bool)
 
 
 def _hand_mask(*, left: bool = False) -> np.ndarray:
@@ -70,23 +72,26 @@ def _reference_dir(tmp_path: Path) -> Path:
     return root
 
 
-def _frame() -> np.ndarray:
-    y, x = np.indices((220, 220))
-    base = ((x * 7 + y * 11) % 255).astype(np.uint8)
-    return np.dstack((base, base, base))
+def _frame(
+    *, hand: np.ndarray | None = None, clamp: np.ndarray | None = None
+) -> np.ndarray:
+    frame = np.full((220, 220, 3), (180, 110, 45), np.uint8)
+    if hand is not None:
+        frame[hand] = (220, 225, 230)
+    if clamp is not None:
+        frame[clamp] = (82, 86, 90)
+    return frame
 
 
-def test_extracts_matching_clamp_from_independent_hand_and_clamp_sessions(
+def test_extracts_matching_clamp_from_single_hand_segmentation_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hand = _hand_mask()
     clamp = _clamp_mask()
-    segmenter = FakeSegmenter(
-        [_tracked("cp04_gloved_hand", [hand] * 3), _tracked("cp04_clamp", [clamp] * 3)]
-    )
+    segmenter = FakeSegmenter([_tracked("cp04_gloved_hand", [hand] * 3)])
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
-        lambda _path, _index: _frame().copy(),
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
     )
 
     result = Cp04FeatureExtractor(
@@ -102,14 +107,14 @@ def test_extracts_matching_clamp_from_independent_hand_and_clamp_sessions(
         analysis_width=1280,
     )
 
-    assert [call[2][0].text for call in segmenter.calls] == [HAND_PROMPT, CLAMP_PROMPTS[0]]
+    assert [call[2][0].text for call in segmenter.calls] == [HAND_PROMPT]
     assert all(call[3] == 2.0 for call in segmenter.calls)
     assert result.features == {
         "clamp_observed": True,
         "shape_evidence_reliable": True,
         "clear_frame_count": 3.0,
         "matching_frame_count": 3.0,
-        "clamp_reference_similarity": pytest.approx(1.0),
+        "clamp_reference_similarity": pytest.approx(0.96, abs=0.03),
         "evidence_consistent": True,
     }
     assert len(result.evidence) == 3
@@ -118,22 +123,14 @@ def test_extracts_matching_clamp_from_independent_hand_and_clamp_sessions(
     assert (tmp_path / "evidence" / "cp_04" / "frame_analysis.json").is_file()
 
 
-def test_retries_approved_shape_prompt_only_after_primary_has_no_reliable_candidate(
+def test_empty_open_glove_does_not_start_another_sam3_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hand = _hand_mask()
-    clamp = _clamp_mask()
-    outside = np.roll(clamp, 90, axis=1)
-    segmenter = FakeSegmenter(
-        [
-            _tracked("cp04_gloved_hand", [hand] * 2),
-            _tracked("cp04_clamp", [outside] * 2),
-            _tracked("cp04_clamp", [clamp] * 2),
-        ]
-    )
+    segmenter = FakeSegmenter([_tracked("cp04_gloved_hand", [hand] * 2)])
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
-        lambda _path, _index: _frame().copy(),
+        lambda _path, _index: _frame(hand=hand),
     )
 
     result = Cp04FeatureExtractor(
@@ -148,28 +145,69 @@ def test_retries_approved_shape_prompt_only_after_primary_has_no_reliable_candid
         analysis_width=1280,
     )
 
-    assert [call[2][0].text for call in segmenter.calls] == [
-        HAND_PROMPT,
-        CLAMP_PROMPTS[0],
-        CLAMP_PROMPTS[1],
-    ]
-    assert result.features["clear_frame_count"] == 2.0
+    assert [call[2][0].text for call in segmenter.calls] == [HAND_PROMPT]
+    assert result.features["clamp_observed"] is False
+    assert result.features["clear_frame_count"] == 0.0
+
+
+def test_uncertain_opencv_core_is_refined_with_local_box_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    full_clamp = _clamp_mask()
+    metal_core = np.zeros_like(full_clamp)
+    cv2.rectangle(metal_core.view(np.uint8), (102, 102), (118, 118), 1, -1)
+    segmenter = FakeSegmenter(
+        [
+            _tracked("cp04_gloved_hand", [hand] * 2),
+            _tracked("cp04_clamp_refined", [full_clamp] * 2),
+        ]
+    )
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=metal_core),
+    )
+
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=_reference_dir(tmp_path),
+        min_similarity=0.8,
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_04",
+        TimeRange(start_sec=41, end_sec=47),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert len(segmenter.calls) == 2
+    prompt = segmenter.calls[1][2][0]
+    assert prompt.kind == "box"
+    assert prompt.object_id == "cp04_clamp_refined"
+    assert prompt.coordinates is not None
+    assert prompt.coordinates[0] < 0.5 < prompt.coordinates[2]
+    assert prompt.coordinates[1] < 0.5 < prompt.coordinates[3]
+    assert result.features["matching_frame_count"] == 2.0
 
 
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     segmenter = FakeSegmenter(
-        [
-            _tracked("cp04_gloved_hand", [_hand_mask(left=True)] * 2),
-            _tracked("cp04_clamp", [_clamp_mask()] * 2),
-            [],
-            [],
-        ]
+        [_tracked("cp04_gloved_hand", [_hand_mask(left=True)] * 2)]
     )
+    outside_clamp = cv2.warpAffine(
+        _clamp_mask().astype(np.uint8),
+        np.float32([[1, 0, 60], [0, 1, 0]]),
+        (220, 220),
+        flags=cv2.INTER_NEAREST,
+    ).astype(bool)
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
-        lambda _path, _index: _frame().copy(),
+        lambda _path, _index: _frame(
+            hand=_hand_mask(left=True), clamp=outside_clamp
+        ),
     )
 
     result = Cp04FeatureExtractor(
@@ -184,25 +222,18 @@ def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(
         analysis_width=1280,
     )
 
-    assert result.features["clamp_observed"] is True
+    assert result.features["clamp_observed"] is False
     assert result.features["shape_evidence_reliable"] is False
     assert result.features["clear_frame_count"] == 0.0
 
 
-def test_ambiguous_clamp_text_result_returns_review_features(
+def test_ambiguous_hand_text_result_returns_missing_observation_features(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    segmenter = FakeSegmenter(
-        [
-            _tracked("cp04_gloved_hand", [_hand_mask()] * 2),
-            Sam3AmbiguousTextResult("ambiguous"),
-            [],
-            [],
-        ]
-    )
+    segmenter = FakeSegmenter([Sam3AmbiguousTextResult("ambiguous")])
     monkeypatch.setattr(
         "medical_evaluation.extractors.cp04.read_frame",
-        lambda _path, _index: _frame().copy(),
+        lambda _path, _index: _frame(),
     )
 
     result = Cp04FeatureExtractor(

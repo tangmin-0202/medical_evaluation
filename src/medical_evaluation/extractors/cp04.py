@@ -13,6 +13,7 @@ from medical_evaluation.features.cp04_clamp import (
     ClampDisplayMeasurement,
     ClampMatchMeasurement,
     compare_clamp_mask,
+    extract_metal_candidates_from_glove,
     measure_display_candidate,
     normalize_clamp_mask,
 )
@@ -24,11 +25,8 @@ from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
 HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
-CLAMP_PROMPTS = (
-    "small shiny metal clip resting on a white gloved palm",
-    "small silver U-shaped metal clip held by a white gloved hand",
-    "small metal clip with two side wings displayed on a gloved palm",
-)
+OPENCV_CANDIDATE_SOURCE = "opencv:compact-metal-object-on-glove"
+BOX_REFINEMENT_SOURCE = "sam3:opencv-local-box-refinement"
 
 
 @dataclass(frozen=True)
@@ -61,7 +59,7 @@ class Cp04FeatureExtractor:
 
     @property
     def model_version(self) -> str:
-        return f"{self.segmenter.model_version}+cp04-reference-v1"
+        return f"{self.segmenter.model_version}+cp04-glove-opencv-box-v1+cp04-reference-v1"
 
     def extract(
         self,
@@ -83,35 +81,15 @@ class Cp04FeatureExtractor:
             object_id="cp04_gloved_hand",
             prompt_text=HAND_PROMPT,
         )
-        hand_by_frame = {
-            item.frame_index: self._mask(item, "cp04_gloved_hand") for item in hand_items
-        }
         references = self._load_reference_masks()
-        observed_any = False
-        chosen: list[_ClampObservation] = []
-        fallback: list[_ClampObservation] = []
-        for prompt_text in CLAMP_PROMPTS:
-            clamp_items = self._track_text(
-                video_path,
-                time_range,
-                object_id="cp04_clamp",
-                prompt_text=prompt_text,
+        chosen = self._measure_hand_items(video_path, hand_items, references)
+        if chosen and not self._has_reference_match(chosen):
+            refined = self._refine_from_local_box(
+                video_path, time_range, hand_items, chosen, references
             )
-            observations, observed = self._measure_items(
-                video_path,
-                clamp_items,
-                hand_by_frame,
-                references,
-                prompt_text,
-            )
-            observed_any = observed_any or observed
-            if observations and not fallback:
-                fallback = observations
-            if any(item.display.reliable and item.match and item.match.reliable for item in observations):
-                chosen = observations
-                break
-        if not chosen:
-            chosen = fallback
+            if refined:
+                chosen = refined
+        observed_any = bool(chosen)
 
         comparable = [
             item
@@ -168,31 +146,15 @@ class Cp04FeatureExtractor:
             object_id="cp04_gloved_hand",
             prompt_text=HAND_PROMPT,
         )
-        hand_by_frame = {
-            item.frame_index: self._mask(item, "cp04_gloved_hand") for item in hand_items
-        }
-        selected_prompt = ""
-        selected_observations: list[_ClampObservation] = []
-        for prompt_text in CLAMP_PROMPTS:
-            clamp_items = self._track_text(
-                video_path,
-                time_range,
-                object_id="cp04_clamp",
-                prompt_text=prompt_text,
-            )
-            observations, _ = self._measure_items(
-                video_path,
-                clamp_items,
-                hand_by_frame,
-                [],
-                prompt_text,
-            )
-            reliable = [item for item in observations if item.display.reliable]
-            if len(reliable) >= 2:
-                reliable.sort(key=self._quality_score, reverse=True)
-                selected_prompt = prompt_text
-                selected_observations = reliable[: self.maximum_evidence_frames]
-                break
+        observations = self._measure_hand_items(video_path, hand_items, [])
+        refined = self._refine_from_local_box(
+            video_path, time_range, hand_items, observations, []
+        )
+        if refined:
+            observations = refined
+        reliable = [item for item in observations if item.display.reliable]
+        reliable.sort(key=self._quality_score, reverse=True)
+        selected_observations = reliable[: self.maximum_evidence_frames]
         if len(selected_observations) < 2:
             raise RuntimeError("fewer than two reliable CP04 success reference frames")
 
@@ -218,7 +180,7 @@ class Cp04FeatureExtractor:
                 "reference_version": "cp04-reference-v1",
                 "video_id": video_id,
                 "video_filename": video_path.name,
-                "prompt": selected_prompt,
+                "candidate_source": selected_observations[0].prompt_text,
                 "model_version": self.model_version,
                 "frames": rows,
             },
@@ -252,35 +214,129 @@ class Cp04FeatureExtractor:
         except Sam3AmbiguousTextResult:
             return []
 
-    def _measure_items(
+    def _measure_hand_items(
         self,
         video_path: Path,
         items: list[FrameMasks],
-        hand_by_frame: dict[int, np.ndarray | None],
         references: list[np.ndarray],
-        prompt_text: str,
-    ) -> tuple[list[_ClampObservation], bool]:
+    ) -> list[_ClampObservation]:
         observations: list[_ClampObservation] = []
-        observed = False
         for item in items:
-            raw_clamp = self._mask(item, "cp04_clamp")
-            if raw_clamp is None:
+            raw_hand = self._mask(item, "cp04_gloved_hand")
+            if raw_hand is None:
                 continue
-            observed = True
             frame = read_frame(video_path, item.frame_index)
-            clamp = self._resize_mask(raw_clamp, frame.shape[:2])
-            raw_hand = hand_by_frame.get(item.frame_index)
-            hand = None if raw_hand is None else self._resize_mask(raw_hand, frame.shape[:2])
-            display = measure_display_candidate(
-                frame,
-                np.zeros(frame.shape[:2], dtype=bool) if hand is None else hand,
-                clamp,
+            hand = self._resize_mask(raw_hand, frame.shape[:2])
+            candidates = extract_metal_candidates_from_glove(frame, hand)
+            if not candidates:
+                continue
+            score_floor = candidates[0].score - 0.20
+            eligible = [candidate for candidate in candidates if candidate.score >= score_floor]
+            candidate = max(eligible, key=lambda value: int(value.object_mask.sum()))
+            display = measure_display_candidate(frame, candidate.hand_mask, candidate.object_mask)
+            match = (
+                compare_clamp_mask(candidate.object_mask, references)
+                if display.reliable
+                else None
             )
-            match = compare_clamp_mask(clamp, references) if display.reliable else None
             observations.append(
-                _ClampObservation(item, frame, hand, clamp, display, match, prompt_text)
+                _ClampObservation(
+                    item,
+                    frame,
+                    candidate.hand_mask,
+                    candidate.object_mask,
+                    display,
+                    match,
+                    OPENCV_CANDIDATE_SOURCE,
+                )
             )
-        return observations, observed
+        return observations
+
+    def _has_reference_match(self, observations: list[_ClampObservation]) -> bool:
+        return any(
+            item.display.reliable
+            and item.match is not None
+            and item.match.reliable
+            and item.match.similarity is not None
+            and item.match.similarity >= self.min_similarity
+            for item in observations
+        )
+
+    def _refine_from_local_box(
+        self,
+        video_path: Path,
+        time_range: TimeRange,
+        hand_items: list[FrameMasks],
+        observations: list[_ClampObservation],
+        references: list[np.ndarray],
+    ) -> list[_ClampObservation]:
+        reliable = [item for item in observations if item.display.reliable]
+        if not reliable:
+            return []
+        seed = max(reliable, key=lambda item: int(item.clamp_mask.sum()))
+        ys, xs = np.nonzero(seed.clamp_mask)
+        if len(xs) == 0:
+            return []
+        height, width = seed.frame.shape[:2]
+        object_width = int(xs.max() - xs.min() + 1)
+        object_height = int(ys.max() - ys.min() + 1)
+        margin = max(
+            8,
+            round(min(height, width) * 0.05),
+            round(max(object_width, object_height) * 0.5),
+        )
+        coordinates = [
+            max(0, int(xs.min()) - margin) / width,
+            max(0, int(ys.min()) - margin) / height,
+            min(width, int(xs.max()) + margin + 1) / width,
+            min(height, int(ys.max()) + margin + 1) / height,
+        ]
+        prompt = SegmentationPrompt(
+            object_id="cp04_clamp_refined",
+            kind="box",
+            frame_time_sec=seed.item.frame_time_sec,
+            coordinates=coordinates,
+        )
+        try:
+            refined_items = list(
+                self.segmenter.track(
+                    video_path,
+                    time_range,
+                    [prompt],
+                    sample_fps=self.sample_fps,
+                )
+            )
+        except Sam3AmbiguousTextResult:
+            return []
+
+        hands_by_frame = {
+            item.frame_index: self._mask(item, "cp04_gloved_hand") for item in hand_items
+        }
+        refined: list[_ClampObservation] = []
+        for item in refined_items:
+            raw_clamp = self._mask(item, "cp04_clamp_refined")
+            raw_hand = hands_by_frame.get(item.frame_index)
+            if raw_clamp is None or raw_hand is None:
+                continue
+            frame = read_frame(video_path, item.frame_index)
+            hand = self._resize_mask(raw_hand, frame.shape[:2])
+            clamp = self._resize_mask(raw_clamp, frame.shape[:2])
+            display = measure_display_candidate(frame, hand, clamp)
+            if not display.reliable:
+                continue
+            match = compare_clamp_mask(clamp, references) if references else None
+            refined.append(
+                _ClampObservation(
+                    item,
+                    frame,
+                    hand,
+                    clamp,
+                    display,
+                    match,
+                    BOX_REFINEMENT_SOURCE,
+                )
+            )
+        return refined
 
     def _load_reference_masks(self) -> list[np.ndarray]:
         masks: list[np.ndarray] = []

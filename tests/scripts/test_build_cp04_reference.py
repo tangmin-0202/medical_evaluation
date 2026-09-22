@@ -46,7 +46,7 @@ class FakeSegmenter:
     def __init__(self) -> None:
         self.outputs = [
             _tracked("cp04_gloved_hand", [_hand_mask()] * 3),
-            _tracked("cp04_clamp", [_clamp_mask()] * 3),
+            _tracked("cp04_clamp_refined", [_clamp_mask()] * 3),
         ]
         self.calls = 0
 
@@ -58,9 +58,10 @@ class FakeSegmenter:
 
 
 def _frame() -> np.ndarray:
-    y, x = np.indices((180, 180))
-    base = ((x * 5 + y * 13) % 255).astype(np.uint8)
-    return np.dstack((base, base, base))
+    frame = np.full((180, 180, 3), (180, 110, 45), np.uint8)
+    frame[_hand_mask()] = (220, 225, 230)
+    frame[_clamp_mask()] = (82, 86, 90)
+    return frame
 
 
 def test_builder_cli_is_fixed_to_success_reference() -> None:
