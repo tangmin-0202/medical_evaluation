@@ -146,6 +146,86 @@ class Cp04FeatureExtractor:
         )
         return ExtractedEvidence(features=features, evidence=evidence)
 
+    def build_reference(
+        self,
+        video_path: Path,
+        time_range: TimeRange,
+        *,
+        video_id: str,
+        replace: bool,
+    ) -> Path:
+        if video_id != "success":
+            raise ValueError("CP04 reference must be built from the configured success video")
+        manifest_path = self.reference_dir / "manifest.json"
+        if manifest_path.exists() and not replace:
+            raise FileExistsError(
+                f"CP04 reference already exists at {manifest_path}; use --replace"
+            )
+
+        hand_items = self._track_text(
+            video_path,
+            time_range,
+            object_id="cp04_gloved_hand",
+            prompt_text=HAND_PROMPT,
+        )
+        hand_by_frame = {
+            item.frame_index: self._mask(item, "cp04_gloved_hand") for item in hand_items
+        }
+        selected_prompt = ""
+        selected_observations: list[_ClampObservation] = []
+        for prompt_text in CLAMP_PROMPTS:
+            clamp_items = self._track_text(
+                video_path,
+                time_range,
+                object_id="cp04_clamp",
+                prompt_text=prompt_text,
+            )
+            observations, _ = self._measure_items(
+                video_path,
+                clamp_items,
+                hand_by_frame,
+                [],
+                prompt_text,
+            )
+            reliable = [item for item in observations if item.display.reliable]
+            if len(reliable) >= 2:
+                reliable.sort(key=self._quality_score, reverse=True)
+                selected_prompt = prompt_text
+                selected_observations = reliable[: self.maximum_evidence_frames]
+                break
+        if len(selected_observations) < 2:
+            raise RuntimeError("fewer than two reliable CP04 success reference frames")
+
+        self.reference_dir.mkdir(parents=True, exist_ok=True)
+        mask_dir = self.reference_dir / "masks"
+        mask_dir.mkdir(parents=True, exist_ok=True)
+        rows: list[dict[str, float | int | str]] = []
+        for observation in selected_observations:
+            name = f"{observation.item.frame_index:08d}.png"
+            path = mask_dir / name
+            if not cv2.imwrite(str(path), observation.clamp_mask.astype(np.uint8) * 255):
+                raise OSError(f"could not write CP04 reference mask: {path}")
+            rows.append(
+                {
+                    "frame_index": observation.item.frame_index,
+                    "time_sec": observation.item.frame_time_sec,
+                    "mask_path": f"masks/{name}",
+                }
+            )
+        atomic_write_json(
+            manifest_path,
+            {
+                "reference_version": "cp04-reference-v1",
+                "video_id": video_id,
+                "video_path": str(video_path),
+                "prompt": selected_prompt,
+                "model_version": self.model_version,
+                "frames": rows,
+            },
+        )
+        self._write_evidence(selected_observations, selected_observations, [])
+        return manifest_path
+
     def _track_text(
         self,
         video_path: Path,
@@ -204,7 +284,14 @@ class Cp04FeatureExtractor:
 
     def _load_reference_masks(self) -> list[np.ndarray]:
         masks: list[np.ndarray] = []
-        for path in sorted((self.reference_dir / "masks").glob("*.png")):
+        paths = sorted((self.reference_dir / "masks").glob("*.png"))
+        manifest_path = self.reference_dir / "manifest.json"
+        if manifest_path.is_file():
+            import json
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            paths = [self.reference_dir / row["mask_path"] for row in manifest["frames"]]
+        for path in paths:
             image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
             if image is not None and np.any(image > 0):
                 masks.append(image > 0)
