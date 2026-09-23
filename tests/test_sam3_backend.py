@@ -178,7 +178,22 @@ def test_sam3_uses_bounded_sequence_and_maps_source_frames(tmp_path: Path) -> No
     assert [item.frame_index for item in frames] == [10, 20]
     assert all(set(item.masks) == {"rubber_dam_frame"} for item in frames)
     assert predictor.requests[-1]["type"] == "close_session"
-    assert not Path(str(start["resource_path"])).exists()
+
+
+def test_sam3_segments_lossless_image_without_propagation(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor()
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+    image = np.full((60, 80, 3), 127, np.uint8)
+
+    result = backend.segment_image(image, _text_prompt())
+
+    resource_path = Path(str(predictor.requests[0]["resource_path"]))
+    assert result is not None
+    assert result.masks["rubber_dam_frame"].any()
+    assert predictor.stream_requests == []
+    assert resource_path.joinpath("00000.png").name == "00000.png"
+    assert predictor.requests[-1]["type"] == "close_session"
+    assert not resource_path.exists()
 
 
 @pytest.mark.parametrize("prompts", [[], [_text_prompt(), _text_prompt()]])

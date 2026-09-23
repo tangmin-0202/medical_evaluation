@@ -5,6 +5,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.segmentation.base import FrameMasks, SegmentationPrompt, VideoSegmenter
 from medical_evaluation.storage import atomic_write_json
@@ -79,6 +81,29 @@ class AuditedVideoSegmenter:
                 self.output_path,
                 {**self.static_metadata, "tracks": self.tracks},
             )
+
+    def segment_image(
+        self, image_bgr: np.ndarray, prompt: SegmentationPrompt
+    ) -> FrameMasks | None:
+        method = getattr(self.delegate, "segment_image", None)
+        if method is None:
+            return None
+        started = time.perf_counter()
+        result = method(image_bgr, prompt)
+        self.tracks.append(
+            {
+                "status": "completed",
+                "error_type": None,
+                "elapsed_seconds": time.perf_counter() - started,
+                "frame_count": int(result is not None),
+                "mode": "lossless_image",
+                "prompts": [{"kind": prompt.kind, "object_id": prompt.object_id, "text": prompt.text}],
+                "prompt_texts": [prompt.text] if prompt.text else [],
+                "process_peak_allocated_mib": _cuda_peak_allocated_mib(self.delegate),
+            }
+        )
+        atomic_write_json(self.output_path, {**self.static_metadata, "tracks": self.tracks})
+        return result
 
 
 def _cuda_peak_allocated_mib(delegate: VideoSegmenter) -> float | None:

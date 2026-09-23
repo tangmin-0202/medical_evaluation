@@ -36,6 +36,9 @@ HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
 LOCAL_CLAMP_PROMPT = "metal clip"
 LOCAL_CLAMP_OBJECT_ID = "cp04_clamp_local"
 LOCAL_CLAMP_SOURCE = "sam3:local-hand-crop"
+LOCAL_ROI_LOCATOR_PROMPT = "small curved metal piece"
+LOCAL_ROI_CLAMP_PROMPT = "small metal object"
+LOCAL_ROI_SOURCE = "sam3:lossless-clamp-roi"
 LOCAL_OPENCV_SOURCE = "opencv:isolated-hand-crop"
 
 
@@ -332,9 +335,93 @@ class Cp04FeatureExtractor:
         reliable_count = sum(item.display.reliable for item in observations)
         if reliable_count >= 2 or not allow_local_fallback:
             return observations
+        roi_observations = self._measure_lossless_roi_candidates(
+            crops, selected, item_by_frame, references
+        )
+        if sum(item.display.reliable for item in roi_observations) >= 2:
+            return roi_observations
         return self._measure_isolated_crop_candidates(
             crops, selected, item_by_frame, references
         )
+
+    def _measure_lossless_roi_candidates(
+        self,
+        crops: list[HandObjectCrop],
+        selected: list[DisplayFrameCandidate],
+        item_by_frame: dict[int, FrameMasks],
+        references: list[np.ndarray],
+    ) -> list[_ClampObservation]:
+        segment_image = getattr(self.segmenter, "segment_image", None)
+        if segment_image is None:
+            return []
+        locator_prompt = SegmentationPrompt(
+            object_id=LOCAL_CLAMP_OBJECT_ID,
+            kind="text",
+            text=LOCAL_ROI_LOCATOR_PROMPT,
+        )
+        locator_mask: np.ndarray | None = None
+        for crop in reversed(crops):
+            item = segment_image(crop.image_bgr, locator_prompt)
+            if item is None:
+                continue
+            locator_mask = self._mask(item, LOCAL_CLAMP_OBJECT_ID)
+            if locator_mask is not None and locator_mask.any():
+                break
+        if locator_mask is None or not locator_mask.any():
+            return []
+        ys, xs = np.nonzero(locator_mask)
+        object_width = float(xs.max() - xs.min() + 1)
+        object_height = float(ys.max() - ys.min() + 1)
+        side = max(object_width, object_height) * 2.5
+        center_x = float(xs.mean())
+        center_y = float(ys.mean()) + 0.65 * object_height
+        height, width = crops[0].image_bgr.shape[:2]
+        x1 = max(0, round(center_x - side / 2))
+        y1 = max(0, round(center_y - side / 2))
+        x2 = min(width, round(center_x + side / 2))
+        y2 = min(height, round(center_y + side / 2))
+        if x2 - x1 < 16 or y2 - y1 < 16:
+            return []
+        clamp_prompt = SegmentationPrompt(
+            object_id=LOCAL_CLAMP_OBJECT_ID,
+            kind="text",
+            text=LOCAL_ROI_CLAMP_PROMPT,
+        )
+        observations: list[_ClampObservation] = []
+        for position, (crop, source) in enumerate(zip(crops, selected, strict=True)):
+            roi = cv2.resize(
+                crop.image_bgr[y1:y2, x1:x2],
+                (640, 640),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            item = segment_image(roi, clamp_prompt)
+            if item is None:
+                continue
+            roi_mask = self._mask(item, LOCAL_CLAMP_OBJECT_ID)
+            if roi_mask is None or not roi_mask.any():
+                continue
+            local_mask = np.zeros(crop.image_bgr.shape[:2], dtype=bool)
+            local_mask[y1:y2, x1:x2] = cv2.resize(
+                roi_mask.astype(np.uint8),
+                (x2 - x1, y2 - y1),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            clamp = crop.restore_mask(local_mask)
+            display = measure_display_candidate(source.frame_bgr, source.hand_mask, clamp)
+            match = compare_clamp_mask(clamp, references) if display.reliable and references else None
+            observations.append(
+                _ClampObservation(
+                    item=item_by_frame[source.frame_index],
+                    frame=source.frame_bgr,
+                    hand_mask=source.hand_mask,
+                    clamp_mask=clamp,
+                    display=display,
+                    match=match,
+                    prompt_text=LOCAL_ROI_SOURCE,
+                    crop_clip_position=position,
+                )
+            )
+        return observations
 
     def _measure_isolated_crop_candidates(
         self,

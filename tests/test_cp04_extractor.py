@@ -11,6 +11,8 @@ from medical_evaluation.extractors.cp04 import (
     HAND_PROMPT,
     LOCAL_CLAMP_OBJECT_ID,
     LOCAL_CLAMP_PROMPT,
+    LOCAL_ROI_CLAMP_PROMPT,
+    LOCAL_ROI_LOCATOR_PROMPT,
     Cp04FeatureExtractor,
     _shape_evidence_consistent,
 )
@@ -314,6 +316,65 @@ def test_empty_local_sam3_uses_only_isolated_crop_opencv_fallback(
         "utf-8"
     )
     assert "opencv:isolated-hand-crop" in analysis
+
+
+def test_empty_local_clip_uses_lossless_roi_image_segmentation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    clamp = _clamp_mask()
+
+    class LosslessRoiSegmenter(LocalClipSegmenter):
+        def __init__(self):
+            super().__init__(_tracked("cp04_gloved_hand", [hand] * 3))
+            self.image_prompts: list[str] = []
+
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter([] if len(self.calls) == 2 else outputs)
+
+        def segment_image(self, image_bgr, prompt):
+            self.image_prompts.append(prompt.text)
+            mask = np.zeros(image_bgr.shape[:2], bool)
+            if prompt.text == LOCAL_ROI_LOCATOR_PROMPT:
+                mask[250:330, 270:370] = True
+            else:
+                resized = cv2.resize(
+                    _clamp_mask().astype(np.uint8),
+                    (360, 360),
+                    interpolation=cv2.INTER_NEAREST,
+                ).astype(bool)
+                mask[140:500, 140:500] = resized
+            return FrameMasks(
+                frame_index=0,
+                frame_time_sec=0.0,
+                sample_position=0,
+                masks={LOCAL_CLAMP_OBJECT_ID: mask},
+            )
+
+    segmenter = LosslessRoiSegmenter()
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
+    )
+
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=_reference_dir(tmp_path),
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_04",
+        TimeRange(start_sec=41, end_sec=47),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert result.features["shape_evidence_reliable"] is True
+    assert segmenter.image_prompts[0] == LOCAL_ROI_LOCATOR_PROMPT
+    assert segmenter.image_prompts.count(LOCAL_ROI_CLAMP_PROMPT) >= 2
+    analysis = (tmp_path / "evidence" / "cp_04" / "frame_analysis.json").read_text("utf-8")
+    assert "sam3:lossless-clamp-roi" in analysis
 
 
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(

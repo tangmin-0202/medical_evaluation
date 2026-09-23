@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+import cv2
 import numpy as np
 
 from medical_evaluation.domain import TimeRange
@@ -68,6 +69,64 @@ class Sam3Backend:
     @property
     def model_version(self) -> str:
         return f"sam3.1:{checkpoint_digest(self.checkpoint)}"
+
+    def segment_image(
+        self, image_bgr: np.ndarray, prompt: SegmentationPrompt
+    ) -> FrameMasks | None:
+        """Segment one lossless image without video re-encoding or propagation."""
+        if prompt.kind != "text" or not prompt.text:
+            raise ValueError("SAM3 image segmentation requires one text prompt")
+        with TemporaryDirectory(prefix="medical-evaluation-sam3-image-") as temporary:
+            directory = Path(temporary)
+            if not cv2.imwrite(str(directory / "00000.png"), image_bgr):
+                raise OSError("could not write temporary SAM3 image")
+            response = self.predictor.handle_request(
+                {
+                    "type": "start_session",
+                    "resource_path": str(directory),
+                    "offload_video_to_cpu": True,
+                }
+            )
+            session_id = str(response["session_id"])
+            try:
+                result = self.predictor.handle_request(
+                    {
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": 0,
+                        "text": prompt.text,
+                        "output_prob_thresh": self.output_prob_threshold,
+                    }
+                )
+                selected_id = _select_candidate_id(result)
+                if selected_id is None:
+                    return None
+                outputs = result["outputs"]
+                object_ids = _as_array(outputs["out_obj_ids"]).reshape(-1)
+                masks = list(outputs["out_binary_masks"])
+                selected = [
+                    mask
+                    for object_id, mask in zip(object_ids, masks, strict=True)
+                    if int(object_id) == selected_id
+                ]
+                if not selected:
+                    return None
+                mask = np.asarray(selected[0], dtype=bool).squeeze()
+                frame = FrameMasks(
+                    frame_index=0,
+                    frame_time_sec=0.0,
+                    sample_position=0,
+                    masks={prompt.object_id: mask},
+                )
+                score = _candidate_score(outputs, selected_id)
+                if score is not None:
+                    frame.scores[prompt.object_id] = score
+                    frame.score_sources[prompt.object_id] = "discovery"
+                return frame
+            finally:
+                self.predictor.handle_request(
+                    {"type": "close_session", "session_id": session_id}
+                )
 
     def track(
         self,
