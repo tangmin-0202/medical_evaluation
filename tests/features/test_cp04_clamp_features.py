@@ -4,10 +4,12 @@ import cv2
 import numpy as np
 
 from medical_evaluation.features.cp04_clamp import (
+    GloveMetalCandidate,
     compare_clamp_mask,
     extract_metal_candidate_from_glove,
     measure_display_candidate,
     normalize_clamp_mask,
+    select_metal_candidate_near_seed,
 )
 
 
@@ -161,6 +163,26 @@ def test_reconstructs_split_reflective_clamp_instead_of_one_fragment() -> None:
     assert candidate.object_mask[110, 128]
     assert candidate.object_mask[165, 162]
     assert candidate.object_mask[140, 145]
+
+
+def test_seeded_selection_rejects_larger_distant_glove_shadow() -> None:
+    shape = (240, 320)
+    hand = np.ones(shape, bool)
+    clamp = np.zeros(shape, bool)
+    clamp[70:115, 130:180] = True
+    shadow = np.zeros(shape, bool)
+    shadow[145:215, 35:115] = True
+    seed = np.zeros(shape, bool)
+    seed[88:96, 148:156] = True
+    candidates = [
+        GloveMetalCandidate(hand, shadow, 0.95),
+        GloveMetalCandidate(hand, clamp, 0.72),
+    ]
+
+    selected = select_metal_candidate_near_seed(candidates, seed)
+
+    assert selected is not None
+    assert np.array_equal(selected.object_mask, clamp)
 
 
 def test_extracts_object_excluded_as_hole_from_sam_hand_mask() -> None:

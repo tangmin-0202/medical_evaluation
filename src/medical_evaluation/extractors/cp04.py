@@ -16,6 +16,7 @@ from medical_evaluation.features.cp04_clamp import (
     extract_metal_candidates_from_glove,
     measure_display_candidate,
     normalize_clamp_mask,
+    select_metal_candidate_near_seed,
 )
 from medical_evaluation.features.cp04_display import (
     DisplayFrameCandidate,
@@ -348,17 +349,12 @@ class Cp04FeatureExtractor:
             candidates = extract_metal_candidates_from_glove(
                 crop.image_bgr, local_hand
             )
-            if not candidates:
-                continue
-            score_floor = candidates[0].score - 0.20
-            eligible = [
-                candidate
-                for candidate in candidates
-                if candidate.score >= score_floor
-            ]
-            candidate = max(
-                eligible, key=lambda value: int(value.object_mask.sum())
+            candidate = select_metal_candidate_near_seed(
+                candidates,
+                crop.project_mask(source.seed_mask),
             )
+            if candidate is None:
+                continue
             clamp = crop.restore_mask(candidate.object_mask)
             display = measure_display_candidate(
                 source.frame_bgr, source.hand_mask, clamp

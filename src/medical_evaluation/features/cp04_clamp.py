@@ -45,6 +45,37 @@ def extract_metal_candidate_from_glove(
     return None if not candidates else candidates[0]
 
 
+def select_metal_candidate_near_seed(
+    candidates: list[GloveMetalCandidate],
+    seed_mask: np.ndarray,
+) -> GloveMetalCandidate | None:
+    """Select the most complete candidate anchored to the original metal seed."""
+    if not candidates:
+        return None
+    shape = candidates[0].object_mask.shape
+    seed = _as_mask(seed_mask, shape)
+    if not seed.any():
+        return None
+    radius = max(3, round(min(shape) * 0.08))
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1)
+    )
+    nearby_seed = cv2.dilate(seed.astype(np.uint8), kernel).astype(bool)
+    ranked: list[tuple[tuple[bool, int, float], GloveMetalCandidate]] = []
+    for candidate in candidates:
+        object_mask = _as_mask(candidate.object_mask, shape)
+        if not np.logical_and(object_mask, nearby_seed).any():
+            continue
+        direct_overlap = bool(np.logical_and(object_mask, seed).any())
+        ranked.append(
+            (
+                (direct_overlap, int(object_mask.sum()), float(candidate.score)),
+                candidate,
+            )
+        )
+    return None if not ranked else max(ranked, key=lambda item: item[0])[1]
+
+
 def extract_metal_candidates_from_glove(
     frame_bgr: np.ndarray,
     hand_mask: np.ndarray,
