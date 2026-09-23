@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import cv2
@@ -8,6 +9,7 @@ import pytest
 
 from medical_evaluation.domain import TimeRange
 from medical_evaluation.extractors.cp04 import (
+    EXEMPLAR_SOURCE,
     HAND_PROMPT,
     LOCAL_CLAMP_OBJECT_ID,
     LOCAL_CLAMP_PROMPT,
@@ -418,6 +420,79 @@ def test_one_lossless_roi_mask_is_reliable_without_opencv_fallback(
     assert result.features["shape_evidence_reliable"] is True
     assert result.features["clear_frame_count"] == 1.0
     assert result.features["evidence_consistent"] is True
+
+
+def test_lossless_roi_prefers_success_exemplar_over_text_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    clamp = _clamp_mask()
+    reference = _reference_dir(tmp_path)
+    exemplar_dir = reference / "exemplars"
+    exemplar_dir.mkdir()
+    exemplar = cv2.resize(_frame(hand=hand, clamp=clamp), (512, 512))
+    assert cv2.imwrite(str(exemplar_dir / "success.png"), exemplar)
+    (reference / "manifest.json").write_text(
+        json.dumps(
+            {
+                "frames": [{"mask_path": "masks/00000000.png"}],
+                "exemplar": {
+                    "image_path": "exemplars/success.png",
+                    "box_xyxy": [120, 100, 390, 410],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class ExemplarSegmenter(LocalClipSegmenter):
+        def __init__(self):
+            super().__init__(_tracked("cp04_gloved_hand", [hand] * 3))
+            self.exemplar_calls = 0
+            self.text_prompts: list[str] = []
+
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter([] if len(self.calls) == 2 else outputs)
+
+        def segment_image(self, image_bgr, prompt):
+            self.text_prompts.append(prompt.text)
+            mask = np.zeros(image_bgr.shape[:2], bool)
+            mask[250:330, 270:370] = True
+            return FrameMasks(frame_index=0, frame_time_sec=0.0, masks={LOCAL_CLAMP_OBJECT_ID: mask})
+
+        def segment_image_exemplar(self, image_bgr, prompt):
+            self.exemplar_calls += 1
+            assert image_bgr.shape[:2] == (512, 1024)
+            assert prompt.kind == "box"
+            mask = np.zeros(image_bgr.shape[:2], bool)
+            target = cv2.resize(clamp.astype(np.uint8), (430, 430), interpolation=cv2.INTER_NEAREST).astype(bool)
+            mask[41:471, 553:983] = target
+            return FrameMasks(frame_index=0, frame_time_sec=0.0, masks={LOCAL_CLAMP_OBJECT_ID: mask})
+
+    segmenter = ExemplarSegmenter()
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
+    )
+
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=reference,
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_04",
+        TimeRange(start_sec=41, end_sec=47),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert segmenter.exemplar_calls >= 1
+    assert segmenter.text_prompts == [LOCAL_ROI_LOCATOR_PROMPT]
+    assert result.features["shape_evidence_reliable"] is True
+    analysis = (tmp_path / "evidence" / "cp_04" / "frame_analysis.json").read_text("utf-8")
+    assert EXEMPLAR_SOURCE in analysis
 
 
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(

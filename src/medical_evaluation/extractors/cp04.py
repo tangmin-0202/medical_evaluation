@@ -39,6 +39,7 @@ LOCAL_CLAMP_SOURCE = "sam3:local-hand-crop"
 LOCAL_ROI_LOCATOR_PROMPT = "small curved metal piece"
 LOCAL_ROI_CLAMP_PROMPT = "small metal object"
 LOCAL_ROI_SOURCE = "sam3:lossless-clamp-roi"
+EXEMPLAR_SOURCE = "sam3:success-exemplar-roi"
 LOCAL_OPENCV_SOURCE = "opencv:isolated-hand-crop"
 
 
@@ -127,7 +128,7 @@ class Cp04FeatureExtractor:
         )
         lossless_single = (
             len(comparable) == 1
-            and comparable[0].prompt_text == LOCAL_ROI_SOURCE
+            and comparable[0].prompt_text in {LOCAL_ROI_SOURCE, EXEMPLAR_SOURCE}
         )
         if lossless_single:
             evidence_consistent = True
@@ -196,6 +197,15 @@ class Cp04FeatureExtractor:
                     "mask_path": f"masks/{name}",
                 }
             )
+        exemplar_dir = self.reference_dir / "exemplars"
+        exemplar_dir.mkdir(parents=True, exist_ok=True)
+        exemplar_image, exemplar_box = self._build_exemplar_tile(
+            selected_observations[0].frame,
+            selected_observations[0].clamp_mask,
+        )
+        exemplar_name = f"{selected_observations[0].item.frame_index:08d}.png"
+        if not cv2.imwrite(str(exemplar_dir / exemplar_name), exemplar_image):
+            raise OSError("could not write CP04 success exemplar image")
         atomic_write_json(
             manifest_path,
             {
@@ -205,10 +215,52 @@ class Cp04FeatureExtractor:
                 "candidate_source": selected_observations[0].prompt_text,
                 "model_version": self.model_version,
                 "frames": rows,
+                "exemplar": {
+                    "image_path": f"exemplars/{exemplar_name}",
+                    "box_xyxy": list(exemplar_box),
+                },
             },
         )
         self._write_evidence(selected_observations, selected_observations, [])
         return manifest_path
+
+    @staticmethod
+    def _build_exemplar_tile(
+        frame: np.ndarray,
+        object_mask: np.ndarray,
+        *,
+        tile_size: int = 512,
+    ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+        ys, xs = np.nonzero(object_mask)
+        if not len(xs):
+            raise ValueError("cannot build an exemplar from an empty clamp mask")
+        object_width = float(xs.max() - xs.min() + 1)
+        object_height = float(ys.max() - ys.min() + 1)
+        side = max(object_width, object_height) * 2.0
+        center_x = float(xs.mean())
+        center_y = float(ys.mean())
+        height, width = frame.shape[:2]
+        x1 = max(0, round(center_x - side / 2))
+        y1 = max(0, round(center_y - side / 2))
+        x2 = min(width, round(center_x + side / 2))
+        y2 = min(height, round(center_y + side / 2))
+        crop = frame[y1:y2, x1:x2]
+        local_mask = object_mask[y1:y2, x1:x2]
+        content_size = tile_size - 48
+        scale = min(content_size / crop.shape[1], content_size / crop.shape[0])
+        resized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        tile = np.full((tile_size, tile_size, 3), 127, dtype=np.uint8)
+        left = (tile_size - resized.shape[1]) // 2
+        top = (tile_size - resized.shape[0]) // 2
+        tile[top : top + resized.shape[0], left : left + resized.shape[1]] = resized
+        local_y, local_x = np.nonzero(local_mask)
+        box = (
+            left + round(float(local_x.min()) * scale),
+            top + round(float(local_y.min()) * scale),
+            left + round(float(local_x.max() + 1) * scale),
+            top + round(float(local_y.max() + 1) * scale),
+        )
+        return tile, box
 
     def _track_text(
         self,
@@ -388,6 +440,15 @@ class Cp04FeatureExtractor:
         y2 = min(height, round(center_y + side / 2))
         if x2 - x1 < 16 or y2 - y1 < 16:
             return []
+        exemplar_observations = self._measure_exemplar_candidates(
+            crops,
+            selected,
+            item_by_frame,
+            references,
+            (x1, y1, x2, y2),
+        )
+        if any(item.display.reliable for item in exemplar_observations):
+            return exemplar_observations
         clamp_prompt = SegmentationPrompt(
             object_id=LOCAL_CLAMP_OBJECT_ID,
             kind="text",
@@ -424,6 +485,79 @@ class Cp04FeatureExtractor:
                     display=display,
                     match=match,
                     prompt_text=LOCAL_ROI_SOURCE,
+                    crop_clip_position=position,
+                )
+            )
+        return observations
+
+    def _measure_exemplar_candidates(
+        self,
+        crops: list[HandObjectCrop],
+        selected: list[DisplayFrameCandidate],
+        item_by_frame: dict[int, FrameMasks],
+        references: list[np.ndarray],
+        target_box: tuple[int, int, int, int],
+    ) -> list[_ClampObservation]:
+        segment_exemplar = getattr(self.segmenter, "segment_image_exemplar", None)
+        exemplar = self._load_exemplar()
+        if segment_exemplar is None or exemplar is None:
+            return []
+        exemplar_image, exemplar_box = exemplar
+        tile_size = 512
+        exemplar_tile = cv2.resize(
+            exemplar_image,
+            (tile_size, tile_size),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        scale_x = tile_size / exemplar_image.shape[1]
+        scale_y = tile_size / exemplar_image.shape[0]
+        bx1, by1, bx2, by2 = exemplar_box
+        prompt = SegmentationPrompt(
+            object_id=LOCAL_CLAMP_OBJECT_ID,
+            kind="box",
+            coordinates=[
+                bx1 * scale_x / (tile_size * 2),
+                by1 * scale_y / tile_size,
+                bx2 * scale_x / (tile_size * 2),
+                by2 * scale_y / tile_size,
+            ],
+        )
+        x1, y1, x2, y2 = target_box
+        observations: list[_ClampObservation] = []
+        for position, (crop, source) in enumerate(zip(crops, selected, strict=True)):
+            target_tile = cv2.resize(
+                crop.image_bgr[y1:y2, x1:x2],
+                (tile_size, tile_size),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            composite = np.concatenate([exemplar_tile, target_tile], axis=1)
+            item = segment_exemplar(composite, prompt)
+            if item is None:
+                continue
+            composite_mask = self._mask(item, LOCAL_CLAMP_OBJECT_ID)
+            if composite_mask is None or composite_mask.shape != composite.shape[:2]:
+                continue
+            target_mask = composite_mask[:, tile_size:]
+            if not target_mask.any():
+                continue
+            local_mask = np.zeros(crop.image_bgr.shape[:2], dtype=bool)
+            local_mask[y1:y2, x1:x2] = cv2.resize(
+                target_mask.astype(np.uint8),
+                (x2 - x1, y2 - y1),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+            clamp = crop.restore_mask(local_mask)
+            display = measure_display_candidate(source.frame_bgr, source.hand_mask, clamp)
+            match = compare_clamp_mask(clamp, references) if display.reliable and references else None
+            observations.append(
+                _ClampObservation(
+                    item=item_by_frame[source.frame_index],
+                    frame=source.frame_bgr,
+                    hand_mask=source.hand_mask,
+                    clamp_mask=clamp,
+                    display=display,
+                    match=match,
+                    prompt_text=EXEMPLAR_SOURCE,
                     crop_clip_position=position,
                 )
             )
@@ -540,6 +674,28 @@ class Cp04FeatureExtractor:
             if image is not None and np.any(image > 0):
                 masks.append(image > 0)
         return masks
+
+    def _load_exemplar(
+        self,
+    ) -> tuple[np.ndarray, tuple[float, float, float, float]] | None:
+        manifest_path = self.reference_dir / "manifest.json"
+        if not manifest_path.is_file():
+            return None
+        import json
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        exemplar = manifest.get("exemplar")
+        if not isinstance(exemplar, dict):
+            return None
+        image_path = exemplar.get("image_path")
+        box = exemplar.get("box_xyxy")
+        if not isinstance(image_path, str) or not isinstance(box, list) or len(box) != 4:
+            return None
+        image = cv2.imread(str(self.reference_dir / image_path), cv2.IMREAD_COLOR)
+        if image is None:
+            return None
+        values = tuple(float(value) for value in box)
+        return image, values
 
     def _write_evidence(
         self,

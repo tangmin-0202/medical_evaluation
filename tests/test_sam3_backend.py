@@ -206,6 +206,47 @@ def test_sam3_lossless_image_uses_largest_unranked_candidate(tmp_path: Path) -> 
     assert result.masks["rubber_dam_frame"].any()
 
 
+def test_sam3_exemplar_selects_match_outside_positive_example_box(
+    tmp_path: Path,
+) -> None:
+    class ExemplarPredictor(FakeSam3Predictor):
+        def handle_request(self, request: dict[str, object]) -> dict[str, object]:
+            if request["type"] != "add_prompt":
+                return super().handle_request(request)
+            self.requests.append(request)
+            exemplar = np.zeros((20, 40), dtype=bool)
+            exemplar[5:15, 12:25] = True
+            target = np.zeros((20, 40), dtype=bool)
+            target[6:16, 32:39] = True
+            return {
+                "frame_index": 0,
+                "outputs": {
+                    "out_obj_ids": np.asarray([4, 9]),
+                    "out_binary_masks": np.asarray([exemplar, target]),
+                    "out_scores": np.asarray([0.95, 0.82]),
+                },
+            }
+
+    predictor = ExemplarPredictor()
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+    image = np.full((20, 40, 3), 127, np.uint8)
+    prompt = SegmentationPrompt(
+        object_id="clamp_match",
+        kind="box",
+        coordinates=[0.25, 0.20, 0.75, 0.80],
+    )
+
+    result = backend.segment_image_exemplar(image, prompt)
+
+    assert result is not None
+    selected = result.masks["clamp_match"]
+    assert selected[:, 32:39].any()
+    assert not selected[:, 12:25].any()
+    assert predictor.requests[1]["bounding_boxes"] == [[0.25, 0.2, 0.5, 0.6000000000000001]]
+    assert predictor.requests[1]["bounding_box_labels"] == [1]
+    assert "text" not in predictor.requests[1]
+
+
 @pytest.mark.parametrize("prompts", [[], [_text_prompt(), _text_prompt()]])
 def test_sam3_requires_exactly_one_prompt(tmp_path: Path, prompts) -> None:
     backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())

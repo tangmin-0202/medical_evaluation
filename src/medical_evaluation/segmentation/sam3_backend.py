@@ -131,6 +131,76 @@ class Sam3Backend:
                     {"type": "close_session", "session_id": session_id}
                 )
 
+    def segment_image_exemplar(
+        self, image_bgr: np.ndarray, prompt: SegmentationPrompt
+    ) -> FrameMasks | None:
+        """Find the visual-example match outside a positive exemplar box."""
+        if prompt.kind != "box" or prompt.coordinates is None:
+            raise ValueError("SAM3 exemplar segmentation requires one box prompt")
+        x1, y1, x2, y2 = (float(value) for value in prompt.coordinates)
+        with TemporaryDirectory(prefix="medical-evaluation-sam3-exemplar-") as temporary:
+            directory = Path(temporary)
+            if not cv2.imwrite(str(directory / "00000.png"), image_bgr):
+                raise OSError("could not write temporary SAM3 exemplar image")
+            response = self.predictor.handle_request(
+                {
+                    "type": "start_session",
+                    "resource_path": str(directory),
+                    "offload_video_to_cpu": True,
+                }
+            )
+            session_id = str(response["session_id"])
+            try:
+                result = self.predictor.handle_request(
+                    {
+                        "type": "add_prompt",
+                        "session_id": session_id,
+                        "frame_index": 0,
+                        "bounding_boxes": [[x1, y1, x2 - x1, y2 - y1]],
+                        "bounding_box_labels": [1],
+                        "output_prob_thresh": self.output_prob_threshold,
+                    }
+                )
+                outputs = result["outputs"]
+                object_ids = _as_array(outputs["out_obj_ids"]).reshape(-1)
+                masks = [np.asarray(mask, dtype=bool).squeeze() for mask in outputs["out_binary_masks"]]
+                height, width = image_bgr.shape[:2]
+                left = max(0, min(width, round(x1 * width)))
+                top = max(0, min(height, round(y1 * height)))
+                right = max(left, min(width, round(x2 * width)))
+                bottom = max(top, min(height, round(y2 * height)))
+                candidates: list[tuple[float, int, np.ndarray]] = []
+                for object_id, mask in zip(object_ids, masks, strict=True):
+                    area = int(mask.sum())
+                    if area == 0:
+                        continue
+                    exemplar_overlap = int(mask[top:bottom, left:right].sum())
+                    outside_area = area - exemplar_overlap
+                    if outside_area <= 0 or exemplar_overlap / area >= 0.5:
+                        continue
+                    score = _candidate_score(outputs, int(object_id))
+                    candidates.append(
+                        (float(score) if score is not None else float(outside_area), int(object_id), mask)
+                    )
+                if not candidates:
+                    return None
+                _, selected_id, selected_mask = max(candidates, key=lambda item: item[0])
+                frame = FrameMasks(
+                    frame_index=0,
+                    frame_time_sec=0.0,
+                    sample_position=0,
+                    masks={prompt.object_id: selected_mask},
+                )
+                score = _candidate_score(outputs, selected_id)
+                if score is not None:
+                    frame.scores[prompt.object_id] = score
+                    frame.score_sources[prompt.object_id] = "exemplar"
+                return frame
+            finally:
+                self.predictor.handle_request(
+                    {"type": "close_session", "session_id": session_id}
+                )
+
     def track(
         self,
         video_path: Path,

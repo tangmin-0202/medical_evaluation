@@ -138,6 +138,8 @@ def test_build_reference_writes_versioned_masks_and_manifest(
     assert [row["frame_index"] for row in manifest["frames"]] == [10, 11, 12]
     assert [row["crop_clip_position"] for row in manifest["frames"]] == [0, 1, 2]
     assert all((reference_dir / row["mask_path"]).is_file() for row in manifest["frames"])
+    assert (reference_dir / manifest["exemplar"]["image_path"]).is_file()
+    assert len(manifest["exemplar"]["box_xyxy"]) == 4
     assert [call[2][0].text for call in segmenter.calls] == [
         HAND_PROMPT,
         LOCAL_CLAMP_PROMPT,

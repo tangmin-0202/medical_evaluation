@@ -2,18 +2,30 @@
   "reference_version": "cp04-reference-v1",
   "video_id": "success",
   "video_filename": "橡皮障完整.mp4",
-  "prompt": "small shiny metal clip resting on a white gloved palm",
-  "model_version": "sam3.1:0567debeec80+cp04-reference-v1",
+  "candidate_source": "sam3:local-hand-crop",
+  "model_version": "sam3.1:0567debeec80+cp04-local-hand-crop-v1+cp04-reference-v1",
   "frames": [
+    {
+      "frame_index": 2325,
+      "time_sec": 46.49035571689865,
+      "crop_clip_position": 2,
+      "mask_path": "masks/00002325.png"
+    },
     {
       "frame_index": 2275,
       "time_sec": 45.490563120836306,
+      "crop_clip_position": 0,
       "mask_path": "masks/00002275.png"
     },
     {
       "frame_index": 2300,
       "time_sec": 45.990459418867474,
+      "crop_clip_position": 1,
       "mask_path": "masks/00002300.png"
     }
-  ]
+  ],
+  "exemplar": {
+    "image_path": "exemplars/00002325.png",
+    "box_xyxy": [166, 140, 349, 372]
+  }
 }

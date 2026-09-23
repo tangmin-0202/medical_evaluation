@@ -105,6 +105,35 @@ class AuditedVideoSegmenter:
         atomic_write_json(self.output_path, {**self.static_metadata, "tracks": self.tracks})
         return result
 
+    def segment_image_exemplar(
+        self, image_bgr: np.ndarray, prompt: SegmentationPrompt
+    ) -> FrameMasks | None:
+        method = getattr(self.delegate, "segment_image_exemplar", None)
+        if method is None:
+            return None
+        started = time.perf_counter()
+        result = method(image_bgr, prompt)
+        self.tracks.append(
+            {
+                "status": "completed",
+                "error_type": None,
+                "elapsed_seconds": time.perf_counter() - started,
+                "frame_count": int(result is not None),
+                "mode": "exemplar_image",
+                "prompts": [
+                    {
+                        "kind": prompt.kind,
+                        "object_id": prompt.object_id,
+                        "coordinates": prompt.coordinates,
+                    }
+                ],
+                "prompt_texts": [],
+                "process_peak_allocated_mib": _cuda_peak_allocated_mib(self.delegate),
+            }
+        )
+        atomic_write_json(self.output_path, {**self.static_metadata, "tracks": self.tracks})
+        return result
+
 
 def _cuda_peak_allocated_mib(delegate: VideoSegmenter) -> float | None:
     try:
