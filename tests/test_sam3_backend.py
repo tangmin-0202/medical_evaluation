@@ -196,6 +196,16 @@ def test_sam3_segments_lossless_image_without_propagation(tmp_path: Path) -> Non
     assert not resource_path.exists()
 
 
+def test_sam3_lossless_image_uses_largest_unranked_candidate(tmp_path: Path) -> None:
+    predictor = FakeSam3Predictor(object_ids=(7, 8), scores=None)
+    backend = Sam3Backend(tmp_path / "sam3.pt", predictor=predictor)
+
+    result = backend.segment_image(np.zeros((40, 60, 3), np.uint8), _text_prompt())
+
+    assert result is not None
+    assert result.masks["rubber_dam_frame"].any()
+
+
 @pytest.mark.parametrize("prompts", [[], [_text_prompt(), _text_prompt()]])
 def test_sam3_requires_exactly_one_prompt(tmp_path: Path, prompts) -> None:
     backend = Sam3Backend(tmp_path / "sam3.pt", predictor=FakeSam3Predictor())

@@ -98,7 +98,10 @@ class Sam3Backend:
                         "output_prob_thresh": self.output_prob_threshold,
                     }
                 )
-                selected_id = _select_candidate_id(result)
+                try:
+                    selected_id = _select_candidate_id(result)
+                except Sam3AmbiguousTextResult:
+                    selected_id = _largest_candidate_id(result)
                 if selected_id is None:
                     return None
                 outputs = result["outputs"]
@@ -325,6 +328,18 @@ def _select_candidate_id(prompt_result: dict[str, object]) -> int | None:
     if scores.size != object_ids.size:
         raise ValueError("SAM3 candidate scores do not match object IDs")
     return int(object_ids[int(np.argmax(scores))])
+
+
+def _largest_candidate_id(prompt_result: dict[str, object]) -> int | None:
+    outputs = prompt_result.get("outputs")
+    if not isinstance(outputs, dict):
+        return None
+    object_ids = _as_array(outputs.get("out_obj_ids", [])).reshape(-1)
+    masks = list(outputs.get("out_binary_masks", []))
+    if object_ids.size == 0 or len(masks) != object_ids.size:
+        return None
+    areas = [int(np.asarray(mask, dtype=bool).sum()) for mask in masks]
+    return int(object_ids[int(np.argmax(areas))])
 
 
 def _candidate_score(outputs: object, object_id: int) -> float | None:
