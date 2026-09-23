@@ -32,7 +32,7 @@ from medical_evaluation.storage import atomic_write_json, safe_child
 from medical_evaluation.video import read_frame
 
 HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
-LOCAL_CLAMP_PROMPT = "small metal object on white glove"
+LOCAL_CLAMP_PROMPT = "metal clip"
 LOCAL_CLAMP_OBJECT_ID = "cp04_clamp_local"
 LOCAL_CLAMP_SOURCE = "sam3:local-hand-crop"
 

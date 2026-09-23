@@ -20,6 +20,7 @@ from medical_evaluation.segmentation.sam3_backend import Sam3AmbiguousTextResult
 
 def test_hand_prompt_targets_the_open_display_palm() -> None:
     assert HAND_PROMPT == "open white gloved palm holding a small shiny metal clip"
+    assert LOCAL_CLAMP_PROMPT == "metal clip"
 
 
 def test_consistency_tolerates_one_noisy_candidate_after_two_matches() -> None:
