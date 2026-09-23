@@ -85,11 +85,16 @@ def extract_metal_candidates_from_glove(
         hand_y = int(stats[index, cv2.CC_STAT_TOP])
         hand_h = int(stats[index, cv2.CC_STAT_HEIGHT])
         component_start = len(candidates)
-        # Several darkness levels prevent a mild glove shadow from joining the
-        # much darker metal into one giant component. A real object only needs
-        # to survive one level; downstream multi-frame filtering removes noise.
-        for darkness in (20.0, 35.0, 50.0, 65.0):
-            foreground = support & (gray < glove_gray - darkness)
+
+        def append_components(
+            foreground: np.ndarray,
+            *,
+            hand_component: np.ndarray,
+            filled_hand: np.ndarray,
+            component_area: int,
+            component_y: int,
+            component_height: int,
+        ) -> None:
             join_radius = max(2, round(min(shape) * 0.007))
             foreground = cv2.morphologyEx(
                 foreground.astype(np.uint8),
@@ -107,12 +112,13 @@ def extract_metal_candidates_from_glove(
             )
             for object_index in range(1, object_count):
                 object_area = int(object_stats[object_index, cv2.CC_STAT_AREA])
-                relative_area = object_area / max(hand_area, 1)
+                relative_area = object_area / max(component_area, 1)
                 if not 0.0015 <= relative_area <= 0.12:
                     continue
                 object_mask = object_labels == object_index
                 overlap = float(
-                    np.logical_and(object_mask, filled.astype(bool)).sum() / object_area
+                    np.logical_and(object_mask, filled_hand.astype(bool)).sum()
+                    / object_area
                 )
                 if overlap < 0.65:
                     continue
@@ -125,7 +131,9 @@ def extract_metal_candidates_from_glove(
                 if elongation > 2.5:
                     continue
                 ys, _ = np.nonzero(object_mask)
-                center_y_ratio = (float(np.mean(ys)) - hand_y) / max(hand_h, 1)
+                center_y_ratio = (float(np.mean(ys)) - component_y) / max(
+                    component_height, 1
+                )
                 if center_y_ratio > 0.82:
                     continue
                 area_score = max(0.0, 1.0 - abs(relative_area - 0.035) / 0.085)
@@ -139,8 +147,41 @@ def extract_metal_candidates_from_glove(
                     + 0.15 * position_score
                 )
                 candidates.append(
-                    GloveMetalCandidate(component, object_mask, float(score))
+                    GloveMetalCandidate(hand_component, object_mask, float(score))
                 )
+
+        # Several darkness levels prevent a mild glove shadow from joining the
+        # much darker metal into one giant component. A real object only needs
+        # to survive one level; downstream multi-frame filtering removes noise.
+        for darkness in (20.0, 35.0, 50.0, 65.0):
+            append_components(
+                support & (gray < glove_gray - darkness),
+                hand_component=component,
+                filled_hand=filled,
+                component_area=hand_area,
+                component_y=hand_y,
+                component_height=hand_h,
+            )
+
+        # Strongly illuminated metal may be only slightly darker than the warm
+        # glove while having distinctly lower colour saturation. Combine that
+        # neutral highlight with the dark metal bridge before component
+        # extraction so a two-wing clamp is kept as one complete candidate.
+        saturation = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
+        glove_saturation = float(np.median(saturation[component]))
+        for saturation_margin in (10.0, 20.0, 30.0):
+            reflective_metal = support & (
+                (saturation < glove_saturation - saturation_margin)
+                | (gray < glove_gray - 20.0)
+            )
+            append_components(
+                reflective_metal,
+                hand_component=component,
+                filled_hand=filled,
+                component_area=hand_area,
+                component_y=hand_y,
+                component_height=hand_h,
+            )
         # A clamp can split into separate dark upper/lower pieces around its
         # bright center. Preserve the union as another candidate instead of
         # forcing the extractor to choose one fragment.

@@ -145,6 +145,24 @@ def test_extracts_bright_neutral_metal_against_warm_glove() -> None:
     assert candidate.object_mask[145, 121:170].any()
 
 
+def test_reconstructs_split_reflective_clamp_instead_of_one_fragment() -> None:
+    frame, hand = _glove_scene(object_center=None)
+    metal = (190, 190, 190)
+    shadowed_metal = (65, 92, 122)
+    cv2.rectangle(frame, (125, 105), (165, 123), metal, -1)
+    cv2.rectangle(frame, (125, 150), (165, 168), metal, -1)
+    cv2.rectangle(frame, (139, 120), (151, 153), shadowed_metal, -1)
+    cv2.circle(frame, (136, 114), 4, (220, 225, 230), -1)
+    cv2.circle(frame, (155, 159), 4, (220, 225, 230), -1)
+
+    candidate = extract_metal_candidate_from_glove(frame, hand)
+
+    assert candidate is not None
+    assert candidate.object_mask[110, 128]
+    assert candidate.object_mask[165, 162]
+    assert candidate.object_mask[140, 145]
+
+
 def test_extracts_object_excluded_as_hole_from_sam_hand_mask() -> None:
     frame, hand = _glove_scene(object_center=(145, 145))
     cv2.ellipse(hand.view(np.uint8), (145, 145), (25, 19), 0, 0, 360, 0, -1)
