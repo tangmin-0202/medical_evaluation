@@ -68,8 +68,8 @@ checkpoints:
     end_sec: 47.0
   thresholds:
     min_clamp_similarity: 0.8
-    min_clear_clamp_frames: 2
-    min_matching_clamp_frames: 2
+    min_clear_clamp_frames: 1
+    min_matching_clamp_frames: 1
 - id: cp_05
   name: 将橡皮障夹套入橡皮布孔洞
   criteria:

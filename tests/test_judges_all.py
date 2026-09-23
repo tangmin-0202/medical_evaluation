@@ -229,6 +229,24 @@ CP04_PASSING_FEATURES: dict[str, float | bool | None] = {
             "incorrect",
             "wrong_clamp_type",
         ),
+        (
+            {
+                "clear_frame_count": 1.0,
+                "matching_frame_count": 0.0,
+                "clamp_reference_similarity": 0.5,
+            },
+            "incorrect",
+            "wrong_clamp_type",
+        ),
+        (
+            {
+                "clear_frame_count": 1.0,
+                "matching_frame_count": 1.0,
+                "clamp_reference_similarity": 0.9,
+            },
+            "correct",
+            "criteria_satisfied",
+        ),
         ({}, "correct", "criteria_satisfied"),
     ],
 )

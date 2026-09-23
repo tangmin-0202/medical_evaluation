@@ -107,8 +107,8 @@ def test_cp04_uses_versioned_success_reference_shape_contract() -> None:
     assert "success" in "".join(cp04.criteria)
     assert cp04.thresholds == {
         "min_clamp_similarity": 0.8,
-        "min_clear_clamp_frames": 2.0,
-        "min_matching_clamp_frames": 2.0,
+        "min_clear_clamp_frames": 1.0,
+        "min_matching_clamp_frames": 1.0,
     }
 
 
