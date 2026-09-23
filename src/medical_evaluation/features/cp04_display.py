@@ -203,6 +203,25 @@ def select_stable_display_frames(
     return best
 
 
+def display_candidate_is_clipped(
+    hand_mask: np.ndarray, seed_mask: np.ndarray
+) -> bool:
+    """Reject clipped fingers/object while allowing a wrist to enter from below."""
+    hand = np.asarray(hand_mask, dtype=bool)
+    seed = np.asarray(seed_mask, dtype=bool)
+    if hand.ndim != 2 or seed.shape != hand.shape or not hand.any() or not seed.any():
+        return True
+    if hand[0].any() or hand[:, 0].any() or hand[:, -1].any():
+        return True
+    margin = max(1, round(min(hand.shape) * 0.01))
+    return bool(
+        seed[:margin].any()
+        or seed[-margin:].any()
+        or seed[:, :margin].any()
+        or seed[:, -margin:].any()
+    )
+
+
 def _relative_seed_center(
     hand_mask: np.ndarray, seed_mask: np.ndarray
 ) -> tuple[float, float]:

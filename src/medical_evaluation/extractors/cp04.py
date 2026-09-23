@@ -21,6 +21,7 @@ from medical_evaluation.features.cp04_display import (
     DisplayFrameCandidate,
     HandObjectCrop,
     build_hand_object_crop,
+    display_candidate_is_clipped,
     select_stable_display_frames,
 )
 from medical_evaluation.pipeline import ExtractedEvidence
@@ -250,11 +251,8 @@ class Cp04FeatureExtractor:
                 frame, candidate.hand_mask, candidate.object_mask
             )
             hand_component = np.asarray(candidate.hand_mask, dtype=bool)
-            boundary_clipped = bool(
-                hand_component[0].any()
-                or hand_component[-1].any()
-                or hand_component[:, 0].any()
-                or hand_component[:, -1].any()
+            boundary_clipped = display_candidate_is_clipped(
+                hand_component, candidate.object_mask
             )
             candidates.append(
                 DisplayFrameCandidate(

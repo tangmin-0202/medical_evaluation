@@ -5,6 +5,7 @@ import numpy as np
 from medical_evaluation.features.cp04_display import (
     DisplayFrameCandidate,
     build_hand_object_crop,
+    display_candidate_is_clipped,
     select_stable_display_frames,
 )
 
@@ -91,3 +92,24 @@ def test_select_stable_display_frames_rejects_isolated_candidate() -> None:
     )
 
     assert selected == []
+
+
+def test_bottom_wrist_contact_is_not_a_clipped_display() -> None:
+    hand = np.zeros((100, 120), dtype=bool)
+    hand[20:100, 25:95] = True
+    seed = np.zeros_like(hand)
+    seed[45:58, 52:68] = True
+
+    assert display_candidate_is_clipped(hand, seed) is False
+
+
+def test_seed_or_fingers_at_frame_edge_are_clipped() -> None:
+    hand = np.zeros((100, 120), dtype=bool)
+    hand[0:90, 25:95] = True
+    seed = np.zeros_like(hand)
+    seed[45:58, 52:68] = True
+    assert display_candidate_is_clipped(hand, seed) is True
+
+    hand[0] = False
+    seed[:, 0:2] = True
+    assert display_candidate_is_clipped(hand, seed) is True
