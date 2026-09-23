@@ -239,7 +239,7 @@ def test_local_sam3_masks_are_mapped_back_to_original_frame(
     assert np.logical_and(saved > 0, full_clamp).sum() > 0.8 * full_clamp.sum()
 
 
-def test_one_local_sam3_mask_is_not_reliable_shape_evidence(
+def test_one_local_sam3_mask_uses_isolated_crop_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hand = _hand_mask()
@@ -269,8 +269,51 @@ def test_one_local_sam3_mask_is_not_reliable_shape_evidence(
     )
 
     assert result.features["clamp_observed"] is True
-    assert result.features["shape_evidence_reliable"] is False
-    assert result.features["clear_frame_count"] == 1.0
+    assert result.features["shape_evidence_reliable"] is True
+    assert result.features["clear_frame_count"] >= 2.0
+    analysis = (tmp_path / "evidence" / "cp_04" / "frame_analysis.json").read_text(
+        "utf-8"
+    )
+    assert "opencv:isolated-hand-crop" in analysis
+
+
+def test_empty_local_sam3_uses_only_isolated_crop_opencv_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    clamp = _clamp_mask()
+
+    class EmptyLocalSegmenter(LocalClipSegmenter):
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter([] if len(self.calls) == 2 else outputs)
+
+    segmenter = EmptyLocalSegmenter(_tracked("cp04_gloved_hand", [hand] * 3))
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
+    )
+
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=_reference_dir(tmp_path),
+        min_similarity=0.7,
+    ).extract(
+        tmp_path / "video.mp4",
+        "cp_04",
+        TimeRange(start_sec=41, end_sec=47),
+        dense_fps=2,
+        analysis_width=1280,
+    )
+
+    assert len(segmenter.calls) == 2
+    assert result.features["clamp_observed"] is True
+    assert result.features["shape_evidence_reliable"] is True
+    analysis = (tmp_path / "evidence" / "cp_04" / "frame_analysis.json").read_text(
+        "utf-8"
+    )
+    assert "opencv:isolated-hand-crop" in analysis
 
 
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(

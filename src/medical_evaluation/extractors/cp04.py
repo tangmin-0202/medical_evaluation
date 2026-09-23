@@ -35,6 +35,7 @@ HAND_PROMPT = "open white gloved palm holding a small shiny metal clip"
 LOCAL_CLAMP_PROMPT = "metal clip"
 LOCAL_CLAMP_OBJECT_ID = "cp04_clamp_local"
 LOCAL_CLAMP_SOURCE = "sam3:local-hand-crop"
+LOCAL_OPENCV_SOURCE = "opencv:isolated-hand-crop"
 
 
 def _shape_evidence_consistent(
@@ -159,7 +160,9 @@ class Cp04FeatureExtractor:
             object_id="cp04_gloved_hand",
             prompt_text=HAND_PROMPT,
         )
-        observations = self._measure_hand_items(video_path, hand_items, [])
+        observations = self._measure_hand_items(
+            video_path, hand_items, [], allow_local_fallback=False
+        )
         reliable = [item for item in observations if item.display.reliable]
         reliable.sort(key=self._quality_score, reverse=True)
         selected_observations = reliable[: self.maximum_evidence_frames]
@@ -228,6 +231,8 @@ class Cp04FeatureExtractor:
         video_path: Path,
         items: list[FrameMasks],
         references: list[np.ndarray],
+        *,
+        allow_local_fallback: bool = True,
     ) -> list[_ClampObservation]:
         candidates: list[DisplayFrameCandidate] = []
         item_by_frame: dict[int, FrameMasks] = {}
@@ -320,6 +325,58 @@ class Cp04FeatureExtractor:
                     display=display,
                     match=match,
                     prompt_text=LOCAL_CLAMP_SOURCE,
+                    crop_clip_position=position,
+                )
+            )
+        reliable_count = sum(item.display.reliable for item in observations)
+        if reliable_count >= 2 or not allow_local_fallback:
+            return observations
+        return self._measure_isolated_crop_candidates(
+            crops, selected, item_by_frame, references
+        )
+
+    def _measure_isolated_crop_candidates(
+        self,
+        crops: list[HandObjectCrop],
+        selected: list[DisplayFrameCandidate],
+        item_by_frame: dict[int, FrameMasks],
+        references: list[np.ndarray],
+    ) -> list[_ClampObservation]:
+        observations: list[_ClampObservation] = []
+        for position, (crop, source) in enumerate(zip(crops, selected, strict=True)):
+            local_hand = crop.project_mask(source.hand_mask)
+            candidates = extract_metal_candidates_from_glove(
+                crop.image_bgr, local_hand
+            )
+            if not candidates:
+                continue
+            score_floor = candidates[0].score - 0.20
+            eligible = [
+                candidate
+                for candidate in candidates
+                if candidate.score >= score_floor
+            ]
+            candidate = max(
+                eligible, key=lambda value: int(value.object_mask.sum())
+            )
+            clamp = crop.restore_mask(candidate.object_mask)
+            display = measure_display_candidate(
+                source.frame_bgr, source.hand_mask, clamp
+            )
+            match = (
+                compare_clamp_mask(clamp, references)
+                if display.reliable and references
+                else None
+            )
+            observations.append(
+                _ClampObservation(
+                    item=item_by_frame[source.frame_index],
+                    frame=source.frame_bgr,
+                    hand_mask=source.hand_mask,
+                    clamp_mask=clamp,
+                    display=display,
+                    match=match,
+                    prompt_text=LOCAL_OPENCV_SOURCE,
                     crop_clip_position=position,
                 )
             )
