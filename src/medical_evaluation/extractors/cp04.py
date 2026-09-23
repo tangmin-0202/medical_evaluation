@@ -125,9 +125,15 @@ class Cp04FeatureExtractor:
         evidence_consistent = _shape_evidence_consistent(
             similarities, self.min_similarity
         )
+        lossless_single = (
+            len(comparable) == 1
+            and comparable[0].prompt_text == LOCAL_ROI_SOURCE
+        )
+        if lossless_single:
+            evidence_consistent = True
         features: dict[str, float | bool | None] = {
             "clamp_observed": observed_any,
-            "shape_evidence_reliable": len(comparable) >= 2,
+            "shape_evidence_reliable": len(comparable) >= 2 or lossless_single,
             "clear_frame_count": float(len(comparable)),
             "matching_frame_count": float(matching_count),
             "clamp_reference_similarity": (
@@ -338,7 +344,7 @@ class Cp04FeatureExtractor:
         roi_observations = self._measure_lossless_roi_candidates(
             crops, selected, item_by_frame, references
         )
-        if sum(item.display.reliable for item in roi_observations) >= 2:
+        if any(item.display.reliable for item in roi_observations):
             return roi_observations
         return self._measure_isolated_crop_candidates(
             crops, selected, item_by_frame, references

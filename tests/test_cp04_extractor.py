@@ -377,6 +377,49 @@ def test_empty_local_clip_uses_lossless_roi_image_segmentation(
     assert "sam3:lossless-clamp-roi" in analysis
 
 
+def test_one_lossless_roi_mask_is_reliable_without_opencv_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand = _hand_mask()
+    clamp = _clamp_mask()
+
+    class OneLosslessRoiSegmenter(LocalClipSegmenter):
+        def __init__(self):
+            super().__init__(_tracked("cp04_gloved_hand", [hand] * 2))
+            self.image_call = 0
+
+        def track(self, video_path, time_range, prompts, sample_fps):
+            outputs = list(super().track(video_path, time_range, prompts, sample_fps))
+            return iter([] if len(self.calls) == 2 else outputs)
+
+        def segment_image(self, image_bgr, prompt):
+            self.image_call += 1
+            mask = np.zeros(image_bgr.shape[:2], bool)
+            if prompt.text == LOCAL_ROI_LOCATOR_PROMPT:
+                mask[250:330, 270:370] = True
+            elif self.image_call == 2:
+                resized = cv2.resize(_clamp_mask().astype(np.uint8), (360, 360), interpolation=cv2.INTER_NEAREST)
+                mask[140:500, 140:500] = resized.astype(bool)
+            else:
+                return None
+            return FrameMasks(frame_index=0, frame_time_sec=0.0, sample_position=0, masks={LOCAL_CLAMP_OBJECT_ID: mask})
+
+    segmenter = OneLosslessRoiSegmenter()
+    monkeypatch.setattr(
+        "medical_evaluation.extractors.cp04.read_frame",
+        lambda _path, _index: _frame(hand=hand, clamp=clamp),
+    )
+    result = Cp04FeatureExtractor(
+        segmenter=segmenter,
+        evidence_root=tmp_path / "evidence",
+        reference_dir=_reference_dir(tmp_path),
+    ).extract(tmp_path / "video.mp4", "cp_04", TimeRange(start_sec=41, end_sec=47), dense_fps=2, analysis_width=1280)
+
+    assert result.features["shape_evidence_reliable"] is True
+    assert result.features["clear_frame_count"] == 1.0
+    assert result.features["evidence_consistent"] is True
+
+
 def test_clamp_on_rack_outside_glove_is_not_clear_shape_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
